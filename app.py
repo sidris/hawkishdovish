@@ -1,25 +1,30 @@
 import streamlit as st
 import pandas as pd
+import datetime  # <--- EKSİK OLAN BU SATIR EKLENDİ
 from supabase import create_client, Client
 from transformers import pipeline
 from collections import Counter
 import re
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-import utils  # <--- YENİ: Sizin oluşturduğunuz utils.py dosyasını dahil ettik
+import utils  # utils.py dosyanızın yanına olduğundan emin olun
 
 # -----------------------------------------------------------------------------
 # 1. AYARLAR VE BAĞLANTILAR
 # -----------------------------------------------------------------------------
 st.set_page_config(page_title="Piyasa Analiz Sistemi", layout="wide")
 
-# Supabase Bağlantısı (app.py içinde yerel kullanım için)
+# Supabase Bağlantısı
 @st.cache_resource
 def init_supabase():
     try:
-        # utils.py ile uyumlu olması için secrets yapısını kontrol ediyoruz
-        url = st.secrets.get("SUPABASE_URL") or st.secrets["supabase"]["url"]
-        key = st.secrets.get("SUPABASE_KEY") or st.secrets["supabase"]["key"]
+        # Hem local (secrets.toml) hem cloud (st.secrets) uyumlu
+        if "supabase" in st.secrets:
+            url = st.secrets["supabase"]["url"]
+            key = st.secrets["supabase"]["key"]
+        else:
+            url = st.secrets["SUPABASE_URL"]
+            key = st.secrets["SUPABASE_KEY"]
         return create_client(url, key)
     except Exception as e:
         st.error(f"Supabase bağlantı hatası: {e}")
@@ -90,7 +95,7 @@ def analyze_with_finbert(text):
     return final_score, label
 
 # -----------------------------------------------------------------------------
-# 3. VERİTABANI İŞLEMLERİ (METİN KAYITLARI İÇİN)
+# 3. VERİTABANI İŞLEMLERİ
 # -----------------------------------------------------------------------------
 
 def fetch_all_data():
@@ -157,26 +162,29 @@ with tab2:
     if not df.empty:
         opts = df.apply(lambda x: f"ID: {x['id']} | {x['period_date']} | {x['source']}", axis=1)
         sel_opt = st.selectbox("Kayıt Seç:", opts)
-        sel_id = int(sel_opt.split("|")[0].replace("ID:", "").strip())
-        sel_row = df[df['id'] == sel_id].iloc[0]
-        
-        with st.form("edit_form"):
-            c1, c2 = st.columns(2)
-            with c1:
-                n_date = st.date_input("Dönem", value=pd.to_datetime(sel_row['period_date']).date())
-                n_src = st.text_input("Kaynak", value=sel_row['source'])
-            with c2:
-                n_txt = st.text_area("Metin", value=sel_row['text_content'], height=150)
+        try:
+            sel_id = int(sel_opt.split("|")[0].replace("ID:", "").strip())
+            sel_row = df[df['id'] == sel_id].iloc[0]
             
-            if st.form_submit_button("💾 Güncelle"):
-                update_entry(sel_id, n_date, n_txt, n_src)
-                st.success("Güncellendi!")
-                st.rerun()
+            with st.form("edit_form"):
+                c1, c2 = st.columns(2)
+                with c1:
+                    n_date = st.date_input("Dönem", value=pd.to_datetime(sel_row['period_date']).date())
+                    n_src = st.text_input("Kaynak", value=sel_row['source'])
+                with c2:
+                    n_txt = st.text_area("Metin", value=sel_row['text_content'], height=150)
                 
-        if st.button("🗑️ Sil"):
-            delete_entry(sel_id)
-            st.success("Silindi")
-            st.rerun()
+                if st.form_submit_button("💾 Güncelle"):
+                    update_entry(sel_id, n_date, n_txt, n_src)
+                    st.success("Güncellendi!")
+                    st.rerun()
+                    
+            if st.button("🗑️ Sil"):
+                delete_entry(sel_id)
+                st.success("Silindi")
+                st.rerun()
+        except Exception as e:
+            st.error(f"Seçim hatası: {e}")
 
 # --- TAB 3: DASHBOARD (CANLI VERİ ENTEGRASYONU) ---
 with tab3:
@@ -190,24 +198,21 @@ with tab3:
             
             # 2. Tarih Aralığını Belirle
             min_date = df_logs['period_date'].min().date()
-            max_date = datetime.date.today() # Bugüne kadar olan verileri çekelim
+            max_date = datetime.date.today() # ARTIK HATA VERMEYECEK
             
             st.info(f"Piyasa verileri çekiliyor: {min_date} - {max_date} arası...")
 
             # 3. UTILS.PY İLE GERÇEK VERİLERİ ÇEK
-            # utils dosyasındaki fonksiyon tuple döndürür: (DataFrame, HataMesajı)
             df_market, error_msg = utils.fetch_market_data_adapter(min_date, max_date)
             
             if error_msg:
                 st.warning(f"Piyasa verileri tam çekilemedi: {error_msg}")
             
             if df_market.empty:
-                st.error("Piyasa verisi bulunamadı. EVDS Key kontrol edin.")
+                st.error("Piyasa verisi bulunamadı veya EVDS Key eksik.")
             else:
                 # 4. Verileri Birleştir (Merge)
-                # Piyasa verisindeki tarihi datetime yapalım
                 if 'Tarih' in df_market.columns:
-                     # utils genelde 'YYYY-MM' dönüyor olabilir, formatı düzeltelim
                      df_market['Tarih'] = pd.to_datetime(df_market['Tarih'])
                 
                 # İki tabloyu birleştir

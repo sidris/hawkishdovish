@@ -24,7 +24,7 @@ try:
         supabase = None
 
 except Exception as e:
-    st.error(f"Secrets/Ayarlar yüklenirken hata: {e}")
+    st.error(f"Ayarlar yüklenirken hata: {e}")
     st.stop()
 
 # Sabitler
@@ -34,7 +34,6 @@ EVDS_BASE = "https://evds2.tcmb.gov.tr/service/evds"
 EVDS_TUFE_SERIES = "TP.FG.J0"
 
 # --- 2. YARDIMCI FONKSİYONLAR (DB) ---
-# (Bu kısımlar değişmedi, app.py uyumu için tutuyoruz)
 
 def get_period_list():
     years = range(2024, 2033)
@@ -123,7 +122,7 @@ def check_login():
     if 'giris_yapildi' not in st.session_state: st.session_state['giris_yapildi'] = False
     return st.session_state['giris_yapildi']
 
-# --- APP.PY İÇİN DB FONKSİYONLARI ---
+# --- APP.PY DB FONKSİYONLARI ---
 def fetch_all_data():
     if not supabase: return pd.DataFrame()
     res = supabase.table("market_logs").select("*").order("period_date", desc=True).execute()
@@ -144,9 +143,10 @@ def insert_entry(date, text, source, score_dict, score_abg, score_fb, fb_label):
             "score_dict": score_dict, "score_abg": score_abg, "score_finbert": score_fb, "finbert_label": fb_label}
         supabase.table("market_logs").insert(data).execute()
 
-# --- 4. EVDS VE BIS (GÜNCELLENMİŞ TARİH MANTIĞI) ---
+# --- 4. EVDS VE BIS (ORİJİNAL ÇALIŞAN YÖNTEM + TARİH FİKSİ) ---
 
-def _evds_headers(api_key: str) -> dict: return {"key": api_key, "User-Agent": "Mozilla/5.0"}
+def _evds_headers(api_key: str) -> dict: 
+    return {"key": api_key, "User-Agent": "Mozilla/5.0"}
 
 def _evds_url_single(series_code, start_date, end_date, formulas):
     s = start_date.strftime("%d-%m-%Y"); e = end_date.strftime("%d-%m-%Y")
@@ -159,12 +159,14 @@ def fetch_evds_tufe_monthly_yearly(api_key, start_date, end_date):
     if not api_key: return pd.DataFrame(), "EVDS_KEY eksik."
     try:
         results = {}
+        # 1: Aylık, 3: Yıllık
         for formulas, out_col in [(1, "TUFE_Aylik"), (3, "TUFE_Yillik")]:
             url = _evds_url_single(EVDS_TUFE_SERIES, start_date, end_date, formulas=formulas)
             r = requests.get(url, headers=_evds_headers(api_key), timeout=25)
             if r.status_code != 200: continue
             js = r.json(); items = js.get("items", [])
             if not items: continue
+            
             df = pd.DataFrame(items)
             if "Tarih" not in df.columns: continue
             
@@ -177,10 +179,9 @@ def fetch_evds_tufe_monthly_yearly(api_key, start_date, end_date):
             val_cols = [c for c in df.columns if c not in ["Tarih", "UNIXTIME", "Tarih_dt", "Donem"]]
             if not val_cols: continue
             
-            # Enflasyon genellikle ayın başı veya sonu olarak temsil edilir. 
-            # EVDS'den gelen tarihi koruyoruz (genelde ayın 1'i)
+            # Enflasyon genelde ayın 1'i olarak gelir
             results[out_col] = pd.DataFrame({
-                "Tarih_Enflasyon": df["Tarih_dt"], # Özel tarih kolonu
+                "Tarih": df["Tarih_dt"], 
                 "Donem": df["Donem"], 
                 out_col: pd.to_numeric(df[val_cols[0]], errors="coerce")
             })
@@ -191,7 +192,7 @@ def fetch_evds_tufe_monthly_yearly(api_key, start_date, end_date):
         if df_m.empty and df_y.empty: return pd.DataFrame(), "Veri bulunamadı."
         if df_m.empty: out = df_y
         elif df_y.empty: out = df_m
-        else: out = pd.merge(df_m, df_y, on=["Tarih_Enflasyon", "Donem"], how="outer")
+        else: out = pd.merge(df_m, df_y, on=["Tarih", "Donem"], how="outer")
         
         return out.sort_values(["Donem"]), None
     except Exception as e: return pd.DataFrame(), str(e)
@@ -199,9 +200,9 @@ def fetch_evds_tufe_monthly_yearly(api_key, start_date, end_date):
 @st.cache_data(ttl=600)
 def fetch_bis_cbpol_tr(start_date, end_date):
     """
-    BIS Faiz Verisi. 
-    YENİLİK: Tarih bilgisini kaybetmiyoruz (groupby last yerine tail kullanıyoruz)
-    Böylece 11 Aralık'taki veri 11 Aralık olarak kalıyor.
+    BIS Faiz Verisi.
+    Burada groupby().tail(1) kullanarak o ayın SON verisini (Örn: 11 Aralık) alıyoruz.
+    Böylece tarihi 01 Aralık'a yuvarlamamış oluyoruz.
     """
     try:
         s = start_date.strftime("%Y-%m-%d"); e = end_date.strftime("%Y-%m-%d")
@@ -223,64 +224,55 @@ def fetch_bis_cbpol_tr(start_date, end_date):
         out["Donem"] = out["TIME_PERIOD"].dt.strftime("%Y-%m")
         out["REPO_RATE"] = pd.to_numeric(out["OBS_VALUE"], errors="coerce")
         
-        # YENİ MANTIK: Her ayın son gözlemini al ama TARİHİ KORU.
-        # Böylece 11.12.2025 verisi, 01.12.2025'e dönüşmez.
+        # ÖNEMLİ DEĞİŞİKLİK:
+        # last() yerine tail(1) kullanıyoruz ve TIME_PERIOD'u saklıyoruz.
+        # Bu sayede grafikte ayın 1'i değil, gerçek açıklanma tarihi görünecek.
         out = out.sort_values("TIME_PERIOD").groupby("Donem").tail(1).reset_index(drop=True)
         
-        return out[["Donem", "TIME_PERIOD", "REPO_RATE"]], None # TIME_PERIOD'u döndürüyoruz
+        return out[["Donem", "TIME_PERIOD", "REPO_RATE"]], None
     except Exception as e: return pd.DataFrame(), str(e)
 
 def fetch_market_data_adapter(start_date, end_date):
-    """
-    Dashboard tarafından çağrılan ana fonksiyon. 
-    """
-    # 1. Enflasyon (Tarih_Enflasyon içeriyor)
+    # 1. Enflasyon
     df_inf, err1 = fetch_evds_tufe_monthly_yearly(EVDS_API_KEY, start_date, end_date)
-    # 2. Faiz (TIME_PERIOD içeriyor)
+    # 2. Faiz
     df_pol, err2 = fetch_bis_cbpol_tr(start_date, end_date)
     
     combined = pd.DataFrame()
     
     if not df_inf.empty and not df_pol.empty:
-        # Donem üzerinden birleştir
+        # Donem üzerinden birleştiriyoruz
         combined = pd.merge(df_inf, df_pol, on="Donem", how="outer")
     elif not df_inf.empty: 
         combined = df_inf
-        combined['REPO_RATE'] = None; combined['TIME_PERIOD'] = None
+        combined['REPO_RATE'] = None; combined['TIME_PERIOD'] = pd.NaT
     elif not df_pol.empty: 
         combined = df_pol.rename(columns={'REPO_RATE': 'REPO_RATE'})
-        combined['TUFE_Aylik'] = None; combined['TUFE_Yillik'] = None; combined['Tarih_Enflasyon'] = None
+        combined['TUFE_Aylik'] = None; combined['TUFE_Yillik'] = None
         
     if combined.empty:
          return pd.DataFrame(), f"Hata: {err1} | {err2}"
 
-    # Kolon İsimlerini Standartlaştır
     combined = combined.rename(columns={'REPO_RATE': 'PPK Faizi', 'TUFE_Aylik': 'Aylık TÜFE', 'TUFE_Yillik': 'Yıllık TÜFE'})
     
-    # TARİH MANTIĞI:
-    # Grafikte X ekseni için tek bir 'Tarih' kolonu lazım.
-    # Eğer o ay Faiz kararı varsa (örn: 11 Aralık), o tarihi kullan.
-    # Yoksa Enflasyon tarihini (Örn: 1 Aralık) kullan.
-    
-    # 1. TIME_PERIOD (Faiz Tarihi) varsa onu al
-    # 2. Yoksa Tarih_Enflasyon (Enflasyon Tarihi) al
-    # 3. O da yoksa Dönem başını (01) oluştur
+    # TARİH BİRLEŞTİRME MANTIĞI (GRAFİK İÇİN KRİTİK)
+    # 1. Eğer Faiz tarihi (TIME_PERIOD) varsa onu kullan (11 Aralık gibi).
+    # 2. Yoksa Enflasyon tarihini kullan (1 Aralık gibi).
+    # 3. İkisi de yoksa Donem'den tarih üret.
     
     if 'TIME_PERIOD' in combined.columns:
-        combined['Tarih'] = combined['TIME_PERIOD']
+        combined['Tarih_Final'] = combined['TIME_PERIOD']
     else:
-        combined['Tarih'] = pd.NaT
-
-    if 'Tarih_Enflasyon' in combined.columns:
-        combined['Tarih'] = combined['Tarih'].fillna(combined['Tarih_Enflasyon'])
+        combined['Tarih_Final'] = pd.NaT
+    
+    if 'Tarih' in combined.columns: # Enflasyondan gelen tarih
+        combined['Tarih_Final'] = combined['Tarih_Final'].fillna(combined['Tarih'])
         
-    # Hala boş olanlar varsa Donem'den üret
+    # Hala boşsa Donem'den üret
     if 'Donem' in combined.columns:
-        # Donem YYYY-MM formatında, sonuna -01 ekle
-        donem_dates = pd.to_datetime(combined['Donem'] + "-01")
-        combined['Tarih'] = combined['Tarih'].fillna(donem_dates)
-
-    # Hala boş olan varsa düşür veya bugün yap (Nadir)
-    combined = combined.dropna(subset=['Tarih']).sort_values('Tarih')
+        combined['Tarih_Final'] = combined['Tarih_Final'].fillna(pd.to_datetime(combined['Donem'] + "-01"))
         
-    return combined, None
+    # Grafiklerin kullandığı standart 'Tarih' kolonuna ata
+    combined['Tarih'] = combined['Tarih_Final']
+        
+    return combined.sort_values('Tarih'), None

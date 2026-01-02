@@ -1,0 +1,6 @@
+streamlit
+pandas
+plotly
+supabase
+transformers
+torch

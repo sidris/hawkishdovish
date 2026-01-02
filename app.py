@@ -1,38 +1,19 @@
 import streamlit as st
 import pandas as pd
-import datetime  # <--- EKSİK OLAN BU SATIR EKLENDİ
-from supabase import create_client, Client
+import datetime
 from transformers import pipeline
 from collections import Counter
 import re
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-import utils  # utils.py dosyanızın yanına olduğundan emin olun
+import utils
 
 # -----------------------------------------------------------------------------
-# 1. AYARLAR VE BAĞLANTILAR
+# 1. AYARLAR
 # -----------------------------------------------------------------------------
 st.set_page_config(page_title="Piyasa Analiz Sistemi", layout="wide")
 
-# Supabase Bağlantısı
-@st.cache_resource
-def init_supabase():
-    try:
-        # Hem local (secrets.toml) hem cloud (st.secrets) uyumlu
-        if "supabase" in st.secrets:
-            url = st.secrets["supabase"]["url"]
-            key = st.secrets["supabase"]["key"]
-        else:
-            url = st.secrets["SUPABASE_URL"]
-            key = st.secrets["SUPABASE_KEY"]
-        return create_client(url, key)
-    except Exception as e:
-        st.error(f"Supabase bağlantı hatası: {e}")
-        return None
-
-supabase = init_supabase()
-
-# FinBERT Modelini Yükle
+# FinBERT Yükle
 @st.cache_resource
 def load_finbert():
     return pipeline("sentiment-analysis", model="ProsusAI/finbert")
@@ -43,9 +24,8 @@ except:
     classifier = None
 
 # -----------------------------------------------------------------------------
-# 2. ALGORİTMALAR (METİN ANALİZİ)
+# 2. ALGORİTMALAR
 # -----------------------------------------------------------------------------
-
 def analyze_simple_dict(text):
     text = text.lower()
     tokens = re.findall(r"[a-z']+", text)
@@ -95,70 +75,46 @@ def analyze_with_finbert(text):
     return final_score, label
 
 # -----------------------------------------------------------------------------
-# 3. VERİTABANI İŞLEMLERİ
+# 3. ARAYÜZ
 # -----------------------------------------------------------------------------
-
-def fetch_all_data():
-    response = supabase.table("market_logs").select("*").order("period_date", desc=True).execute()
-    return pd.DataFrame(response.data)
-
-def delete_entry(record_id):
-    supabase.table("market_logs").delete().eq("id", record_id).execute()
-
-def update_entry(record_id, date, text, source):
-    s_simple = analyze_simple_dict(text)
-    s_abg = analyze_apel_blix_grimaldi(text)
-    s_fb, l_fb = analyze_with_finbert(text)
-    
-    update_data = {
-        "period_date": str(date), "text_content": text, "source": source,
-        "score_dict": s_simple, "score_abg": s_abg, 
-        "score_finbert": s_fb, "finbert_label": l_fb
-    }
-    supabase.table("market_logs").update(update_data).eq("id", record_id).execute()
-
-# -----------------------------------------------------------------------------
-# 4. ARAYÜZ
-# -----------------------------------------------------------------------------
-
 st.title("🦅 Şahin/Güvercin Analiz Paneli")
-st.markdown("*Metin Analizi ve Gerçek Piyasa Verileri (TCMB & BIS)*")
 
 tab1, tab2, tab3 = st.tabs(["📝 Veri Girişi", "✏️ Düzenle/Sil", "📈 Dashboard"])
 
-# --- TAB 1: VERİ GİRİŞİ ---
+# --- TAB 1: VERİ GİRİŞİ (PICKER EKLENDİ) ---
 with tab1:
     col1, col2 = st.columns([1, 2])
     with col1:
-        st.subheader("Dönem")
-        year = st.selectbox("Yıl", range(2020, 2030), index=5)
-        month = st.selectbox("Ay", range(1, 13))
-        source = st.text_input("Kaynak", "TCMB")
+        st.subheader("Dönem Seçimi")
+        # YENİ: DATE PICKER
+        # Ayın 1'ini default seçelim ki verilerle uyuşsun
+        default_date = datetime.date.today().replace(day=1)
+        selected_date = st.date_input("Dönem Tarihi", value=default_date, format="DD/MM/YYYY")
+        
+        source = st.text_input("Kaynak", "TCMB PPK Özeti")
     with col2:
         text_input = st.text_area("Metin", height=200)
+        
         if st.button("Kaydet ve Analiz Et", type="primary"):
             if text_input:
                 with st.spinner("Analiz ediliyor..."):
+                    # Skorlar
                     val_simple = analyze_simple_dict(text_input)
                     val_abg = analyze_apel_blix_grimaldi(text_input)
                     val_fb, lab_fb = analyze_with_finbert(text_input)
                     
-                    period_date = f"{year}-{month:02d}-01"
+                    # Seçilen tarihi veritabanı formatına (YYYY-MM-DD) çevir
+                    # Genelde ekonomik veriler ayın 1'ine endekslidir
+                    period_date = selected_date.replace(day=1)
                     
-                    data = {
-                        "period_date": period_date, "text_content": text_input, "source": source,
-                        "score_dict": val_simple, "score_abg": val_abg,
-                        "score_finbert": val_fb, "finbert_label": lab_fb
-                    }
-                    try:
-                        supabase.table("market_logs").insert(data).execute()
-                        st.success(f"✅ Kaydedildi!")
-                    except Exception as e:
-                        st.error(f"Kayıt Hatası: {e}")
+                    utils.insert_entry(period_date, text_input, source, val_simple, val_abg, val_fb, lab_fb)
+                    st.success(f"✅ Kaydedildi! Dönem: {period_date}")
+            else:
+                st.warning("Lütfen bir metin giriniz.")
 
 # --- TAB 2: DÜZENLEME ---
 with tab2:
-    df = fetch_all_data()
+    df = utils.fetch_all_data()
     if not df.empty:
         opts = df.apply(lambda x: f"ID: {x['id']} | {x['period_date']} | {x['source']}", axis=1)
         sel_opt = st.selectbox("Kayıt Seç:", opts)
@@ -169,81 +125,99 @@ with tab2:
             with st.form("edit_form"):
                 c1, c2 = st.columns(2)
                 with c1:
-                    n_date = st.date_input("Dönem", value=pd.to_datetime(sel_row['period_date']).date())
+                    # Tarih Picker ile güncelleme
+                    curr_date = pd.to_datetime(sel_row['period_date']).date()
+                    n_date = st.date_input("Dönem", value=curr_date)
                     n_src = st.text_input("Kaynak", value=sel_row['source'])
                 with c2:
                     n_txt = st.text_area("Metin", value=sel_row['text_content'], height=150)
                 
                 if st.form_submit_button("💾 Güncelle"):
-                    update_entry(sel_id, n_date, n_txt, n_src)
+                    # Tekrar analiz yap
+                    v_sim = analyze_simple_dict(n_txt)
+                    v_abg = analyze_apel_blix_grimaldi(n_txt)
+                    v_fb, l_fb = analyze_with_finbert(n_txt)
+                    
+                    utils.update_entry(sel_id, n_date, n_txt, n_src, v_sim, v_abg, v_fb, l_fb)
                     st.success("Güncellendi!")
                     st.rerun()
                     
             if st.button("🗑️ Sil"):
-                delete_entry(sel_id)
+                utils.delete_entry(sel_id)
                 st.success("Silindi")
                 st.rerun()
         except Exception as e:
             st.error(f"Seçim hatası: {e}")
 
-# --- TAB 3: DASHBOARD (CANLI VERİ ENTEGRASYONU) ---
+# --- TAB 3: DASHBOARD ---
 with tab3:
     if st.button("Grafikleri Getir / Yenile"):
-        # 1. Metin Analiz Verilerini Çek (Supabase)
-        df_logs = fetch_all_data()
+        df_logs = utils.fetch_all_data()
         
         if not df_logs.empty:
             df_logs['period_date'] = pd.to_datetime(df_logs['period_date'])
             df_logs = df_logs.sort_values('period_date')
             
-            # 2. Tarih Aralığını Belirle
             min_date = df_logs['period_date'].min().date()
-            max_date = datetime.date.today() # ARTIK HATA VERMEYECEK
+            max_date = datetime.date.today()
             
-            st.info(f"Piyasa verileri çekiliyor: {min_date} - {max_date} arası...")
+            st.info(f"Piyasa verileri (TCMB & BIS) çekiliyor... ({min_date} - {max_date})")
 
-            # 3. UTILS.PY İLE GERÇEK VERİLERİ ÇEK
+            # Utils'den veri çek
             df_market, error_msg = utils.fetch_market_data_adapter(min_date, max_date)
             
             if error_msg:
-                st.warning(f"Piyasa verileri tam çekilemedi: {error_msg}")
+                st.warning(f"Uyarı: {error_msg}")
             
-            if df_market.empty:
-                st.error("Piyasa verisi bulunamadı veya EVDS Key eksik.")
-            else:
-                # 4. Verileri Birleştir (Merge)
+            # Merge
+            merged_df = df_logs
+            if not df_market.empty:
                 if 'Tarih' in df_market.columns:
                      df_market['Tarih'] = pd.to_datetime(df_market['Tarih'])
-                
-                # İki tabloyu birleştir
                 merged_df = pd.merge(df_logs, df_market, left_on='period_date', right_on='Tarih', how='left')
 
-                # 5. GRAFİK OLUŞTUR (ÇİFT EKSEN)
-                fig = make_subplots(specs=[[{"secondary_y": True}]])
+            # 1. GRAFİK (Çift Eksen)
+            fig = make_subplots(specs=[[{"secondary_y": True}]])
+            
+            # Sol Eksen: Skorlar
+            fig.add_trace(go.Scatter(x=merged_df['period_date'], y=merged_df['score_finbert'], name="FinBERT (AI)", line=dict(color='blue')), secondary_y=False)
+            fig.add_trace(go.Scatter(x=merged_df['period_date'], y=merged_df['score_abg'], name="Apel-Blix (Sözlük)", line=dict(color='green', dash='dot')), secondary_y=False)
 
-                # --- SOL EKSEN (METİN SKORLARI) ---
-                fig.add_trace(go.Scatter(x=merged_df['period_date'], y=merged_df['score_finbert'], name="FinBERT (AI)", line=dict(color='blue')), secondary_y=False)
-                fig.add_trace(go.Scatter(x=merged_df['period_date'], y=merged_df['score_abg'], name="Apel-Blix (Sözlük)", line=dict(color='green', dash='dot')), secondary_y=False)
+            # Sağ Eksen: Piyasa
+            if 'Yıllık TÜFE' in merged_df.columns:
+                fig.add_trace(go.Scatter(x=merged_df['period_date'], y=merged_df['Yıllık TÜFE'], name="Yıllık TÜFE (%)", line=dict(color='red')), secondary_y=True)
+            if 'PPK Faizi' in merged_df.columns:
+                fig.add_trace(go.Scatter(x=merged_df['period_date'], y=merged_df['PPK Faizi'], name="Faiz (%)", line=dict(color='orange')), secondary_y=True)
 
-                # --- SAĞ EKSEN (TCMB/BIS VERİLERİ) ---
-                if 'Yıllık TÜFE' in merged_df.columns:
-                    fig.add_trace(go.Scatter(x=merged_df['period_date'], y=merged_df['Yıllık TÜFE'], name="Yıllık TÜFE (%)", line=dict(color='red')), secondary_y=True)
-                
-                if 'PPK Faizi' in merged_df.columns:
-                    fig.add_trace(go.Scatter(x=merged_df['period_date'], y=merged_df['PPK Faizi'], name="Faiz (%)", line=dict(color='orange')), secondary_y=True)
+            fig.update_layout(title_text="Analiz vs Piyasa", hovermode="x unified", height=500)
+            fig.update_yaxes(title_text="<b>Şahin/Güvercin Skoru</b>", secondary_y=False, range=[-1.1, 1.1])
+            fig.update_yaxes(title_text="<b>% Oran</b>", secondary_y=True)
+            st.plotly_chart(fig, use_container_width=True)
+            
+            # 2. TABLO (İstediğiniz Format)
+            st.markdown("### 📋 Veri Detayları")
+            
+            # Sadece dolu olanları ve birleşenleri gösterelim
+            cols = ['period_date', 'source', 'score_finbert', 'score_abg']
+            if 'Aylık TÜFE' in merged_df.columns: cols.append('Aylık TÜFE')
+            if 'Yıllık TÜFE' in merged_df.columns: cols.append('Yıllık TÜFE')
+            if 'PPK Faizi' in merged_df.columns: cols.append('PPK Faizi')
+            
+            display_df = merged_df[cols].copy()
+            # Tarihi string yapalım ki tabloda düzgün görünsün
+            display_df['period_date'] = display_df['period_date'].dt.strftime('%d-%m-%Y')
+            
+            st.dataframe(
+                display_df.style.format({
+                    "score_finbert": "{:.2f}",
+                    "score_abg": "{:.2f}",
+                    "Aylık TÜFE": "{:.2f}%",
+                    "Yıllık TÜFE": "{:.2f}%",
+                    "PPK Faizi": "{:.2f}%"
+                }, na_rep="-"),
+                use_container_width=True,
+                height=400
+            )
 
-                # --- AYARLAR ---
-                fig.update_layout(title_text="Metin Analizi vs Piyasa Göstergeleri (Canlı Veri)", hovermode="x unified")
-                fig.update_yaxes(title_text="<b>Şahin/Güvercin Skoru</b>", secondary_y=False, range=[-1.1, 1.1])
-                fig.update_yaxes(title_text="<b>Enflasyon / Faiz (%)</b>", secondary_y=True)
-
-                st.plotly_chart(fig, use_container_width=True)
-                
-                st.markdown("### Birleştirilmiş Veri Seti")
-                cols_to_show = ['period_date', 'source', 'score_finbert', 'score_abg']
-                if 'Yıllık TÜFE' in merged_df.columns: cols_to_show.append('Yıllık TÜFE')
-                if 'PPK Faizi' in merged_df.columns: cols_to_show.append('PPK Faizi')
-                
-                st.dataframe(merged_df[cols_to_show])
         else:
-            st.warning("Henüz metin analizi verisi yok. Lütfen 'Veri Girişi' sekmesinden veri ekleyin.")
+            st.warning("Henüz metin analizi verisi yok.")

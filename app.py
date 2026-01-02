@@ -4,25 +4,30 @@ from supabase import create_client, Client
 from transformers import pipeline
 from collections import Counter
 import re
-import plotly.express as px
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+import utils  # <--- YENİ: Sizin oluşturduğunuz utils.py dosyasını dahil ettik
 
 # -----------------------------------------------------------------------------
 # 1. AYARLAR VE BAĞLANTILAR
 # -----------------------------------------------------------------------------
 st.set_page_config(page_title="Piyasa Analiz Sistemi", layout="wide")
 
+# Supabase Bağlantısı (app.py içinde yerel kullanım için)
 @st.cache_resource
 def init_supabase():
     try:
-        url = st.secrets["supabase"]["url"]
-        key = st.secrets["supabase"]["key"]
+        # utils.py ile uyumlu olması için secrets yapısını kontrol ediyoruz
+        url = st.secrets.get("SUPABASE_URL") or st.secrets["supabase"]["url"]
+        key = st.secrets.get("SUPABASE_KEY") or st.secrets["supabase"]["key"]
         return create_client(url, key)
-    except KeyError:
-        st.error("Supabase sırları bulunamadı.")
+    except Exception as e:
+        st.error(f"Supabase bağlantı hatası: {e}")
         return None
 
 supabase = init_supabase()
 
+# FinBERT Modelini Yükle
 @st.cache_resource
 def load_finbert():
     return pipeline("sentiment-analysis", model="ProsusAI/finbert")
@@ -33,10 +38,9 @@ except:
     classifier = None
 
 # -----------------------------------------------------------------------------
-# 2. ALGORİTMALAR
+# 2. ALGORİTMALAR (METİN ANALİZİ)
 # -----------------------------------------------------------------------------
 
-# --- A. Basit Sözlük (Sizin ilk yönteminiz) ---
 def analyze_simple_dict(text):
     text = text.lower()
     tokens = re.findall(r"[a-z']+", text)
@@ -49,32 +53,24 @@ def analyze_simple_dict(text):
     if total == 0: return 0
     return (h_score - d_score) / total
 
-# --- B. Apel & Blix Grimaldi (Düzeltilmiş Kodunuz) ---
 def analyze_apel_blix_grimaldi(text):
     text = text.lower()
     tokens = re.findall(r"[a-z']+", text)
     bigrams = [" ".join(pair) for pair in zip(tokens, tokens[1:])]
-    
     token_counts = Counter(tokens)
     bigram_counts = Counter(bigrams)
 
-    # Kelime Listeleri (Orijinal kodunuzdan)
     nouns = ["cost","costs","expenditures","consumption","growth","output","demand","activity","production","investment","productivity","labor","labour","job","jobs","participation","wage","wages","recovery","slowdown","contraction","expansion","cycle","conditions","credit","lending","borrowing","liquidity","stability","markets","volatility","uncertainty","risks","easing","rates","policy","stance","outlook","pressures","inflation","price", "prices","oil price", "oil prices","cyclical position","development","employment","unemployment","gold"]
     hawkish_adjectives = ["high", "higher","strong", "stronger","increasing", "increased","fast", "faster","elevated","rising","accelerating","robust","persistent","mounting","excessive","solid","resillent","vigorous","overheating","tightening","restrivtive","constrained","limited","upside","significant","notable"]
     dovish_adjectives = ["low", "lower","weak", "weaker","decreasing", "decreased","slow", "slower","falling","declining","subdued","soft","softer","easing","moderate","moderating","cooling","softening","downside","adverse"]
-    
-    # Tekil Kelimeler
     hawkish_single = {"tight","tightening","restrictive","elevated","high","overheating","pressures","pressure","risk","risks","upside","vigilant","decisive"}
     dovish_single = {"disinflation","decline","declining","fall","falling","decrease","decreasing","lower","low","subdued","contained","anchored","cooling","slow","slower","improvement","better","easing","relief"}
 
-    # Setleri oluştur
     hawkish_phrases = {f"{adj} {noun}" for adj in hawkish_adjectives for noun in nouns}
     dovish_phrases = {f"{adj} {noun}" for adj in dovish_adjectives for noun in nouns}
 
-    # Skorlama (Hata düzeltmesi: dove__pct yerine doğru hesaplama)
     hawk_bigram_count = sum(bigram_counts[p] for p in hawkish_phrases)
     dove_bigram_count = sum(bigram_counts[p] for p in dovish_phrases)
-    
     hawk_single_count = sum(token_counts[w] for w in hawkish_single)
     dove_single_count = sum(token_counts[w] for w in dovish_single)
 
@@ -82,14 +78,9 @@ def analyze_apel_blix_grimaldi(text):
     dove_total = dove_bigram_count + dove_single_count
     total_signal = hawk_total + dove_total
 
-    if total_signal == 0:
-        return 0
-    
-    # Skoru -1 (Güvercin) ile +1 (Şahin) arasına normalize edelim
-    # Orijinal kodunuz yüzde kullanıyordu, grafikte çizmek için -1/+1 skalası daha iyidir.
+    if total_signal == 0: return 0
     return (hawk_total - dove_total) / total_signal
 
-# --- C. FinBERT (Yapay Zeka) ---
 def analyze_with_finbert(text):
     if not classifier: return 0, "neutral"
     res = classifier(text[:512])[0]
@@ -99,7 +90,7 @@ def analyze_with_finbert(text):
     return final_score, label
 
 # -----------------------------------------------------------------------------
-# 3. VERİTABANI İŞLEMLERİ
+# 3. VERİTABANI İŞLEMLERİ (METİN KAYITLARI İÇİN)
 # -----------------------------------------------------------------------------
 
 def fetch_all_data():
@@ -110,14 +101,13 @@ def delete_entry(record_id):
     supabase.table("market_logs").delete().eq("id", record_id).execute()
 
 def update_entry(record_id, date, text, source):
-    # Tüm algoritmaları çalıştır
     s_simple = analyze_simple_dict(text)
-    s_abg = analyze_apel_blix_grimaldi(text) # Yeni
+    s_abg = analyze_apel_blix_grimaldi(text)
     s_fb, l_fb = analyze_with_finbert(text)
     
     update_data = {
         "period_date": str(date), "text_content": text, "source": source,
-        "score_dict": s_simple, "score_abg": s_abg, # Yeni
+        "score_dict": s_simple, "score_abg": s_abg, 
         "score_finbert": s_fb, "finbert_label": l_fb
     }
     supabase.table("market_logs").update(update_data).eq("id", record_id).execute()
@@ -127,7 +117,7 @@ def update_entry(record_id, date, text, source):
 # -----------------------------------------------------------------------------
 
 st.title("🦅 Şahin/Güvercin Analiz Paneli")
-st.markdown("*Algoritma Karşılaştırmalı: Basit Sözlük vs. Apel-Blix-Grimaldi vs. FinBERT*")
+st.markdown("*Metin Analizi ve Gerçek Piyasa Verileri (TCMB & BIS)*")
 
 tab1, tab2, tab3 = st.tabs(["📝 Veri Girişi", "✏️ Düzenle/Sil", "📈 Dashboard"])
 
@@ -143,25 +133,23 @@ with tab1:
         text_input = st.text_area("Metin", height=200)
         if st.button("Kaydet ve Analiz Et", type="primary"):
             if text_input:
-                with st.spinner("3 farklı algoritma çalışıyor..."):
-                    # Skorlar
+                with st.spinner("Analiz ediliyor..."):
                     val_simple = analyze_simple_dict(text_input)
-                    val_abg = analyze_apel_blix_grimaldi(text_input) # Apel-Blix
+                    val_abg = analyze_apel_blix_grimaldi(text_input)
                     val_fb, lab_fb = analyze_with_finbert(text_input)
                     
                     period_date = f"{year}-{month:02d}-01"
                     
                     data = {
                         "period_date": period_date, "text_content": text_input, "source": source,
-                        "score_dict": val_simple, 
-                        "score_abg": val_abg,  # Veritabanına yeni alan
+                        "score_dict": val_simple, "score_abg": val_abg,
                         "score_finbert": val_fb, "finbert_label": lab_fb
                     }
                     try:
                         supabase.table("market_logs").insert(data).execute()
-                        st.success(f"✅ Kaydedildi! ABG Skoru: {val_abg:.2f}")
+                        st.success(f"✅ Kaydedildi!")
                     except Exception as e:
-                        st.error(f"Kayıt Hatası (SQL kolonunu eklediniz mi?): {e}")
+                        st.error(f"Kayıt Hatası: {e}")
 
 # --- TAB 2: DÜZENLEME ---
 with tab2:
@@ -190,44 +178,67 @@ with tab2:
             st.success("Silindi")
             st.rerun()
 
-# --- TAB 3: DASHBOARD ---
+# --- TAB 3: DASHBOARD (CANLI VERİ ENTEGRASYONU) ---
 with tab3:
-    if st.button("Grafikleri Yenile"):
-        df = fetch_all_data()
-        if not df.empty:
-            df['period_date'] = pd.to_datetime(df['period_date'])
+    if st.button("Grafikleri Getir / Yenile"):
+        # 1. Metin Analiz Verilerini Çek (Supabase)
+        df_logs = fetch_all_data()
+        
+        if not df_logs.empty:
+            df_logs['period_date'] = pd.to_datetime(df_logs['period_date'])
+            df_logs = df_logs.sort_values('period_date')
             
-            # Grafik verisi hazırlığı (3 Algoritma)
-            # Eğer eski kayıtlarda score_abg yoksa (NaN ise) 0 yapalım
-            if 'score_abg' in df.columns:
-                df['score_abg'] = df['score_abg'].fillna(0)
-            else:
-                df['score_abg'] = 0
+            # 2. Tarih Aralığını Belirle
+            min_date = df_logs['period_date'].min().date()
+            max_date = datetime.date.today() # Bugüne kadar olan verileri çekelim
+            
+            st.info(f"Piyasa verileri çekiliyor: {min_date} - {max_date} arası...")
 
-            chart_df = df.melt(
-                id_vars=['period_date', 'source'], 
-                value_vars=['score_dict', 'score_abg', 'score_finbert'], 
-                var_name='Algoritma', value_name='Skor'
-            )
+            # 3. UTILS.PY İLE GERÇEK VERİLERİ ÇEK
+            # utils dosyasındaki fonksiyon tuple döndürür: (DataFrame, HataMesajı)
+            df_market, error_msg = utils.fetch_market_data_adapter(min_date, max_date)
             
-            # İsimlendirme
-            names = {
-                'score_dict': 'Basit Sözlük',
-                'score_abg': 'Apel Blix Grimaldi (Klasik)',
-                'score_finbert': 'FinBERT (Yapay Zeka)'
-            }
-            chart_df['Algoritma'] = chart_df['Algoritma'].map(names)
+            if error_msg:
+                st.warning(f"Piyasa verileri tam çekilemedi: {error_msg}")
             
-            fig = px.line(chart_df, x='period_date', y='Skor', color='Algoritma', 
-                          title="Şahin/Güvercin Trend Analizi", markers=True)
-            
-            fig.add_hline(y=0, line_dash="dash", line_color="gray", annotation_text="Nötr")
-            fig.add_annotation(text="Şahin 🦅", xref="paper", yref="paper", x=0, y=0.95, showarrow=False)
-            fig.add_annotation(text="Güvercin 🕊️", xref="paper", yref="paper", x=0, y=0.05, showarrow=False)
-            
-            st.plotly_chart(fig, use_container_width=True)
-            
-            st.markdown("### Ham Veriler")
-            st.dataframe(df)
+            if df_market.empty:
+                st.error("Piyasa verisi bulunamadı. EVDS Key kontrol edin.")
+            else:
+                # 4. Verileri Birleştir (Merge)
+                # Piyasa verisindeki tarihi datetime yapalım
+                if 'Tarih' in df_market.columns:
+                     # utils genelde 'YYYY-MM' dönüyor olabilir, formatı düzeltelim
+                     df_market['Tarih'] = pd.to_datetime(df_market['Tarih'])
+                
+                # İki tabloyu birleştir
+                merged_df = pd.merge(df_logs, df_market, left_on='period_date', right_on='Tarih', how='left')
+
+                # 5. GRAFİK OLUŞTUR (ÇİFT EKSEN)
+                fig = make_subplots(specs=[[{"secondary_y": True}]])
+
+                # --- SOL EKSEN (METİN SKORLARI) ---
+                fig.add_trace(go.Scatter(x=merged_df['period_date'], y=merged_df['score_finbert'], name="FinBERT (AI)", line=dict(color='blue')), secondary_y=False)
+                fig.add_trace(go.Scatter(x=merged_df['period_date'], y=merged_df['score_abg'], name="Apel-Blix (Sözlük)", line=dict(color='green', dash='dot')), secondary_y=False)
+
+                # --- SAĞ EKSEN (TCMB/BIS VERİLERİ) ---
+                if 'Yıllık TÜFE' in merged_df.columns:
+                    fig.add_trace(go.Scatter(x=merged_df['period_date'], y=merged_df['Yıllık TÜFE'], name="Yıllık TÜFE (%)", line=dict(color='red')), secondary_y=True)
+                
+                if 'PPK Faizi' in merged_df.columns:
+                    fig.add_trace(go.Scatter(x=merged_df['period_date'], y=merged_df['PPK Faizi'], name="Faiz (%)", line=dict(color='orange')), secondary_y=True)
+
+                # --- AYARLAR ---
+                fig.update_layout(title_text="Metin Analizi vs Piyasa Göstergeleri (Canlı Veri)", hovermode="x unified")
+                fig.update_yaxes(title_text="<b>Şahin/Güvercin Skoru</b>", secondary_y=False, range=[-1.1, 1.1])
+                fig.update_yaxes(title_text="<b>Enflasyon / Faiz (%)</b>", secondary_y=True)
+
+                st.plotly_chart(fig, use_container_width=True)
+                
+                st.markdown("### Birleştirilmiş Veri Seti")
+                cols_to_show = ['period_date', 'source', 'score_finbert', 'score_abg']
+                if 'Yıllık TÜFE' in merged_df.columns: cols_to_show.append('Yıllık TÜFE')
+                if 'PPK Faizi' in merged_df.columns: cols_to_show.append('PPK Faizi')
+                
+                st.dataframe(merged_df[cols_to_show])
         else:
-            st.warning("Veri yok.")
+            st.warning("Henüz metin analizi verisi yok. Lütfen 'Veri Girişi' sekmesinden veri ekleyin.")

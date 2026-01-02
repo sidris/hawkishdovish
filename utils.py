@@ -17,23 +17,23 @@ try:
         key = st.secrets["supabase"]["key"]
     else:
         # Cloud'da direkt ana dizindeyse
-        url = st.secrets["SUPABASE_URL"]
-        key = st.secrets["SUPABASE_KEY"]
+        url = st.secrets.get("SUPABASE_URL")
+        key = st.secrets.get("SUPABASE_KEY")
 
     # 2. Opsiyonel Anahtarlar (Hata verdirmemesi için .get kullanıyoruz)
     APP_PASSWORD = st.secrets.get("APP_PASSWORD", None)
     EVDS_API_KEY = st.secrets.get("EVDS_KEY", None)
     
     # 3. Bağlantıyı Kur
-    supabase: Client = create_client(url, key)
+    if url and key:
+        supabase: Client = create_client(url, key)
+    else:
+        supabase = None
+        # Burada stop() demiyoruz, belki sadece veri çekmek için kullanılıyordur.
+        # Ancak app.py içinde kontrol edilmeli.
 
-except KeyError as e:
-    # Eğer Supabase bilgileri hiç yoksa durdur
-    st.error(f"Kritik Hata: Supabase URL veya Key bulunamadı. Lütfen secrets ayarlarını kontrol edin. Detay: {e}")
-    st.stop()
 except Exception as e:
-    # Diğer hatalar
-    st.error(f"Beklenmeyen bir hata oluştu: {e}")
+    st.error(f"Ayarlar yüklenirken hata oluştu: {e}")
     st.stop()
 
 # Tablo Adları
@@ -42,7 +42,6 @@ TABLE_KATILIMCI = "katilimcilar"
 
 # Sabitler
 EVDS_BASE = "https://evds2.tcmb.gov.tr/service/evds"
-EVDS_TUFE_SERIES = "TP.FG.J0"
 
 # --- 2. YARDIMCI FONKSİYONLAR ---
 
@@ -68,6 +67,8 @@ def clean_and_sort_data(df):
     return df
 
 def upsert_tahmin(user, hedef_donemi, category, forecast_date, link, data_dict):
+    if not supabase: return False, "Veritabanı bağlantısı yok."
+    
     if isinstance(forecast_date, str):
         date_obj = pd.to_datetime(forecast_date)
         date_str = forecast_date
@@ -95,6 +96,7 @@ def upsert_tahmin(user, hedef_donemi, category, forecast_date, link, data_dict):
         return False, str(e)
 
 def sync_participants_from_forecasts():
+    if not supabase: return 0, "DB yok."
     res_t = supabase.table(TABLE_TAHMIN).select("kullanici_adi, kategori").execute()
     df_t = pd.DataFrame(res_t.data)
     if df_t.empty: return 0, "Tahmin verisi yok."
@@ -114,6 +116,7 @@ def sync_participants_from_forecasts():
     return added_count, f"{added_count} yeni kişi eklendi."
 
 def update_participant(old_name, new_name, new_category, row_id):
+    if not supabase: return False, "DB yok."
     try:
         supabase.table(TABLE_KATILIMCI).update({"ad_soyad": new_name, "kategori": new_category}).eq("id", row_id).execute()
         if old_name != new_name:
@@ -126,10 +129,12 @@ def update_participant(old_name, new_name, new_category, row_id):
 
 @st.cache_data(ttl=600)
 def get_all_forecasts():
+    if not supabase: return pd.DataFrame()
     res = supabase.table(TABLE_TAHMIN).select("*").order("tahmin_tarihi", desc=True).limit(5000).execute()
     return clean_and_sort_data(pd.DataFrame(res.data))
 
 def get_participants():
+    if not supabase: return pd.DataFrame()
     res = supabase.table(TABLE_KATILIMCI).select("*").order("ad_soyad").execute()
     return pd.DataFrame(res.data)
 
@@ -140,56 +145,106 @@ def check_login():
 
 # --- 4. EVDS VE BIS FONKSİYONLARI (API ENTEGRASYONU) ---
 
-def _evds_headers(api_key: str) -> dict: 
-    return {"key": api_key, "User-Agent": "Mozilla/5.0"}
-
-def _evds_url_single(series_code, start_date, end_date, formulas):
-    s = start_date.strftime("%d-%m-%Y"); e = end_date.strftime("%d-%m-%Y")
-    url = f"{EVDS_BASE}/series={series_code}&startDate={s}&endDate={e}&type=json"
-    if formulas is not None: url += f"&formulas={int(formulas)}"
-    return url
-
 @st.cache_data(ttl=600)
 def fetch_evds_tufe_monthly_yearly(api_key, start_date, end_date):
+    """
+    TCMB EVDS Sisteminden Enflasyon Verilerini Çeker.
+    YÖNTEM GÜNCELLEMESİ: Endeks yerine doğrudan değişim oranları çekiliyor.
+    """
     if not api_key: return pd.DataFrame(), "EVDS_KEY eksik."
     try:
-        results = {}
-        for formulas, out_col in [(1, "TUFE_Aylik"), (3, "TUFE_Yillik")]:
-            url = _evds_url_single(EVDS_TUFE_SERIES, start_date, end_date, formulas=formulas)
-            r = requests.get(url, headers=_evds_headers(api_key), timeout=25)
-            if r.status_code != 200: continue
-            js = r.json(); items = js.get("items", [])
-            if not items: continue
-            df = pd.DataFrame(items)
-            if "Tarih" not in df.columns: continue
-            df["Tarih_dt"] = pd.to_datetime(df["Tarih"], dayfirst=True, errors="coerce")
-            if df["Tarih_dt"].isnull().all(): df["Tarih_dt"] = pd.to_datetime(df["Tarih"], format="%Y-%m", errors="coerce")
-            df = df.dropna(subset=["Tarih_dt"]).sort_values("Tarih_dt")
-            df["Donem"] = df["Tarih_dt"].dt.strftime("%Y-%m")
-            val_cols = [c for c in df.columns if c not in ["Tarih", "UNIXTIME", "Tarih_dt", "Donem"]]
-            if not val_cols: continue
-            results[out_col] = pd.DataFrame({"Tarih": df["Tarih_dt"].dt.strftime("%d-%m-%Y"), "Donem": df["Donem"], out_col: pd.to_numeric(df[val_cols[0]], errors="coerce")})
-        df_m = results.get("TUFE_Aylik", pd.DataFrame()); df_y = results.get("TUFE_Yillik", pd.DataFrame())
-        if df_m.empty and df_y.empty: return pd.DataFrame(), "Veri bulunamadı."
-        if df_m.empty: out = df_y
-        elif df_y.empty: out = df_m
-        else: out = pd.merge(df_m, df_y, on=["Tarih", "Donem"], how="outer")
-        return out.sort_values(["Donem", "Tarih"]), None
-    except Exception as e: return pd.DataFrame(), str(e)
+        # DOĞRUDAN ENFLASYON SERİLERİ
+        # TP.FE.OKTG01: Yıllık TÜFE (% Değişim)
+        # TP.FE.OKTG02: Aylık TÜFE (% Değişim)
+        series_code = "TP.FE.OKTG01-TP.FE.OKTG02"
+        
+        s = start_date.strftime("%d-%m-%Y")
+        e = end_date.strftime("%d-%m-%Y")
+        
+        # URL oluştur (Formül parametresini kaldırdık, direct veri çekiyoruz)
+        url = f"{EVDS_BASE}/series={series_code}&startDate={s}&endDate={e}&type=json"
+        
+        headers = {"key": api_key, "User-Agent": "Mozilla/5.0"}
+        r = requests.get(url, headers=headers, timeout=25)
+        
+        if r.status_code != 200: 
+            return pd.DataFrame(), f"EVDS Hata: {r.status_code}"
+            
+        js = r.json()
+        items = js.get("items", [])
+        
+        if not items: 
+            return pd.DataFrame(), "Veri bulunamadı (Boş yanıt)."
+            
+        df = pd.DataFrame(items)
+        
+        # Tarih İşlemleri
+        if "Tarih" not in df.columns: 
+            return pd.DataFrame(), "Tarih kolonu yok."
+            
+        df["Tarih_dt"] = pd.to_datetime(df["Tarih"], dayfirst=True, errors="coerce")
+        # Format bazen YYYY-MM gelebilir, onu da dene
+        if df["Tarih_dt"].isnull().all():
+            df["Tarih_dt"] = pd.to_datetime(df["Tarih"], format="%Y-%m", errors="coerce")
+            
+        df = df.dropna(subset=["Tarih_dt"]).sort_values("Tarih_dt")
+        df["Donem"] = df["Tarih_dt"].dt.strftime("%Y-%m")
+        
+        # Kolon Eşleştirme (API'den gelen kodlar _ (alt çizgi) ile gelir)
+        rename_map = {
+            "TP_FE_OKTG01": "TUFE_Yillik",
+            "TP_FE_OKTG02": "TUFE_Aylik"
+        }
+        
+        # Sadece ilgili kolonları al
+        available_cols = [c for c in rename_map.keys() if c in df.columns]
+        
+        if not available_cols:
+            return pd.DataFrame(), "Beklenen enflasyon serileri (OKTG01/02) yanıtta yok."
+            
+        # Sayısal çevrim ve isim değişikliği
+        final_df = df[["Tarih_dt", "Donem"] + available_cols].copy()
+        final_df = final_df.rename(columns=rename_map)
+        
+        for col in ["TUFE_Yillik", "TUFE_Aylik"]:
+            if col in final_df.columns:
+                final_df[col] = pd.to_numeric(final_df[col], errors="coerce")
+        
+        # Tarih formatını string yap (Merge için)
+        final_df["Tarih"] = final_df["Tarih_dt"].dt.strftime("%d-%m-%Y")
+        
+        # DataFrame ve None (Hata yok) döndür
+        return final_df[["Donem", "Tarih", "TUFE_Yillik", "TUFE_Aylik"]], None
+
+    except Exception as e: 
+        return pd.DataFrame(), str(e)
 
 @st.cache_data(ttl=600)
 def fetch_bis_cbpol_tr(start_date, end_date):
+    """
+    BIS (Bank for International Settlements) üzerinden Türkiye Politika Faizi
+    """
     try:
-        s = start_date.strftime("%Y-%m-%d"); e = end_date.strftime("%Y-%m-%d")
+        s = start_date.strftime("%Y-%m-%d")
+        e = end_date.strftime("%Y-%m-%d")
         url = f"https://stats.bis.org/api/v1/data/WS_CBPOL/D.TR?format=csv&startPeriod={s}&endPeriod={e}"
         r = requests.get(url, timeout=25)
         if r.status_code >= 400: return pd.DataFrame(), f"BIS HTTP {r.status_code}"
+        
         df = pd.read_csv(io.StringIO(r.content.decode("utf-8", errors="ignore")))
         df.columns = [c.strip().upper() for c in df.columns]
+        
         out = df[["TIME_PERIOD", "OBS_VALUE"]].copy()
-        out["TIME_PERIOD"] = pd.to_datetime(out["TIME_PERIOD"], errors="coerce"); out = out.dropna(subset=["TIME_PERIOD"])
-        out["Donem"] = out["TIME_PERIOD"].dt.strftime("%Y-%m"); out["REPO_RATE"] = pd.to_numeric(out["OBS_VALUE"], errors="coerce")
-        return out[["Donem", "REPO_RATE"]].sort_values(["Donem"]), None
+        out["TIME_PERIOD"] = pd.to_datetime(out["TIME_PERIOD"], errors="coerce")
+        out = out.dropna(subset=["TIME_PERIOD"])
+        
+        out["Donem"] = out["TIME_PERIOD"].dt.strftime("%Y-%m")
+        out["REPO_RATE"] = pd.to_numeric(out["OBS_VALUE"], errors="coerce")
+        
+        # Ay bazında son değeri alalım (Günlük veri geliyor olabilir)
+        out = out.sort_values("TIME_PERIOD").groupby("Donem").last().reset_index()
+        
+        return out[["Donem", "REPO_RATE"]], None
     except Exception as e: return pd.DataFrame(), str(e)
 
 def fetch_market_data_adapter(start_date, end_date):
@@ -197,25 +252,40 @@ def fetch_market_data_adapter(start_date, end_date):
     Dashboard tarafından çağrılan ana fonksiyon. 
     Global EVDS_API_KEY'i kullanır.
     """
+    # 1. EVDS'den Enflasyon
     df_inf, err1 = fetch_evds_tufe_monthly_yearly(EVDS_API_KEY, start_date, end_date)
+    
+    # 2. BIS'den Faiz
     df_pol, err2 = fetch_bis_cbpol_tr(start_date, end_date)
     
     combined = pd.DataFrame()
+    
+    # Birleştirme Mantığı
     if not df_inf.empty and not df_pol.empty:
-        df_pol_monthly = df_pol.groupby("Donem").last().reset_index()[['Donem', 'REPO_RATE']]
-        combined = pd.merge(df_inf, df_pol_monthly, on="Donem", how="outer")
+        combined = pd.merge(df_inf, df_pol, on="Donem", how="outer")
     elif not df_inf.empty: 
         combined = df_inf
         combined['REPO_RATE'] = None
     elif not df_pol.empty: 
-        combined = df_pol.rename(columns={'REPO_RATE': 'REPO_RATE'})
+        combined = df_pol
         combined['TUFE_Aylik'] = None
         combined['TUFE_Yillik'] = None
         
-    combined = combined.rename(columns={'REPO_RATE': 'PPK Faizi', 'TUFE_Aylik': 'Aylık TÜFE', 'TUFE_Yillik': 'Yıllık TÜFE'})
+    if combined.empty:
+        errors = f"Enflasyon Hatası: {err1} | Faiz Hatası: {err2}"
+        return pd.DataFrame(), errors
+
+    # Kolon İsimlerini Standartlaştır (Grafik İçin)
+    combined = combined.rename(columns={
+        'REPO_RATE': 'PPK Faizi', 
+        'TUFE_Aylik': 'Aylık TÜFE', 
+        'TUFE_Yillik': 'Yıllık TÜFE'
+    })
     
-    # Tarih kolonu yoksa Donem'den üret
+    # Tarih kolonu yoksa Donem'den üret (Grafik X ekseni için)
     if 'Tarih' not in combined.columns and 'Donem' in combined.columns:
-        combined['Tarih'] = combined['Donem'] + "-01"
+        combined['Tarih'] = pd.to_datetime(combined['Donem'] + "-01")
+    elif 'Tarih' in combined.columns:
+        combined['Tarih'] = pd.to_datetime(combined['Tarih'], dayfirst=True)
         
     return combined, None

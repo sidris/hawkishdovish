@@ -34,9 +34,7 @@ def analyze_finbert(text):
 st.title("🦅 Şahin/Güvercin Analiz Paneli")
 tab1, tab2, tab3 = st.tabs(["📈 Dashboard", "📝 Veri Girişi & Yönetimi", "📊 Piyasa Verileri"])
 
-# ==============================================================================
 # TAB 1: DASHBOARD
-# ==============================================================================
 with tab1:
     with st.spinner("Yükleniyor..."):
         df_logs = utils.fetch_all_data()
@@ -54,21 +52,19 @@ with tab1:
         
         fig = make_subplots(specs=[[{"secondary_y": True}]])
         fig.add_trace(go.Scatter(x=merged['period_date'], y=merged['score_finbert'], name="FinBERT (AI)", line=dict(color='blue')), secondary_y=False)
-        fig.add_trace(go.Scatter(x=merged['period_date'], y=merged['score_abg'], name="ABG (Algoritma)", line=dict(color='green', dash='dot')), secondary_y=False)
+        fig.add_trace(go.Scatter(x=merged['period_date'], y=merged['score_abg'], name="ABG (N-Gram)", line=dict(color='green', dash='dot')), secondary_y=False)
         
         if 'Yıllık TÜFE' in merged.columns:
             fig.add_trace(go.Scatter(x=merged['period_date'], y=merged['Yıllık TÜFE'], name="Yıllık TÜFE (%)", line=dict(color='red')), secondary_y=True)
         if 'PPK Faizi' in merged.columns:
             fig.add_trace(go.Scatter(x=merged['period_date'], y=merged['PPK Faizi'], name="Faiz (%)", line=dict(color='orange')), secondary_y=True)
 
-        fig.update_layout(title="Metin Analizi ve Ekonomi", hovermode="x unified", height=500)
+        fig.update_layout(title="Analiz ve Piyasa Göstergeleri", hovermode="x unified", height=500)
         st.plotly_chart(fig, use_container_width=True)
         if st.button("🔄 Yenile"): st.cache_data.clear(); st.rerun()
     else: st.info("Kayıt yok.")
 
-# ==============================================================================
-# TAB 2: VERİ GİRİŞİ (YÜZDELİK GÖSTERİM)
-# ==============================================================================
+# TAB 2: VERİ GİRİŞİ (YÜZDE GÖSTERİMİ)
 with tab2:
     st.subheader("Veri İşlemleri")
     df_all = utils.fetch_all_data()
@@ -92,7 +88,7 @@ with tab2:
         with col_b1:
             if st.button("💾 Kaydet / Analiz Et", type="primary"):
                 if txt:
-                    # Yeni Return yapısına göre değişkenleri al
+                    # Yeni N-Gram Algoritması
                     s_abg, h_cnt, d_cnt, hawks, doves = utils.run_full_analysis(txt)
                     s_fb, l_fb = analyze_finbert(txt)
                     
@@ -127,7 +123,7 @@ with tab2:
 
         # CANLI ANALİZ VE YÜZDELİK GÖSTERİM
         if txt:
-            # Fonksiyon artık toplam sayıları da döndürüyor
+            # Fonksiyon N-Gram sayımlarını döndürür
             s_live, h_live_cnt, d_live_cnt, h_list, d_list = utils.run_full_analysis(txt)
             
             # Yüzde Hesaplama
@@ -135,26 +131,36 @@ with tab2:
             if total_sigs > 0:
                 h_pct = (h_live_cnt / total_sigs) * 100
                 d_pct = (d_live_cnt / total_sigs) * 100
+                tone_label = "ŞAHİN" if h_pct > d_pct else "GÜVERCİN" if d_pct > h_pct else "DENGELİ"
             else:
                 h_pct = 0; d_pct = 0
+                tone_label = "NÖTR"
             
             st.markdown("---")
-            # YENİ GÖSTERİM FORMATI: YÜZDELER VE PROGRESS BAR
-            st.markdown(f"#### Analiz Sonucu: **%{h_pct:.1f} ŞAHİN** | **%{d_pct:.1f} GÜVERCİN**")
+            # İSTENEN YÜZDELİK FORMAT
+            c_score1, c_score2 = st.columns(2)
+            with c_score1:
+                st.metric(label="Şahin (Hawkish)", value=f"%{h_pct:.1f}", delta=f"{h_live_cnt} Sinyal")
+            with c_score2:
+                st.metric(label="Güvercin (Dovish)", value=f"%{d_pct:.1f}", delta=f"{d_live_cnt} Sinyal")
             
-            # Görsel Bar (Kırmızı Şahin, Yeşil Güvercin)
-            st.progress(h_pct / 100) 
-            st.caption(f"Net Skor: {s_live:.2f} (Algoritma toplam {total_sigs} sinyal buldu)")
+            # Görsel Bar
+            st.progress(h_pct / 100)
+            st.caption(f"Genel Ton: **{tone_label}**")
 
-            exp = st.expander("🔍 Kelime Detayları", expanded=True)
+            exp = st.expander("🔍 Tespit Edilen İfadeler (N-Gram)", expanded=True)
             with exp:
                 k1, k2 = st.columns(2)
                 with k1:
-                    st.markdown(f"**🦅 Şahin ({h_live_cnt})**")
-                    for w in h_list: st.write(f"- {w}")
+                    st.markdown(f"**🦅 Şahin İfadeler**")
+                    if h_list:
+                        for w in h_list: st.write(f"- {w}")
+                    else: st.write("- Yok")
                 with k2:
-                    st.markdown(f"**🕊️ Güvercin ({d_live_cnt})**")
-                    for w in d_list: st.write(f"- {w}")
+                    st.markdown(f"**🕊️ Güvercin İfadeler**")
+                    if d_list:
+                        for w in d_list: st.write(f"- {w}")
+                    else: st.write("- Yok")
 
     # LİSTE
     st.markdown("### 📋 Kayıtlar")
@@ -170,9 +176,7 @@ with tab2:
                 st.session_state['form_data'] = {'id': int(orig['id']), 'date': pd.to_datetime(orig['period_date']).date(), 'source': orig['source'], 'text': orig['text_content']}
                 st.rerun()
 
-# ==============================================================================
 # TAB 3: PİYASA
-# ==============================================================================
 with tab3:
     st.header("Piyasa Verileri")
     c1, c2 = st.columns(2)

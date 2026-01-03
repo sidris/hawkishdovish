@@ -31,7 +31,7 @@ EVDS_BASE = "https://evds2.tcmb.gov.tr/service/evds"
 EVDS_TUFE_SERIES = "TP.FG.J0"
 
 # =============================================================================
-# 2. GELİŞMİŞ N-GRAM ABG ALGORİTMASI
+# 2. GELİŞMİŞ N-GRAM ABG ALGORİTMASI VE OKUNABİLİRLİK
 # =============================================================================
 
 # --- SÖZLÜKLER ---
@@ -67,6 +67,31 @@ def make_ngrams(tokens, n):
 def split_into_sentences(text):
     return re.split(r'(?<=[.!?])\s+', text)
 
+def count_syllables(word):
+    """Basit hece sayma (İngilizce için yaklaşık)"""
+    word = word.lower()
+    if len(word) <= 3: return 1
+    word = re.sub(r'(?:[^laeiouy]es|ed|[^laeiouy]e)$', '', word)
+    word = re.sub(r'^y', '', word)
+    syllables = len(re.findall(r'[aeiouy]{1,2}', word))
+    return max(1, syllables)
+
+def calculate_flesch_reading_ease(text):
+    """Flesch Reading Ease Skoru Hesaplar"""
+    if not text: return 0
+    sentences = split_into_sentences(text)
+    words = re.findall(r"[a-z']+", text.lower())
+    
+    num_sentences = len(sentences)
+    num_words = len(words)
+    num_syllables = sum(count_syllables(w) for w in words)
+    
+    if num_words == 0 or num_sentences == 0: return 0
+    
+    # Flesch Formülü
+    score = 206.835 - 1.015 * (num_words / num_sentences) - 84.6 * (num_syllables / num_words)
+    return round(score, 2)
+
 def find_context_sentences(text, found_phrases):
     sentences = split_into_sentences(text)
     contexts = {}
@@ -81,11 +106,17 @@ def find_context_sentences(text, found_phrases):
     return contexts
 
 def run_full_analysis(text):
-    if not text: return 0, 0, 0, [], [], {}, {}
+    """
+    Return: (net_score, hawk_total, dove_total, hawk_list, dove_list, hawk_contexts, dove_contexts, flesch_score)
+    """
+    if not text: return 0, 0, 0, [], [], {}, {}, 0
 
     clean_text = text.lower()
     tokens = re.findall(r"[a-z']+", clean_text)
     token_counts = Counter(tokens)
+    
+    # Flesch Hesapla
+    flesch_score = calculate_flesch_reading_ease(text)
     
     bigrams = make_ngrams(tokens, 2)
     trigrams = make_ngrams(tokens, 3)
@@ -131,10 +162,10 @@ def run_full_analysis(text):
     hawk_contexts = find_context_sentences(text, all_hawk_matches.keys())
     dove_contexts = find_context_sentences(text, all_dove_matches.keys())
 
-    return net_score, hawk_total, dove_total, hawk_list, dove_list, hawk_contexts, dove_contexts
+    return net_score, hawk_total, dove_total, hawk_list, dove_list, hawk_contexts, dove_contexts, flesch_score
 
 # =============================================================================
-# 3. VERİ ÇEKME & DB (FinBERT parametreleri çıkarıldı)
+# 3. VERİ ÇEKME & DB
 # =============================================================================
 
 @st.cache_data(ttl=600)
@@ -185,10 +216,8 @@ def fetch_all_data():
     res = supabase.table("market_logs").select("*").order("period_date", desc=True).execute()
     return pd.DataFrame(res.data)
 
-# --- FinBERT parametreleri (s_fb, l_fb) kaldırıldı ---
 def insert_entry(date, text, source, s_dict, s_abg):
     if not supabase: return
-    # score_finbert ve finbert_label veritabanına gönderilmiyor artık
     data = {"period_date": str(date), "text_content": text, "source": source,
         "score_dict": s_dict, "score_abg": s_abg}
     supabase.table("market_logs").insert(data).execute()

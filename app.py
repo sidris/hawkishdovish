@@ -60,8 +60,8 @@ with tab1:
         
         # FinBERT
         fig.add_trace(go.Scatter(x=merged['period_date'], y=merged['score_finbert'], name="FinBERT (AI)", line=dict(color='blue')), secondary_y=False)
-        # Gelişmiş ABG
-        fig.add_trace(go.Scatter(x=merged['period_date'], y=merged['score_abg'], name="ABG (Gelişmiş Algoritma)", line=dict(color='green', dash='dot')), secondary_y=False)
+        # Yeni ABG Skoru
+        fig.add_trace(go.Scatter(x=merged['period_date'], y=merged['score_abg'], name="ABG (N-Gram)", line=dict(color='green', dash='dot')), secondary_y=False)
         
         if 'Yıllık TÜFE' in merged.columns:
             fig.add_trace(go.Scatter(x=merged['period_date'], y=merged['Yıllık TÜFE'], name="Yıllık TÜFE (%)", line=dict(color='red')), secondary_y=True)
@@ -106,7 +106,7 @@ with tab2:
         with col_b1:
             if st.button("💾 Kaydet / Analiz Et", type="primary"):
                 if txt:
-                    # 1. YENİ GELİŞMİŞ ALGORİTMA İLE ANALİZ
+                    # 1. YENİ N-GRAM ALGORİTMASI İLE ANALİZ
                     s_abg, hawks, doves = utils.run_full_analysis(txt)
                     s_fb, l_fb = analyze_finbert(txt)
                     
@@ -141,7 +141,7 @@ with tab2:
             if current_id:
                 if st.button("🗑️ Sil", type="primary"):
                     utils.delete_entry(current_id)
-                    st.success("Silindi!")
+                    st.success("Kayıt veritabanından silindi.")
                     st.session_state['form_data'] = {'id': None, 'date': datetime.date.today(), 'source': "TCMB", 'text': ""}
                     st.rerun()
 
@@ -149,9 +149,9 @@ with tab2:
         if txt:
             s_live, h_live, d_live = utils.run_full_analysis(txt)
             st.markdown("---")
-            st.info(f"**Gelişmiş Skor:** `{s_live:.2f}`")
+            st.info(f"**N-Gram ABG Skoru:** `{s_live:.2f}`")
             
-            exp = st.expander("🔍 Kelime Detayları (Algoritma Çıktısı)", expanded=True)
+            exp = st.expander("🔍 Kelime Detayları", expanded=True)
             with exp:
                 k1, k2 = st.columns(2)
                 with k1:
@@ -162,7 +162,7 @@ with tab2:
                     for w in d_live: st.write(f"- {w}")
 
     # LİSTE
-    st.markdown("### 📋 Kayıtlar")
+    st.markdown("### 📋 Geçmiş Kayıtlar")
     if not df_all.empty:
         df_show = df_all.copy()
         df_show['Dönem'] = df_show['period_date'].dt.strftime('%Y-%m')

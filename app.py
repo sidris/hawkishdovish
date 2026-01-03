@@ -3,13 +3,12 @@ import pandas as pd
 import datetime
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-# transformers importu kaldırıldı (utils içinde kullanılıyor)
+# transformers importu kaldırıldı
 import utils 
 
 st.set_page_config(page_title="Piyasa Analiz", layout="wide")
 
-# --- 0. GÜVENLİK VE AYARLAR (GÜNCELLENDİ) ---
-# Şifreleri artık secrets dosyasından aramıyoruz, direkt buraya yazdık.
+# --- 0. GÜVENLİK VE AYARLAR ---
 APP_PWD = "SahinGuvercin34"      
 ADMIN_PWD = "SahinGuvercin06"    
 
@@ -18,7 +17,6 @@ if 'logged_in' not in st.session_state:
     st.session_state['logged_in'] = False
 
 if not st.session_state['logged_in']:
-    # Şık bir giriş ekranı
     col1, col2, col3 = st.columns([1, 1, 1])
     with col2:
         st.markdown("<br><br>", unsafe_allow_html=True)
@@ -34,9 +32,9 @@ if not st.session_state['logged_in']:
                 st.rerun()
             else:
                 st.error("Hatalı Şifre!")
-    st.stop() # Giriş yapılmadıysa kodun geri kalanını çalıştırma
+    st.stop() 
 
-# --- 2. SESSION STATE (FORM VERİLERİ) ---
+# --- 2. SESSION STATE ---
 if 'form_data' not in st.session_state:
     st.session_state['form_data'] = {
         'id': None,
@@ -106,7 +104,7 @@ with tab1:
     else: st.info("Kayıt yok.")
 
 # ==============================================================================
-# TAB 2: VERİ GİRİŞİ (ADMİN KORUMALI)
+# TAB 2: VERİ GİRİŞİ (HATA DÜZELTİLDİ)
 # ==============================================================================
 with tab2:
     st.subheader("Veri İşlemleri")
@@ -134,7 +132,6 @@ with tab2:
                 mask = df_all['date_only'] == selected_date
                 if mask.any(): collision_record = df_all[mask].iloc[0]
             
-            # Çakışma varsa ve düzenleme modunda değilsek uyarı ver
             is_collision = (collision_record is not None) and (current_id != collision_record['id'])
             
             if is_collision:
@@ -155,13 +152,13 @@ with tab2:
                 if st.button("⚠️ Onayla ve Üzerine Yaz", type="primary"):
                     if admin_pass_input == ADMIN_PWD:
                         if txt:
-                            # 7 Değişkenli Fonksiyon Çağrısı
                             s_abg, h_cnt, d_cnt, hawks, doves, h_ctx, d_ctx = utils.run_full_analysis(txt)
                             target_id = int(collision_record['id'])
-                            # FinBERT kaldırıldığı için son iki parametreyi dummy (0, "") geçiyoruz
-                            utils.update_entry(target_id, selected_date, txt, source, s_abg, s_abg, 0, "")
+                            
+                            # HATA BURADAYDI: ARTIK SADECE GEREKLİ PARAMETRELER GİDİYOR
+                            utils.update_entry(target_id, selected_date, txt, source, s_abg, s_abg)
+                            
                             st.success("Veri başarıyla üzerine yazıldı!")
-                            # TEMİZLE
                             st.session_state['form_data'] = {'id': None, 'date': datetime.date.today(), 'source': "TCMB", 'text': ""}
                             st.rerun()
                         else: st.error("Metin giriniz.")
@@ -175,13 +172,14 @@ with tab2:
                         s_abg, h_cnt, d_cnt, hawks, doves, h_ctx, d_ctx = utils.run_full_analysis(txt)
                         
                         if current_id:
-                            utils.update_entry(current_id, selected_date, txt, source, s_abg, s_abg, 0, "")
+                            # HATA BURADAYDI: ARTIK FAZLALIK YOK
+                            utils.update_entry(current_id, selected_date, txt, source, s_abg, s_abg)
                             st.success("Güncellendi!")
                         else:
-                            utils.insert_entry(selected_date, txt, source, s_abg, s_abg, 0, "")
+                            # HATA BURADAYDI: ARTIK FAZLALIK YOK
+                            utils.insert_entry(selected_date, txt, source, s_abg, s_abg)
                             st.success("Eklendi!")
                         
-                        # TEMİZLE
                         st.session_state['form_data'] = {'id': None, 'date': datetime.date.today(), 'source': "TCMB", 'text': ""}
                         st.rerun()
                     else: st.error("Metin giriniz.")
@@ -194,7 +192,6 @@ with tab2:
         # 3. SİLME İŞLEMİ (ADMIN ŞİFRELİ POPOVER)
         with col_b3:
             if current_id:
-                # Expander yerine Popover (daha şık)
                 with st.popover("🗑️ Sil"):
                     st.write("Silmek için Admin şifresi girin:")
                     del_pass = st.text_input("Şifre", type="password", key="del_pass")
@@ -274,9 +271,7 @@ with tab2:
                 }
                 st.rerun()
 
-# ==============================================================================
 # TAB 3: PİYASA
-# ==============================================================================
 with tab3:
     st.header("Piyasa Verileri")
     c1, c2 = st.columns(2)

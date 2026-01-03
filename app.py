@@ -40,19 +40,27 @@ if 'form_data' not in st.session_state:
         'text': ""
     }
 
-# Çakışma Yönetimi (Collision State)
+# Çakışma Yönetimi (Collision State) - Üzerine Yazma için
 if 'collision_state' not in st.session_state:
     st.session_state['collision_state'] = {
-        'active': False,       # Çakışma ekranı açık mı?
-        'target_id': None,     # Üzerine yazılacak ID
-        'pending_text': None,  # Kaydedilmeyi bekleyen metin
-        'target_date': None    # Çakışan tarih
+        'active': False,
+        'target_id': None,
+        'pending_text': None,
+        'target_date': None
+    }
+
+# Güncelleme Onay Yönetimi (Update State) - YENİ EKLENDİ
+if 'update_state' not in st.session_state:
+    st.session_state['update_state'] = {
+        'active': False,
+        'pending_text': None
     }
 
 def reset_form():
-    """Formu ve çakışma durumunu sıfırlar"""
+    """Tüm form ve onay durumlarını sıfırlar"""
     st.session_state['form_data'] = {'id': None, 'date': datetime.date.today(), 'source': "TCMB", 'text': ""}
     st.session_state['collision_state'] = {'active': False, 'target_id': None, 'pending_text': None, 'target_date': None}
+    st.session_state['update_state'] = {'active': False, 'pending_text': None}
 
 # --- ARAYÜZ ---
 c1, c2 = st.columns([6, 1])
@@ -114,25 +122,23 @@ with tab1:
     else: st.info("Kayıt yok.")
 
 # ==============================================================================
-# TAB 2: VERİ GİRİŞİ (KESİN KONTROLLÜ AKIŞ)
+# TAB 2: VERİ GİRİŞİ (GÜNCELLEME VE ÇAKIŞMA ŞİFRELİ)
 # ==============================================================================
 with tab2:
     st.subheader("Veri İşlemleri")
     
-    # DB Verilerini Çek (Kontrol için)
+    # DB Verilerini Çek
     df_all = utils.fetch_all_data()
     if not df_all.empty: 
         df_all['period_date'] = pd.to_datetime(df_all['period_date'])
         df_all['date_only'] = df_all['period_date'].dt.date
     
-    # Şu anki form durumunu al
     current_id = st.session_state['form_data']['id']
     
     with st.container(border=True):
         c1, c2 = st.columns([1, 2])
         with c1:
             val_date = st.session_state['form_data']['date']
-            # Tarih değişince sadece UI güncellenir, DB'ye dokunulmaz
             selected_date = st.date_input("Tarih", value=val_date)
             
             val_source = st.session_state['form_data']['source']
@@ -146,93 +152,111 @@ with tab2:
         # --- BUTON VE MANTIK ALANI ---
         st.markdown("---")
         
-        # DURUM 1: ÇAKIŞMA TESPİT EDİLDİ, ONAY BEKLİYOR
+        # ----------------------------------------------------------------------
+        # DURUM 1: ÇAKIŞMA MODU (ÜZERİNE YAZMA) - ŞİFRE İSTER
+        # ----------------------------------------------------------------------
         if st.session_state['collision_state']['active']:
             col_alert, col_act = st.columns([2, 2])
-            
             with col_alert:
                 t_date = st.session_state['collision_state']['target_date']
-                st.error(f"⚠️ **DİKKAT:** {t_date} tarihinde veritabanında zaten kayıt var!")
-                st.info("Bu işlemi onaylarsanız eski kayıt silinecek ve yerine bu yeni metin yazılacaktır.")
-            
+                st.error(f"⚠️ **ÇAKIŞMA:** {t_date} tarihinde zaten kayıt var!")
+                st.info("Eski veriyi silip üzerine yazmak için **Admin Şifresi** giriniz.")
             with col_act:
-                admin_pass = st.text_input("Onay için Admin Şifresi:", type="password", key="overwrite_pass")
-                
+                admin_pass = st.text_input("Admin Şifresi", type="password", key="overwrite_pass")
                 c_b1, c_b2 = st.columns(2)
                 with c_b1:
                     if st.button("🚨 Onayla ve Üzerine Yaz", type="primary", use_container_width=True):
                         if admin_pass == ADMIN_PWD:
-                            # Bekleyen verileri al
-                            pending_txt = st.session_state['collision_state']['pending_text']
+                            p_txt = st.session_state['collision_state']['pending_text']
                             t_id = st.session_state['collision_state']['target_id']
-                            
-                            # Analizi tekrar yap (Gerekirse)
-                            s_abg, h_cnt, d_cnt, hawks, doves, h_ctx, d_ctx = utils.run_full_analysis(pending_txt)
-                            
-                            # ÜZERİNE YAZMA (UPDATE)
-                            utils.update_entry(t_id, selected_date, pending_txt, source, s_abg, s_abg)
-                            
-                            st.success("Kayıt başarıyla üzerine yazıldı!")
-                            reset_form()
-                            st.rerun()
-                        else:
-                            st.error("Şifre Hatalı!")
-                
+                            s_abg, h_cnt, d_cnt, hawks, doves, h_ctx, d_ctx = utils.run_full_analysis(p_txt)
+                            utils.update_entry(t_id, selected_date, p_txt, source, s_abg, s_abg)
+                            st.success("Başarıyla üzerine yazıldı!"); reset_form(); st.rerun()
+                        else: st.error("Şifre Hatalı!")
                 with c_b2:
-                    if st.button("❌ İptal Et", use_container_width=True):
-                        st.warning("İşlem iptal edildi.")
-                        st.session_state['collision_state']['active'] = False
-                        st.rerun()
+                    if st.button("❌ İptal", use_container_width=True):
+                        st.session_state['collision_state']['active'] = False; st.rerun()
 
-        # DURUM 2: NORMAL GÖRÜNÜM (HENÜZ BUTONA BASILMADI)
+        # ----------------------------------------------------------------------
+        # DURUM 2: GÜNCELLEME MODU (MEVCUT KAYDI DÜZENLEME) - ŞİFRE İSTER
+        # ----------------------------------------------------------------------
+        elif st.session_state['update_state']['active']:
+            col_alert, col_act = st.columns([2, 2])
+            with col_alert:
+                st.info("ℹ️ **GÜNCELLEME ONAYI**")
+                st.write("Geçmiş bir kaydı değiştirmek üzeresiniz.")
+                st.warning("Değişikliği kaydetmek için **Admin Şifresi** giriniz.")
+            with col_act:
+                update_pass = st.text_input("Admin Şifresi", type="password", key="update_pass")
+                c_b1, c_b2 = st.columns(2)
+                with c_b1:
+                    if st.button("💾 Onayla ve Güncelle", type="primary", use_container_width=True):
+                        if update_pass == ADMIN_PWD:
+                            p_txt = st.session_state['update_state']['pending_text']
+                            s_abg, h_cnt, d_cnt, hawks, doves, h_ctx, d_ctx = utils.run_full_analysis(p_txt)
+                            utils.update_entry(current_id, selected_date, p_txt, source, s_abg, s_abg)
+                            st.success("Kayıt güncellendi!"); reset_form(); st.rerun()
+                        else: st.error("Şifre Hatalı!")
+                with c_b2:
+                    if st.button("❌ İptal", use_container_width=True):
+                        st.session_state['update_state']['active'] = False; st.rerun()
+
+        # ----------------------------------------------------------------------
+        # DURUM 3: NORMAL MOD (Henüz işlem yapılmadı)
+        # ----------------------------------------------------------------------
         else:
             col_b1, col_b2, col_b3 = st.columns([2, 1, 1])
             with col_b1:
-                # Buton her zaman standart görünür
-                btn_label = "💾 Kaydet / Analiz Et"
-                if current_id: btn_label = "💾 Güncelle" # Sadece görsel olarak güncelle yazar
+                # Buton etiketi
+                btn_label = "💾 Güncelle" if current_id else "💾 Kaydet / Analiz Et"
                 
                 if st.button(btn_label, type="primary"):
                     if txt:
-                        # 1. BUTONA BASILDI -> ŞİMDİ KONTROL ET
+                        # 1. VERİTABANI KONTROLÜ
                         collision_record = None
                         if not df_all.empty:
                             mask = df_all['date_only'] == selected_date
                             if mask.any(): collision_record = df_all[mask].iloc[0]
                         
-                        # A) LİSTEDEN SEÇİLİ KAYITSA (KENDİ KENDİNİ GÜNCELLİYOR)
-                        if current_id and (collision_record is not None) and (int(collision_record['id']) == current_id):
-                            s_abg, h_cnt, d_cnt, hawks, doves, h_ctx, d_ctx = utils.run_full_analysis(txt)
-                            utils.update_entry(current_id, selected_date, txt, source, s_abg, s_abg)
-                            st.success("Kayıt güncellendi!")
-                            reset_form()
+                        # A) GÜNCELLEME İŞLEMİ (Listeden seçili, kendi tarihi veya tarih değişse bile ID var)
+                        # NOT: Eğer listeden seçtiysek ve tarih değiştirdik ama o tarih BOŞ ise -> Güncelleme sayılır.
+                        # Eğer tarih doluysa -> Çakışma sayılır (Aşağıdaki B şıkkı).
+                        is_self_update = current_id and (
+                            (collision_record is None) or 
+                            (collision_record is not None and int(collision_record['id']) == current_id)
+                        )
+
+                        if is_self_update:
+                            # GÜNCELLEME MODUNU AÇ (ŞİFRE İSTEYECEK)
+                            st.session_state['update_state'] = {
+                                'active': True,
+                                'pending_text': txt
+                            }
                             st.rerun()
 
-                        # B) ÇAKIŞMA VAR (BAŞKA BİR ID BU TARİHTE VAR)
+                        # B) ÇAKIŞMA (Başka bir ID bu tarihte var)
                         elif collision_record is not None:
-                            # HİÇBİR ŞEY KAYDETME. SADECE ÇAKIŞMA MODUNU AÇ.
+                            # ÇAKIŞMA MODUNU AÇ (ŞİFRE İSTEYECEK)
                             st.session_state['collision_state'] = {
                                 'active': True,
                                 'target_id': int(collision_record['id']),
                                 'target_date': selected_date,
-                                'pending_text': txt # Metni hafızaya al
+                                'pending_text': txt
                             }
-                            st.rerun() # Ekranı yenile, yukarıdaki 'DURUM 1' bloğu çalışsın
+                            st.rerun()
                         
-                        # C) TERTEMİZ (KAYIT YOK)
+                        # C) YENİ KAYIT (ID yok, Tarih boş) -> ŞİFRESİZ
                         else:
                             s_abg, h_cnt, d_cnt, hawks, doves, h_ctx, d_ctx = utils.run_full_analysis(txt)
                             utils.insert_entry(selected_date, txt, source, s_abg, s_abg)
                             st.success("Yeni kayıt eklendi!")
-                            reset_form()
-                            st.rerun()
+                            reset_form(); st.rerun()
                     else:
-                        st.error("Lütfen metin giriniz.")
+                        st.error("Metin alanı boş olamaz.")
 
             with col_b2:
                 if st.button("Temizle"):
-                    reset_form()
-                    st.rerun()
+                    reset_form(); st.rerun()
 
             with col_b3:
                 if current_id:
@@ -242,13 +266,10 @@ with tab2:
                         if st.button("🔥 Sil"):
                             if del_pass == ADMIN_PWD:
                                 utils.delete_entry(current_id)
-                                st.success("Silindi!")
-                                reset_form()
-                                st.rerun()
-                            else:
-                                st.error("Şifre Hatalı!")
+                                st.success("Silindi!"); reset_form(); st.rerun()
+                            else: st.error("Şifre Hatalı!")
 
-        # CANLI ANALİZ GÖSTERİMİ (HER ZAMAN AKTİF)
+        # CANLI ANALİZ GÖSTERİMİ
         if txt:
             s_live, h_cnt, d_cnt, h_list, d_list, h_ctx, d_ctx = utils.run_full_analysis(txt)
             total_sigs = h_cnt + d_cnt
@@ -257,8 +278,7 @@ with tab2:
                 d_pct = (d_cnt / total_sigs) * 100
                 tone_label = "ŞAHİN" if h_pct > d_pct else "GÜVERCİN" if d_pct > h_pct else "DENGELİ"
             else:
-                h_pct = 0; d_pct = 0
-                tone_label = "NÖTR"
+                h_pct = 0; d_pct = 0; tone_label = "NÖTR"
             
             st.markdown("---")
             c1, c2 = st.columns(2)
@@ -305,9 +325,10 @@ with tab2:
             sel_idx = event.selection.rows[0]
             sel_id = df_show.iloc[sel_idx]['id']
             
-            # Eğer çakışma modu açıksa kapat (kullanıcı listeden başka bir şey seçti)
-            if st.session_state['collision_state']['active']:
+            # Herhangi bir onay modu açıksa, listeden seçim yapınca kapat (Kafa karışıklığını önlemek için)
+            if st.session_state['collision_state']['active'] or st.session_state['update_state']['active']:
                 st.session_state['collision_state']['active'] = False
+                st.session_state['update_state']['active'] = False
             
             if st.session_state['form_data']['id'] != sel_id:
                 orig = df_all[df_all['id'] == sel_id].iloc[0]

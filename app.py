@@ -78,7 +78,6 @@ with tab1:
         # --- HESAPLAMALAR ---
         df_logs['word_count'] = df_logs['text_content'].apply(lambda x: len(str(x).split()) if x else 0)
         df_logs['flesch_score'] = df_logs['text_content'].apply(lambda x: utils.calculate_flesch_reading_ease(str(x)))
-        # Eski kayıtları -100/+100 skalasına görsel olarak uyarla
         df_logs['score_abg_scaled'] = df_logs['score_abg'].apply(lambda x: x*100 if abs(x) <= 1 else x)
 
         min_d = df_logs['period_date'].min().date()
@@ -88,15 +87,29 @@ with tab1:
         merged = pd.merge(df_logs, df_market, on="Donem", how="left")
         merged = merged.sort_values("period_date")
         
-        # Maksimum piyasa verisini bul (Eksen ayarı için)
-        market_max = 80 # Varsayılan
-        if 'Yıllık TÜFE' in merged.columns and 'PPK Faizi' in merged.columns:
-            market_max = max(merged['Yıllık TÜFE'].max(), merged['PPK Faizi'].max(), 80) + 10
+        # --- DÜZELTME BAŞLANGICI: VERİ TİPİ DÖNÜŞÜMÜ ---
+        # Hata burada oluşuyordu. Verileri sayıya çeviriyoruz.
+        if 'Yıllık TÜFE' in merged.columns:
+            merged['Yıllık TÜFE'] = pd.to_numeric(merged['Yıllık TÜFE'], errors='coerce')
+        if 'PPK Faizi' in merged.columns:
+            merged['PPK Faizi'] = pd.to_numeric(merged['PPK Faizi'], errors='coerce')
+        
+        # Maksimum değeri güvenli şekilde bul
+        market_vals = [80] # Varsayılan minimum sınır
+        if 'Yıllık TÜFE' in merged.columns:
+            market_vals.append(merged['Yıllık TÜFE'].max())
+        if 'PPK Faizi' in merged.columns:
+            market_vals.append(merged['PPK Faizi'].max())
+        
+        # NaN değerleri temizleyip en yükseği al
+        market_vals = [v for v in market_vals if pd.notna(v)]
+        market_max = max(market_vals) + 10
+        # --- DÜZELTME BİTİŞİ ---
 
         # --- ANA GRAFİK ---
         fig = make_subplots(specs=[[{"secondary_y": True}]])
         
-        # 1. Kelime Sayısı (Arka Plan)
+        # 1. Kelime Sayısı
         fig.add_trace(go.Bar(
             x=merged['period_date'], y=merged['word_count'], name="Metin Uzunluğu",
             marker=dict(color='gray'), opacity=0.15, yaxis="y3", hoverinfo="x+y+name"
@@ -133,23 +146,20 @@ with tab1:
             title="Merkez Bankası Tonu, Kelime Hacmi ve Piyasa", 
             hovermode="x unified", height=500,
             shapes=layout_shapes, annotations=layout_annotations,
-            showlegend=False, # LEGEND KALDIRILDI
-            # Sol Eksen: -110/+110
+            showlegend=False,
             yaxis=dict(title="Net Skor (-100 / +100)", range=[-110, 110], zeroline=False),
-            # Sağ Eksen: Simetrik Aralık [-MAX, +MAX]
-            # Bu sayede 0% değeri tam ortaya (siyah çizgiye) denk gelir ve pozitif değerler yukarıda kalır.
             yaxis2=dict(
                 title="Faiz & Enflasyon (%)", 
                 overlaying="y", 
                 side="right", 
-                range=[-market_max, market_max], # SİMETRİK ARALIK
+                range=[-market_max, market_max], 
                 showgrid=False
             ),
             yaxis3=dict(title="Kelime", overlaying="y", side="right", showgrid=False, visible=False, range=[0, merged['word_count'].max() * 1.5])
         )
         st.plotly_chart(fig, use_container_width=True)
 
-        # --- OKUNABİLİRLİK GRAFİĞİ (AYRI VE TEMİZ) ---
+        # --- OKUNABİLİRLİK GRAFİĞİ ---
         st.markdown("##### 📚 Metin Okunabilirlik Analizi (Flesch Score)")
         fig_flesch = go.Figure()
         fig_flesch.add_trace(go.Scatter(
@@ -158,7 +168,6 @@ with tab1:
             line=dict(color='teal', width=2), fill='tozeroy', fillcolor='rgba(0, 128, 128, 0.1)'
         ))
         
-        # Başkanları buraya da ekleyelim (Referans için)
         flesch_shapes = []
         for start_date, name in governors:
             flesch_shapes.append(dict(type="line", xref="x", yref="paper", x0=start_date, x1=start_date, y0=0, y1=1, line=dict(color="gray", width=1, dash="longdash")))

@@ -3,16 +3,16 @@ import pandas as pd
 import datetime
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-# transformers importu kaldırıldı
+# utils importu
 import utils 
 
 st.set_page_config(page_title="Piyasa Analiz", layout="wide")
 
-# --- 0. GÜVENLİK VE AYARLAR ---
+# --- 0. GÜVENLİK ---
 APP_PWD = "SahinGuvercin34"      
 ADMIN_PWD = "SahinGuvercin06"    
 
-# --- 1. GİRİŞ EKRANI (LOGIN) ---
+# --- 1. GİRİŞ EKRANI ---
 if 'logged_in' not in st.session_state:
     st.session_state['logged_in'] = False
 
@@ -21,10 +21,7 @@ if not st.session_state['logged_in']:
     with col2:
         st.markdown("<br><br>", unsafe_allow_html=True)
         st.markdown("<h2 style='text-align: center;'>🔐 Güvenli Giriş</h2>", unsafe_allow_html=True)
-        st.info("Lütfen yetkili şifrenizi giriniz.")
-        
         pwd_input = st.text_input("Uygulama Şifresi", type="password")
-        
         if st.button("Giriş Yap", type="primary", use_container_width=True):
             if pwd_input == APP_PWD:
                 st.session_state['logged_in'] = True
@@ -32,7 +29,7 @@ if not st.session_state['logged_in']:
                 st.rerun()
             else:
                 st.error("Hatalı Şifre!")
-    st.stop() 
+    st.stop()
 
 # --- 2. SESSION STATE ---
 if 'form_data' not in st.session_state:
@@ -43,10 +40,10 @@ if 'form_data' not in st.session_state:
         'text': ""
     }
 
-# --- ARAYÜZ BAŞLANGICI ---
-c_head1, c_head2 = st.columns([6, 1])
-with c_head1: st.title("🦅 Şahin/Güvercin Analiz Paneli")
-with c_head2: 
+# --- ARAYÜZ ---
+c1, c2 = st.columns([6, 1])
+with c1: st.title("🦅 Şahin/Güvercin Analiz Paneli")
+with c2: 
     if st.button("Çıkış Yap"):
         st.session_state['logged_in'] = False
         st.rerun()
@@ -104,16 +101,18 @@ with tab1:
     else: st.info("Kayıt yok.")
 
 # ==============================================================================
-# TAB 2: VERİ GİRİŞİ (HATA DÜZELTİLDİ)
+# TAB 2: VERİ GİRİŞİ (GÜVENLİ VE KONTROLLÜ)
 # ==============================================================================
 with tab2:
     st.subheader("Veri İşlemleri")
     
+    # Verileri Çek
     df_all = utils.fetch_all_data()
     if not df_all.empty: 
         df_all['period_date'] = pd.to_datetime(df_all['period_date'])
         df_all['date_only'] = df_all['period_date'].dt.date
     
+    # Şu anki form durumunu al
     current_id = st.session_state['form_data']['id']
     
     with st.container(border=True):
@@ -126,76 +125,80 @@ with tab2:
             source = st.text_input("Kaynak", value=val_source)
             st.caption(f"Dönem: **{selected_date.strftime('%Y-%m')}**")
             
-            # --- ÇAKIŞMA KONTROLÜ ---
+            # --- ÇAKIŞMA KONTROLÜ (SADECE OKUMA, YAZMA YOK) ---
             collision_record = None
             if not df_all.empty:
                 mask = df_all['date_only'] == selected_date
                 if mask.any(): collision_record = df_all[mask].iloc[0]
             
+            # Çakışma var mı? (Şu an düzenlediğimiz kayıt kendisi değilse)
             is_collision = (collision_record is not None) and (current_id != collision_record['id'])
-            
-            if is_collision:
-                st.error(f"⚠️ **ÇAKIŞMA:** {selected_date} tarihinde zaten veri var!")
-                st.info("Üzerine yazmak için aşağıya **Admin Şifresi** giriniz.")
 
         with c2:
             val_text = st.session_state['form_data']['text']
-            txt = st.text_area("Metin", value=val_text, height=200)
+            txt = st.text_area("Metin", value=val_text, height=200, placeholder="Metni buraya yapıştırın...")
         
-        # BUTONLAR
+        # --- BUTON MANTIĞI ---
         col_b1, col_b2, col_b3 = st.columns([2, 1, 1])
         
         with col_b1:
-            # 1. DURUM: ÇAKIŞMA VAR (ADMIN ŞİFRESİ İSTE)
             if is_collision:
-                admin_pass_input = st.text_input("Admin Şifresi (Üzerine Yaz)", type="password", key="overwrite_pass")
+                # 1. ÇAKIŞMA VARSA: NORMAL BUTONU GİZLE, UYARI VE ŞİFRE GÖSTER
+                st.error(f"⚠️ Bu tarihte ({selected_date}) zaten bir kayıt var!")
+                st.markdown("Üzerine yazmak için **Admin Şifresi** giriniz:")
+                
+                admin_pass = st.text_input("Admin Şifresi", type="password", key="overwrite_pass")
                 if st.button("⚠️ Onayla ve Üzerine Yaz", type="primary"):
-                    if admin_pass_input == ADMIN_PWD:
+                    if admin_pass == ADMIN_PWD:
                         if txt:
                             s_abg, h_cnt, d_cnt, hawks, doves, h_ctx, d_ctx = utils.run_full_analysis(txt)
                             target_id = int(collision_record['id'])
                             
-                            # HATA BURADAYDI: ARTIK SADECE GEREKLİ PARAMETRELER GİDİYOR
+                            # ÜZERİNE YAZMA İŞLEMİ
                             utils.update_entry(target_id, selected_date, txt, source, s_abg, s_abg)
                             
-                            st.success("Veri başarıyla üzerine yazıldı!")
+                            st.success("Veri başarıyla güncellendi (Overwrite).")
+                            # Temizle
                             st.session_state['form_data'] = {'id': None, 'date': datetime.date.today(), 'source': "TCMB", 'text': ""}
                             st.rerun()
                         else: st.error("Metin giriniz.")
-                    else: st.error("Admin şifresi yanlış!")
+                    else:
+                        st.error("Admin şifresi hatalı.")
             
-            # 2. DURUM: NORMAL KAYIT / GÜNCELLEME (ŞİFRE İSTEMEZ)
             else:
-                btn_text = "💾 Güncelle" if current_id else "💾 Yeni Kayıt Ekle"
-                if st.button(btn_text, type="primary"):
+                # 2. ÇAKIŞMA YOKSA: NORMAL KAYDET/GÜNCELLE BUTONU
+                btn_label = "💾 Güncelle" if current_id else "💾 Kaydet / Analiz Et"
+                if st.button(btn_label, type="primary"):
                     if txt:
                         s_abg, h_cnt, d_cnt, hawks, doves, h_ctx, d_ctx = utils.run_full_analysis(txt)
                         
                         if current_id:
-                            # HATA BURADAYDI: ARTIK FAZLALIK YOK
+                            # Güncelleme (Listeden seçilen)
                             utils.update_entry(current_id, selected_date, txt, source, s_abg, s_abg)
-                            st.success("Güncellendi!")
+                            st.success("Kayıt güncellendi!")
                         else:
-                            # HATA BURADAYDI: ARTIK FAZLALIK YOK
+                            # Yeni Kayıt
                             utils.insert_entry(selected_date, txt, source, s_abg, s_abg)
-                            st.success("Eklendi!")
+                            st.success("Yeni kayıt eklendi!")
                         
+                        # Temizle
                         st.session_state['form_data'] = {'id': None, 'date': datetime.date.today(), 'source': "TCMB", 'text': ""}
                         st.rerun()
-                    else: st.error("Metin giriniz.")
+                    else:
+                        st.error("Metin giriniz.")
 
         with col_b2:
             if st.button("Temizle"):
                 st.session_state['form_data'] = {'id': None, 'date': datetime.date.today(), 'source': "TCMB", 'text': ""}
                 st.rerun()
 
-        # 3. SİLME İŞLEMİ (ADMIN ŞİFRELİ POPOVER)
+        # 3. SİLME (HER ZAMAN ADMİN ŞİFRESİ İSTER)
         with col_b3:
             if current_id:
                 with st.popover("🗑️ Sil"):
                     st.write("Silmek için Admin şifresi girin:")
                     del_pass = st.text_input("Şifre", type="password", key="del_pass")
-                    if st.button("🔥 Kalıcı Olarak Sil"):
+                    if st.button("🔥 Onayla ve Sil"):
                         if del_pass == ADMIN_PWD:
                             utils.delete_entry(current_id)
                             st.success("Silindi!")

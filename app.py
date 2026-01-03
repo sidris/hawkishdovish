@@ -67,7 +67,7 @@ with tab1:
     else: st.info("Kayıt yok.")
 
 # ==============================================================================
-# TAB 2: VERİ GİRİŞİ (ÇAKIŞMA KONTROLLÜ)
+# TAB 2: VERİ GİRİŞİ (HATA DÜZELTİLDİ: 7 DEĞİŞKEN)
 # ==============================================================================
 with tab2:
     st.subheader("Veri İşlemleri")
@@ -76,7 +76,6 @@ with tab2:
     df_all = utils.fetch_all_data()
     if not df_all.empty: 
         df_all['period_date'] = pd.to_datetime(df_all['period_date'])
-        # Karşılaştırma için sadece tarih kısmını al
         df_all['date_only'] = df_all['period_date'].dt.date
     
     current_id = st.session_state['form_data']['id']
@@ -85,7 +84,6 @@ with tab2:
         c1, c2 = st.columns([1, 2])
         with c1:
             val_date = st.session_state['form_data']['date']
-            # Kullanıcı tarihi değiştirdiği an bu değişken güncellenir
             selected_date = st.date_input("Tarih", value=val_date)
             
             val_source = st.session_state['form_data']['source']
@@ -95,17 +93,13 @@ with tab2:
             # --- ÇAKIŞMA KONTROLÜ ---
             collision_record = None
             if not df_all.empty:
-                # Seçilen tarih veritabanında var mı?
                 mask = df_all['date_only'] == selected_date
                 if mask.any():
                     collision_record = df_all[mask].iloc[0]
             
-            # Eğer çakışma varsa ve şu an o kaydı düzenlemiyorsak (Yeni bir tarih seçtiysek)
-            if collision_record:
-                # Eğer listeden seçip düzenlemiyorsak (ID'ler farklıysa), uyarı ver
-                if current_id != collision_record['id']:
-                    st.warning(f"⚠️ **DİKKAT:** {selected_date} tarihinde zaten bir kayıt var!")
-                    st.markdown(f"*Kaydet tuşuna basarsanız mevcut verinin **üzerine yazılacaktır**.*")
+            if collision_record and (current_id != collision_record['id']):
+                st.warning(f"⚠️ **DİKKAT:** {selected_date} tarihinde zaten bir kayıt var!")
+                st.markdown(f"*Kaydet tuşuna basarsanız mevcut verinin **üzerine yazılacaktır**.*")
 
         with c2:
             val_text = st.session_state['form_data']['text']
@@ -113,7 +107,7 @@ with tab2:
         
         col_b1, col_b2, col_b3 = st.columns([2, 1, 1])
         with col_b1:
-            # Buton Metni Duruma Göre Değişsin
+            # Buton Metni
             btn_text = "💾 Kaydet / Analiz Et"
             if collision_record and (current_id != collision_record['id']):
                 btn_text = "⚠️ Üzerine Yaz ve Kaydet"
@@ -122,33 +116,29 @@ with tab2:
 
             if st.button(btn_text, type="primary"):
                 if txt:
-                    # Analiz
-                    s_abg, h_cnt, d_cnt, hawks, doves = utils.run_full_analysis(txt)
+                    # --- DÜZELTME BURADA YAPILDI (7 DEĞİŞKEN) ---
+                    # utils.run_full_analysis artık cümleleri de (ctx) döndürüyor
+                    s_abg, h_cnt, d_cnt, hawks, doves, h_ctx, d_ctx = utils.run_full_analysis(txt)
                     s_fb, l_fb = analyze_finbert(txt)
                     
                     # KAYIT SENARYOLARI
-                    
-                    # 1. Senaryo: Listeden seçilen kaydı güncelliyoruz
                     if current_id:
                         utils.update_entry(current_id, selected_date, txt, source, s_abg, s_abg, s_fb, l_fb)
-                        st.success("Kayıt başarıyla güncellendi!")
+                        st.success("Kayıt güncellendi!")
                         
-                    # 2. Senaryo: Yeni tarih seçtik ama o tarihte kayıt varmış (Collision) -> ÜZERİNE YAZ
                     elif collision_record:
                         target_id = int(collision_record['id'])
                         utils.update_entry(target_id, selected_date, txt, source, s_abg, s_abg, s_fb, l_fb)
-                        st.warning(f"{selected_date} tarihli eski kayıt silindi, yeni veri üzerine yazıldı.")
+                        st.warning(f"{selected_date} tarihli eski kayıt güncellendi.")
                         
-                    # 3. Senaryo: Tarih boş, yeni kayıt
                     else:
                         utils.insert_entry(selected_date, txt, source, s_abg, s_abg, s_fb, l_fb)
                         st.success("Yeni kayıt eklendi!")
                     
-                    # Formu Temizle
                     st.session_state['form_data'] = {'id': None, 'date': datetime.date.today(), 'source': "TCMB", 'text': ""}
                     st.rerun()
                 else:
-                    st.error("Lütfen metin giriniz.")
+                    st.error("Metin giriniz.")
 
         with col_b2:
             if st.button("Temizle"):
@@ -163,38 +153,52 @@ with tab2:
                     st.session_state['form_data'] = {'id': None, 'date': datetime.date.today(), 'source': "TCMB", 'text': ""}
                     st.rerun()
 
-        # CANLI ANALİZ VE YÜZDELİK GÖSTERİM
+        # CANLI ANALİZ GÖSTERİMİ
         if txt:
-            s_live, h_live_cnt, d_live_cnt, h_list, d_list = utils.run_full_analysis(txt)
-            total_sigs = h_live_cnt + d_live_cnt
+            # --- DÜZELTME BURADA DA YAPILDI ---
+            s_live, h_cnt, d_cnt, h_list, d_list, h_ctx, d_ctx = utils.run_full_analysis(txt)
+            
+            total_sigs = h_cnt + d_cnt
             if total_sigs > 0:
-                h_pct = (h_live_cnt / total_sigs) * 100
-                d_pct = (d_live_cnt / total_sigs) * 100
+                h_pct = (h_cnt / total_sigs) * 100
+                d_pct = (d_cnt / total_sigs) * 100
                 tone_label = "ŞAHİN" if h_pct > d_pct else "GÜVERCİN" if d_pct > h_pct else "DENGELİ"
             else:
                 h_pct = 0; d_pct = 0
                 tone_label = "NÖTR"
             
             st.markdown("---")
-            c_score1, c_score2 = st.columns(2)
-            with c_score1: st.metric(label="Şahin (Hawkish)", value=f"%{h_pct:.1f}", delta=f"{h_live_cnt} Sinyal")
-            with c_score2: st.metric(label="Güvercin (Dovish)", value=f"%{d_pct:.1f}", delta=f"{d_live_cnt} Sinyal")
+            c1, c2 = st.columns(2)
+            with c1: st.metric("Şahin (Hawkish)", f"%{h_pct:.1f}", f"{h_cnt} Sinyal")
+            with c2: st.metric("Güvercin (Dovish)", f"%{d_pct:.1f}", f"{d_cnt} Sinyal")
             
             st.progress(h_pct / 100)
-            st.caption(f"Genel Ton: **{tone_label}**")
+            st.caption(f"Genel Ton: **{tone_label}** | Skor: {s_live:.2f}")
 
-            exp = st.expander("🔍 Tespit Edilen İfadeler (N-Gram)", expanded=True)
+            exp = st.expander("🔍 Kelime ve Cümle Detayları", expanded=True)
             with exp:
                 k1, k2 = st.columns(2)
                 with k1:
-                    st.markdown(f"**🦅 Şahin İfadeler**")
+                    st.markdown("**🦅 Şahin İfadeler**")
                     if h_list:
-                        for w in h_list: st.write(f"- {w}")
+                        for item in h_list:
+                            term = item.split(' (')[0]
+                            st.write(f"🔹 **{item}**")
+                            # Cümleleri göster
+                            if term in h_ctx:
+                                for s in h_ctx[term]:
+                                    st.caption(f"📝 ...{s}...")
                     else: st.write("- Yok")
+                
                 with k2:
-                    st.markdown(f"**🕊️ Güvercin İfadeler**")
+                    st.markdown("**🕊️ Güvercin İfadeler**")
                     if d_list:
-                        for w in d_list: st.write(f"- {w}")
+                        for item in d_list:
+                            term = item.split(' (')[0]
+                            st.write(f"🔹 **{item}**")
+                            if term in d_ctx:
+                                for s in d_ctx[term]:
+                                    st.caption(f"📝 ...{s}...")
                     else: st.write("- Yok")
 
     # LİSTE
@@ -202,16 +206,28 @@ with tab2:
     if not df_all.empty:
         df_show = df_all.copy()
         df_show['Dönem'] = df_show['period_date'].dt.strftime('%Y-%m')
-        event = st.dataframe(df_show[['id', 'Dönem', 'period_date', 'source', 'score_abg']].sort_values('period_date', ascending=False),
-            on_select="rerun", selection_mode="single-row", use_container_width=True, hide_index=True)
+        
+        event = st.dataframe(
+            df_show[['id', 'Dönem', 'period_date', 'source', 'score_abg']].sort_values('period_date', ascending=False),
+            on_select="rerun", selection_mode="single-row", use_container_width=True, hide_index=True
+        )
+        
         if len(event.selection.rows) > 0:
-            sel_id = df_show.iloc[event.selection.rows[0]]['id']
+            sel_idx = event.selection.rows[0]
+            sel_id = df_show.iloc[sel_idx]['id']
             if st.session_state['form_data']['id'] != sel_id:
                 orig = df_all[df_all['id'] == sel_id].iloc[0]
-                st.session_state['form_data'] = {'id': int(orig['id']), 'date': pd.to_datetime(orig['period_date']).date(), 'source': orig['source'], 'text': orig['text_content']}
+                st.session_state['form_data'] = {
+                    'id': int(orig['id']),
+                    'date': pd.to_datetime(orig['period_date']).date(),
+                    'source': orig['source'],
+                    'text': orig['text_content']
+                }
                 st.rerun()
 
+# ==============================================================================
 # TAB 3: PİYASA
+# ==============================================================================
 with tab3:
     st.header("Piyasa Verileri")
     c1, c2 = st.columns(2)

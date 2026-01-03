@@ -31,17 +31,17 @@ EVDS_BASE = "https://evds2.tcmb.gov.tr/service/evds"
 EVDS_TUFE_SERIES = "TP.FG.J0"
 
 # =============================================================================
-# 2. GELİŞMİŞ N-GRAM ABG ALGORİTMASI (SİZİN KODUNUZ)
+# 2. GELİŞMİŞ N-GRAM ABG ALGORİTMASI
 # =============================================================================
 
 # --- SÖZLÜKLER ---
 NOUNS = {
-    "cost","costs","expenditures","consumption","growth","output","demand","activity","production",
-    "investment","productivity","labor","labour","job","jobs","participation","wage","wages",
-    "recovery","slowdown","contraction","expansion","cycle","conditions","credit","lending",
-    "borrowing","liquidity","stability","markets","volatility","uncertainty","risks","easing",
-    "rates","policy","stance","outlook","pressures","inflation","price","prices","gold",
-    # multi-word nouns:
+    "cost","costs","expenditures","consumption","growth","output","demand","activity",
+    "production","investment","productivity","labor","labour","job","jobs","participation",
+    "wage","wages","recovery","slowdown","contraction","expansion","cycle","conditions",
+    "credit","lending","borrowing","liquidity","stability","markets","volatility",
+    "uncertainty","risks","easing","rates","policy","stance","outlook","pressures",
+    "inflation","price","prices","gold",
     "oil price","oil prices","cyclical position","development","employment","unemployment"
 }
 
@@ -64,25 +64,48 @@ DOVISH_SINGLE = {"disinflation","decline","declining","fall","falling","decrease
 def make_ngrams(tokens, n):
     return [" ".join(tokens[i:i+n]) for i in range(len(tokens) - n + 1)]
 
+def split_into_sentences(text):
+    # Basit cümle bölücü (Nokta, ünlem, soru işareti)
+    return re.split(r'(?<=[.!?])\s+', text)
+
+def find_context_sentences(text, found_phrases):
+    """
+    Bulunan kelimelerin geçtiği cümleleri eşleştirir.
+    Return: { 'kelime': ['cümle 1', 'cümle 2'] }
+    """
+    sentences = split_into_sentences(text)
+    contexts = {}
+    
+    for phrase in found_phrases:
+        matched_sentences = []
+        for sent in sentences:
+            # Kelime cümlede geçiyor mu? (Basit string match)
+            # Not: Daha hassas olması için regex word boundary (\b) kullanılabilir ama n-gram için string match yeterlidir.
+            if phrase in sent.lower():
+                # Kelimeyi bold yapmak için markdown ekle
+                highlighted_sent = re.sub(f"({re.escape(phrase)})", r"**\1**", sent, flags=re.IGNORECASE)
+                matched_sentences.append(highlighted_sent.strip())
+        
+        if matched_sentences:
+            contexts[phrase] = matched_sentences
+            
+    return contexts
+
 def run_full_analysis(text):
     """
-    Verilen metni N-Gram mantığıyla analiz eder.
-    Return: (net_score, hawk_total, dove_total, hawk_list_formatted, dove_list_formatted)
+    Return: (net_score, hawk_total, dove_total, hawk_list, dove_list, hawk_contexts, dove_contexts)
     """
     if not text:
-        return 0, 0, 0, [], []
+        return 0, 0, 0, [], [], {}, {}
 
     # 1. Tokenize
     clean_text = text.lower()
     tokens = re.findall(r"[a-z']+", clean_text)
-    
     token_counts = Counter(tokens)
     
     # 2. N-Gram Oluşturma
-    
     bigrams = make_ngrams(tokens, 2)
     trigrams = make_ngrams(tokens, 3)
-    
     bigram_counts = Counter(bigrams)
     trigr_counts = Counter(trigrams)
 
@@ -90,50 +113,53 @@ def run_full_analysis(text):
     hawkish_phrases = {f"{adj} {noun}" for adj in HAWKISH_ADJECTIVES for noun in NOUNS}
     dovish_phrases  = {f"{adj} {noun}" for adj in DOVISH_ADJECTIVES  for noun in NOUNS}
 
-    # 4. Phrase Sayım Mantığı (2'li mi 3'lü mü kontrolü)
+    # 4. Phrase Sayım
     def phrase_count(phrase):
         n = len(phrase.split())
         if n == 2: return bigram_counts[phrase]
         elif n == 3: return trigr_counts[phrase]
         else: return 0
 
-    # Kullanılanları ve Toplamları Bul
     used_hawkish_ngrams = {p: phrase_count(p) for p in hawkish_phrases if phrase_count(p) > 0}
     used_dovish_ngrams  = {p: phrase_count(p) for p in dovish_phrases  if phrase_count(p) > 0}
     
     hawk_ngram_count = sum(used_hawkish_ngrams.values())
     dove_ngram_count = sum(used_dovish_ngrams.values())
 
-    # 5. Tek Kelime Sinyalleri
+    # 5. Tek Kelime Sayım
     used_hawkish_single = {w: token_counts[w] for w in HAWKISH_SINGLE if token_counts[w] > 0}
     used_dovish_single  = {w: token_counts[w] for w in DOVISH_SINGLE  if token_counts[w] > 0}
 
     hawk_single_count = sum(used_hawkish_single.values())
     dove_single_count = sum(used_dovish_single.values())
 
-    # 6. Genel Toplamlar
+    # 6. Toplamlar
     hawk_total = hawk_ngram_count + hawk_single_count
     dove_total = dove_ngram_count + dove_single_count
     total_signal = hawk_total + dove_total
 
-    # 7. Skor Hesaplama (Grafik için -1 ile 1 arası normalize)
+    # 7. Skor
     if total_signal > 0:
         net_score = (hawk_total - dove_total) / total_signal
     else:
         net_score = 0
 
-    # 8. Listeleri Formatla (Ekranda göstermek için)
-    # Sözlükleri birleştir
+    # 8. Listeler (Formatlı)
     all_hawk_matches = {**used_hawkish_ngrams, **used_hawkish_single}
     all_dove_matches = {**used_dovish_ngrams, **used_dovish_single}
 
     hawk_list = [f"{k} ({v})" for k, v in sorted(all_hawk_matches.items(), key=lambda x: -x[1])]
     dove_list = [f"{k} ({v})" for k, v in sorted(all_dove_matches.items(), key=lambda x: -x[1])]
 
-    return net_score, hawk_total, dove_total, hawk_list, dove_list
+    # 9. CÜMLE BAĞLAMLARI (YENİ ÖZELLİK)
+    # Sadece bulunan kelimeler için cümleleri tara
+    hawk_contexts = find_context_sentences(text, all_hawk_matches.keys())
+    dove_contexts = find_context_sentences(text, all_dove_matches.keys())
+
+    return net_score, hawk_total, dove_total, hawk_list, dove_list, hawk_contexts, dove_contexts
 
 # =============================================================================
-# 3. VERİ ÇEKME & DB (MEVCUT YAPI)
+# 3. VERİ ÇEKME & DB (AYNI KALDI)
 # =============================================================================
 
 @st.cache_data(ttl=600)

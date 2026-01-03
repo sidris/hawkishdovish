@@ -59,12 +59,12 @@ with tab1:
         if 'PPK Faizi' in merged.columns:
             fig.add_trace(go.Scatter(x=merged['period_date'], y=merged['PPK Faizi'], name="Faiz (%)", line=dict(color='orange')), secondary_y=True)
 
-        fig.update_layout(title="Analiz ve Piyasa Göstergeleri", hovermode="x unified", height=500)
+        fig.update_layout(title="Metin Analizi ve Ekonomi", hovermode="x unified", height=500)
         st.plotly_chart(fig, use_container_width=True)
         if st.button("🔄 Yenile"): st.cache_data.clear(); st.rerun()
     else: st.info("Kayıt yok.")
 
-# TAB 2: VERİ GİRİŞİ (YÜZDE GÖSTERİMİ)
+# TAB 2: VERİ GİRİŞİ (CÜMLE DETAYLI)
 with tab2:
     st.subheader("Veri İşlemleri")
     df_all = utils.fetch_all_data()
@@ -88,8 +88,8 @@ with tab2:
         with col_b1:
             if st.button("💾 Kaydet / Analiz Et", type="primary"):
                 if txt:
-                    # Yeni N-Gram Algoritması
-                    s_abg, h_cnt, d_cnt, hawks, doves = utils.run_full_analysis(txt)
+                    # Analiz ve Context Alma
+                    s_abg, h_cnt, d_cnt, hawks, doves, h_ctx, d_ctx = utils.run_full_analysis(txt)
                     s_fb, l_fb = analyze_finbert(txt)
                     
                     if current_id:
@@ -121,46 +121,48 @@ with tab2:
                     st.success("Silindi!"); st.session_state['form_data'] = {'id': None, 'date': datetime.date.today(), 'source': "TCMB", 'text': ""}
                     st.rerun()
 
-        # CANLI ANALİZ VE YÜZDELİK GÖSTERİM
+        # CANLI ANALİZ VE CÜMLELER
         if txt:
-            # Fonksiyon N-Gram sayımlarını döndürür
-            s_live, h_live_cnt, d_live_cnt, h_list, d_list = utils.run_full_analysis(txt)
+            s_live, h_cnt, d_cnt, h_list, d_list, h_ctx, d_ctx = utils.run_full_analysis(txt)
             
-            # Yüzde Hesaplama
-            total_sigs = h_live_cnt + d_live_cnt
+            total_sigs = h_cnt + d_cnt
             if total_sigs > 0:
-                h_pct = (h_live_cnt / total_sigs) * 100
-                d_pct = (d_live_cnt / total_sigs) * 100
-                tone_label = "ŞAHİN" if h_pct > d_pct else "GÜVERCİN" if d_pct > h_pct else "DENGELİ"
-            else:
-                h_pct = 0; d_pct = 0
-                tone_label = "NÖTR"
+                h_pct = (h_cnt / total_sigs) * 100
+                d_pct = (d_cnt / total_sigs) * 100
+            else: h_pct = 0; d_pct = 0
             
             st.markdown("---")
-            # İSTENEN YÜZDELİK FORMAT
             c_score1, c_score2 = st.columns(2)
-            with c_score1:
-                st.metric(label="Şahin (Hawkish)", value=f"%{h_pct:.1f}", delta=f"{h_live_cnt} Sinyal")
-            with c_score2:
-                st.metric(label="Güvercin (Dovish)", value=f"%{d_pct:.1f}", delta=f"{d_live_cnt} Sinyal")
-            
-            # Görsel Bar
+            with c_score1: st.metric(label="Şahin (Hawkish)", value=f"%{h_pct:.1f}", delta=f"{h_cnt} Sinyal")
+            with c_score2: st.metric(label="Güvercin (Dovish)", value=f"%{d_pct:.1f}", delta=f"{d_cnt} Sinyal")
             st.progress(h_pct / 100)
-            st.caption(f"Genel Ton: **{tone_label}**")
 
-            exp = st.expander("🔍 Tespit Edilen İfadeler (N-Gram)", expanded=True)
+            exp = st.expander("🔍 Kelime ve Bağlam Detayları (Cümleler)", expanded=True)
             with exp:
                 k1, k2 = st.columns(2)
                 with k1:
                     st.markdown(f"**🦅 Şahin İfadeler**")
                     if h_list:
-                        for w in h_list: st.write(f"- {w}")
-                    else: st.write("- Yok")
+                        for item in h_list:
+                            # Item: "high inflation (2)" formatında
+                            term = item.split(' (')[0]
+                            st.write(f"🔹 **{item}**")
+                            # Cümleleri göster
+                            if term in h_ctx:
+                                for s in h_ctx[term]:
+                                    st.caption(f"📝 ...{s}...")
+                    else: st.write("Yok")
+                
                 with k2:
                     st.markdown(f"**🕊️ Güvercin İfadeler**")
                     if d_list:
-                        for w in d_list: st.write(f"- {w}")
-                    else: st.write("- Yok")
+                        for item in d_list:
+                            term = item.split(' (')[0]
+                            st.write(f"🔹 **{item}**")
+                            if term in d_ctx:
+                                for s in d_ctx[term]:
+                                    st.caption(f"📝 ...{s}...")
+                    else: st.write("Yok")
 
     # LİSTE
     st.markdown("### 📋 Kayıtlar")

@@ -7,7 +7,7 @@ import datetime
 import re
 from collections import Counter, defaultdict
 
-# --- 1. AYARLAR VE BAĞLANTI ---
+# --- AYARLAR ---
 try:
     if "supabase" in st.secrets:
         url = st.secrets["supabase"]["url"]
@@ -26,13 +26,8 @@ except Exception as e:
     st.error(f"Ayarlar hatası: {e}")
     st.stop()
 
-# Sabitler
 EVDS_BASE = "https://evds2.tcmb.gov.tr/service/evds"
 EVDS_TUFE_SERIES = "TP.FG.J0"
-
-# =============================================================================
-# 2. GELİŞMİŞ N-GRAM ABG ALGORİTMASI VE OKUNABİLİRLİK
-# =============================================================================
 
 # --- SÖZLÜKLER ---
 NOUNS = {
@@ -59,8 +54,7 @@ DOVISH_ADJECTIVES = {
 HAWKISH_SINGLE = {"tight","tightening","restrictive","elevated","high","overheating","pressures","pressure","risk","risks","upside","vigilant","decisive"}
 DOVISH_SINGLE = {"disinflation","decline","declining","fall","falling","decrease","decreasing","lower","low","subdued","contained","anchored","cooling","slow","slower","improvement","better","easing","relief"}
 
-# --- YARDIMCI FONKSİYONLAR ---
-
+# --- FONKSİYONLAR ---
 def make_ngrams(tokens, n):
     return [" ".join(tokens[i:i+n]) for i in range(len(tokens) - n + 1)]
 
@@ -220,71 +214,3 @@ def update_entry(rid, date, text, source, s_dict, s_abg):
 
 def delete_entry(rid):
     if supabase: supabase.table("market_logs").delete().eq("id", rid).execute()
-
-# --- YENİ EKLENEN: AKILLI ÖZET MOTORU ---
-def generate_smart_summary(row):
-    """
-    Seçilen satırdaki verilere göre yapay zeka benzeri dinamik ve nesnel bir özet üretir.
-    """
-    date_str = row['period_date'].strftime('%Y-%m')
-    score = row.get('score_abg_scaled', 0)
-    inf = row.get('Yıllık TÜFE', None)
-    rate = row.get('PPK Faizi', None)
-    flesch = row.get('flesch_score', 0)
-    words = row.get('word_count', 0)
-    
-    # 1. Ton Analizi
-    tone = "Nötr"
-    tone_desc = "dengeli bir iletişim dili"
-    if score > 20: 
-        tone = "Şahin"
-        tone_desc = "sıkı para politikası vurgusu yapan şahin bir dil"
-    elif score < -20: 
-        tone = "Güvercin"
-        tone_desc = "büyümeyi destekleyici veya gevşeme sinyali veren güvercin bir dil"
-        
-    # 2. Piyasa Bağlamı (Reel Faiz ve Enflasyon İlişkisi)
-    market_ctx = ""
-    if pd.notna(inf) and pd.notna(rate):
-        real_rate = rate - inf
-        if real_rate < -5:
-            market_ctx = f"Enflasyonun ({inf}%) politika faizinin ({rate}%) oldukça üzerinde seyrettiği negatif reel faiz ortamında,"
-        elif real_rate > 5:
-            market_ctx = f"Politika faizinin ({rate}%) enflasyonun ({inf}%) üzerinde kalarak pozitif reel faiz sunduğu bir ortamda,"
-        else:
-            market_ctx = f"Enflasyon ({inf}%) ve faiz oranlarının ({rate}%) birbirine yakın seyrettiği bir konjonktürde,"
-    elif pd.notna(inf):
-        market_ctx = f"Yıllık enflasyonun {inf}% seviyesinde olduğu bu dönemde,"
-    
-    # 3. İletişim Kalitesi (Flesch & Kelime)
-    comm_style = ""
-    if flesch < 30:
-        comm_style = "Metin oldukça karmaşık, teknik ve akademik bir dille kaleme alınmış."
-    elif flesch > 60:
-        comm_style = "Metin nispeten anlaşılır ve sade bir dille yazılmış."
-    else:
-        comm_style = "Metin standart bir finansal rapor karmaşıklığında."
-        
-    if words > 1000:
-        comm_style += " Ayrıca metnin uzunluğu, bankanın detaylı bir sözlü yönlendirme yapma ihtiyacı hissettiğini gösteriyor."
-    elif words < 300:
-        comm_style += " Metnin kısalığı, bankanın mesajını net ve öz tutmayı tercih ettiğine işaret ediyor."
-
-    # 4. Sentez (Çelişki Analizi)
-    synthesis = ""
-    if tone == "Güvercin" and pd.notna(inf) and inf > 50:
-        synthesis = "⚠️ **Dikkat Çekici:** Yüksek enflasyon ortamına rağmen metindeki güvercin ton, bankanın önceliği büyüme veya istihdama verdiğine işaret ediyor olabilir."
-    elif tone == "Şahin" and pd.notna(inf) and inf > 50:
-        synthesis = "✅ **Tutarlılık:** Banka, yüksek enflasyonla mücadele kararlılığını metindeki şahin tonlamayla teyit ediyor."
-    
-    # --- SONUÇ METNİ ---
-    summary = f"""
-    **{date_str} Dönemi Analizi:**
-    
-    {market_ctx} Merkez Bankası bu toplantıda **{tone_desc}** kullanmıştır (Net Skor: {score:.1f}).
-    
-    {comm_style}
-    
-    {synthesis}
-    """
-    return summary

@@ -87,29 +87,20 @@ with tab1:
         merged = pd.merge(df_logs, df_market, on="Donem", how="left")
         merged = merged.sort_values("period_date")
         
-        # --- DÜZELTME BAŞLANGICI: VERİ TİPİ DÖNÜŞÜMÜ ---
-        # Hata burada oluşuyordu. Verileri sayıya çeviriyoruz.
-        if 'Yıllık TÜFE' in merged.columns:
-            merged['Yıllık TÜFE'] = pd.to_numeric(merged['Yıllık TÜFE'], errors='coerce')
-        if 'PPK Faizi' in merged.columns:
-            merged['PPK Faizi'] = pd.to_numeric(merged['PPK Faizi'], errors='coerce')
+        # Veri Tipi Dönüşümü ve Max Değer Hesabı
+        if 'Yıllık TÜFE' in merged.columns: merged['Yıllık TÜFE'] = pd.to_numeric(merged['Yıllık TÜFE'], errors='coerce')
+        if 'PPK Faizi' in merged.columns: merged['PPK Faizi'] = pd.to_numeric(merged['PPK Faizi'], errors='coerce')
         
-        # Maksimum değeri güvenli şekilde bul
-        market_vals = [80] # Varsayılan minimum sınır
-        if 'Yıllık TÜFE' in merged.columns:
-            market_vals.append(merged['Yıllık TÜFE'].max())
-        if 'PPK Faizi' in merged.columns:
-            market_vals.append(merged['PPK Faizi'].max())
-        
-        # NaN değerleri temizleyip en yükseği al
+        market_vals = [80]
+        if 'Yıllık TÜFE' in merged.columns: market_vals.append(merged['Yıllık TÜFE'].max())
+        if 'PPK Faizi' in merged.columns: market_vals.append(merged['PPK Faizi'].max())
         market_vals = [v for v in market_vals if pd.notna(v)]
         market_max = max(market_vals) + 10
-        # --- DÜZELTME BİTİŞİ ---
 
         # --- ANA GRAFİK ---
         fig = make_subplots(specs=[[{"secondary_y": True}]])
         
-        # 1. Kelime Sayısı
+        # 1. Kelime Sayısı (Arka Plan Bar)
         fig.add_trace(go.Bar(
             x=merged['period_date'], y=merged['word_count'], name="Metin Uzunluğu",
             marker=dict(color='gray'), opacity=0.15, yaxis="y3", hoverinfo="x+y+name"
@@ -127,57 +118,43 @@ with tab1:
         if 'PPK Faizi' in merged.columns:
             fig.add_trace(go.Scatter(x=merged['period_date'], y=merged['PPK Faizi'], name="Faiz (%)", line=dict(color='orange', dash='dot')), secondary_y=True)
 
-        # Şekiller
+        # 4. Okunabilirlik Skoru
+        fig.add_trace(go.Scatter(
+            x=merged['period_date'], 
+            y=merged['flesch_score'], 
+            name="Okunabilirlik (Flesch)",
+            mode='markers',
+            marker=dict(color='teal', size=9, opacity=0.8, line=dict(width=1, color='darkslategrey')),
+            hoverinfo="x+y+name"
+        ), secondary_y=True)
+
+        # Şekiller ve Etiketler
         layout_shapes = [
             dict(type="rect", xref="paper", yref="y", x0=0, x1=1, y0=0, y1=150, fillcolor="rgba(255, 0, 0, 0.08)", line_width=0, layer="below"),
             dict(type="rect", xref="paper", yref="y", x0=0, x1=1, y0=-150, y1=0, fillcolor="rgba(0, 0, 255, 0.08)", line_width=0, layer="below"),
             dict(type="line", xref="paper", yref="y", x0=0, x1=1, y0=0, y1=0, line=dict(color="black", width=3), layer="below"),
         ]
+        
         layout_annotations = [
-            dict(x=0.01, y=0.95, xref="paper", yref="y", text="🦅 ŞAHİN BÖLGESİ", showarrow=False, font=dict(size=14, color="darkred", weight="bold")),
-            dict(x=0.01, y=-0.95, xref="paper", yref="y", text="🕊️ GÜVERCİN BÖLGESİ", showarrow=False, font=dict(size=14, color="darkblue", weight="bold"))
+            dict(x=0.02, y=130, xref="paper", yref="y", text="🦅 ŞAHİN BÖLGESİ", showarrow=False, font=dict(size=14, color="darkred", weight="bold"), xanchor="left"),
+            dict(x=0.02, y=-130, xref="paper", yref="y", text="🕊️ GÜVERCİN BÖLGESİ", showarrow=False, font=dict(size=14, color="darkblue", weight="bold"), xanchor="left")
         ]
+        
         governors = [("2020-11-01", "Naci Ağbal"), ("2021-04-01", "Şahap Kavcıoğlu"), ("2023-06-01", "Hafize Gaye Erkan"), ("2024-02-01", "Fatih Karahan")]
         for start_date, name in governors:
             layout_shapes.append(dict(type="line", xref="x", yref="paper", x0=start_date, x1=start_date, y0=0, y1=1, line=dict(color="gray", width=1, dash="longdash"), layer="below"))
-            layout_annotations.append(dict(x=start_date, y=1.05, xref="x", yref="paper", text=f" <b>{name}</b>", showarrow=False, xanchor="left", font=dict(size=11, color="#555")))
+            layout_annotations.append(dict(x=start_date, y=1.02, xref="x", yref="paper", text=f" <b>{name}</b>", showarrow=False, xanchor="left", font=dict(size=10, color="#555")))
 
         fig.update_layout(
-            title="Merkez Bankası Tonu, Kelime Hacmi ve Piyasa", 
-            hovermode="x unified", height=500,
+            title="Merkez Bankası Analiz Paneli (Ton, Piyasa ve Okunabilirlik)", 
+            hovermode="x unified", height=600,
             shapes=layout_shapes, annotations=layout_annotations,
             showlegend=False,
-            yaxis=dict(title="Net Skor (-100 / +100)", range=[-110, 110], zeroline=False),
-            yaxis2=dict(
-                title="Faiz & Enflasyon (%)", 
-                overlaying="y", 
-                side="right", 
-                range=[-market_max, market_max], 
-                showgrid=False
-            ),
-            yaxis3=dict(title="Kelime", overlaying="y", side="right", showgrid=False, visible=False, range=[0, merged['word_count'].max() * 1.5])
+            yaxis=dict(title="Net Skor (-100 / +100)", range=[-150, 150], zeroline=False),
+            yaxis2=dict(title="Faiz, Enflasyon & Okunabilirlik", overlaying="y", side="right", range=[-market_max, market_max], showgrid=False),
+            yaxis3=dict(title="Kelime", overlaying="y", side="right", showgrid=False, visible=False, range=[0, merged['word_count'].max() * 2])
         )
         st.plotly_chart(fig, use_container_width=True)
-
-        # --- OKUNABİLİRLİK GRAFİĞİ ---
-        st.markdown("##### 📚 Metin Okunabilirlik Analizi (Flesch Score)")
-        fig_flesch = go.Figure()
-        fig_flesch.add_trace(go.Scatter(
-            x=merged['period_date'], y=merged['flesch_score'], 
-            mode='lines+markers', name='Okunabilirlik',
-            line=dict(color='teal', width=2), fill='tozeroy', fillcolor='rgba(0, 128, 128, 0.1)'
-        ))
-        
-        flesch_shapes = []
-        for start_date, name in governors:
-            flesch_shapes.append(dict(type="line", xref="x", yref="paper", x0=start_date, x1=start_date, y0=0, y1=1, line=dict(color="gray", width=1, dash="longdash")))
-
-        fig_flesch.update_layout(
-            height=250, hovermode="x unified", shapes=flesch_shapes,
-            margin=dict(l=20, r=20, t=20, b=20),
-            yaxis=dict(title="Flesch Skoru (0-100)", range=[0, 100])
-        )
-        st.plotly_chart(fig_flesch, use_container_width=True)
 
         if st.button("🔄 Yenile"): st.cache_data.clear(); st.rerun()
     else: st.info("Kayıt yok.")
@@ -187,6 +164,11 @@ with tab1:
 # ==============================================================================
 with tab2:
     st.subheader("Veri İşlemleri")
+    
+    # --- YENİ EKLENEN BİLGİLENDİRME NOTU ---
+    st.info("ℹ️ **BİLGİ:** Aşağıdaki geçmiş kayıtlar listesinden istediğiniz dönemi seçerek, hangi cümlelerin hesaplamaya alındığını görebilirsiniz.")
+    # ---------------------------------------
+
     df_all = utils.fetch_all_data()
     if not df_all.empty: 
         df_all['period_date'] = pd.to_datetime(df_all['period_date'])

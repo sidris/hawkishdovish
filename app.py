@@ -4,7 +4,7 @@ import datetime
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import utils 
-import uuid # Tabloyu resetlemek için benzersiz ID üretecek
+import uuid
 
 st.set_page_config(page_title="Piyasa Analiz", layout="wide")
 
@@ -40,7 +40,6 @@ if 'form_data' not in st.session_state:
         'text': ""
     }
 
-# Tabloyu resetlemek için Key (YENİ EKLENDİ)
 if 'table_key' not in st.session_state:
     st.session_state['table_key'] = str(uuid.uuid4())
 
@@ -51,11 +50,9 @@ if 'update_state' not in st.session_state:
     st.session_state['update_state'] = {'active': False, 'pending_text': None}
 
 def reset_form():
-    """Formu temizler VE tablodaki seçimi kaldırır"""
     st.session_state['form_data'] = {'id': None, 'date': datetime.date.today(), 'source': "TCMB", 'text': ""}
     st.session_state['collision_state'] = {'active': False, 'target_id': None, 'pending_text': None, 'target_date': None}
     st.session_state['update_state'] = {'active': False, 'pending_text': None}
-    # Tablo key'ini değiştirerek seçimi zorla kaldırıyoruz:
     st.session_state['table_key'] = str(uuid.uuid4())
 
 # --- ARAYÜZ ---
@@ -88,6 +85,7 @@ with tab1:
         
         fig = make_subplots(specs=[[{"secondary_y": True}]])
         
+        # 1. Veri Çizgileri
         fig.add_trace(go.Scatter(
             x=merged['period_date'], y=merged['score_abg'], name="Şahin/Güvercin Skoru", 
             line=dict(color='black', width=3), marker=dict(size=8, color='black')
@@ -98,18 +96,64 @@ with tab1:
         if 'PPK Faizi' in merged.columns:
             fig.add_trace(go.Scatter(x=merged['period_date'], y=merged['PPK Faizi'], name="Faiz (%)", line=dict(color='orange', dash='dot')), secondary_y=True)
 
+        # ----------------------------------------------------------------------
+        # ŞEKİLLER (SHAPES) VE ETİKETLER (ANNOTATIONS) HAZIRLIĞI
+        # ----------------------------------------------------------------------
+        
+        # 1. Temel Şekiller (Bölgeler ve Sıfır Çizgisi)
+        layout_shapes = [
+            dict(type="rect", xref="paper", yref="y", x0=0, x1=1, y0=0, y1=1.5, fillcolor="rgba(255, 0, 0, 0.08)", line_width=0, layer="below"),
+            dict(type="rect", xref="paper", yref="y", x0=0, x1=1, y0=-1.5, y1=0, fillcolor="rgba(0, 0, 255, 0.08)", line_width=0, layer="below"),
+            dict(type="line", xref="paper", yref="y", x0=0, x1=1, y0=0, y1=0, line=dict(color="black", width=3), layer="below"),
+        ]
+        
+        # 2. Temel Etiketler (Şahin/Güvercin Yazıları)
+        layout_annotations = [
+            dict(x=0.01, y=0.95, xref="paper", yref="y", text="🦅 ŞAHİN BÖLGESİ", showarrow=False, font=dict(size=14, color="darkred", weight="bold")),
+            dict(x=0.01, y=-0.95, xref="paper", yref="y", text="🕊️ GÜVERCİN BÖLGESİ", showarrow=False, font=dict(size=14, color="darkblue", weight="bold"))
+        ]
+
+        # 3. BAŞKAN DÖNEMLERİ (YENİ EKLENEN KISIM)
+        # Format: (Başlangıç Tarihi, İsim)
+        governors = [
+            ("2020-11-01", "Naci Ağbal"),
+            ("2021-04-01", "Şahap Kavcıoğlu"),
+            ("2023-06-01", "Hafize Gaye Erkan"),
+            ("2024-02-01", "Fatih Karahan")
+        ]
+
+        for start_date, name in governors:
+            # Dikey Ayırıcı Çizgi
+            layout_shapes.append(
+                dict(
+                    type="line", xref="x", yref="paper",
+                    x0=start_date, x1=start_date, y0=0, y1=1,
+                    line=dict(color="gray", width=1, dash="longdash"),
+                    layer="below"
+                )
+            )
+            # İsim Etiketi (Çizginin hemen sağına, en tepeye)
+            layout_annotations.append(
+                dict(
+                    x=start_date, y=1.05, xref="x", yref="paper", # y=1.05 grafiğin hemen üstü
+                    text=f" <b>{name}</b>", # Kalın font
+                    showarrow=False,
+                    xanchor="left", # Yazı çizginin sağından başlasın
+                    font=dict(size=11, color="#555")
+                )
+            )
+
+        # ----------------------------------------------------------------------
+        # GRAFİK AYARLARI GÜNCELLEME
+        # ----------------------------------------------------------------------
         fig.update_layout(
-            title="Merkez Bankası Tonu ve Piyasa Verileri", hovermode="x unified", height=600,
-            shapes=[
-                dict(type="rect", xref="paper", yref="y", x0=0, x1=1, y0=0, y1=1.5, fillcolor="rgba(255, 0, 0, 0.08)", line_width=0, layer="below"),
-                dict(type="rect", xref="paper", yref="y", x0=0, x1=1, y0=-1.5, y1=0, fillcolor="rgba(0, 0, 255, 0.08)", line_width=0, layer="below"),
-                dict(type="line", xref="paper", yref="y", x0=0, x1=1, y0=0, y1=0, line=dict(color="black", width=3), layer="below"),
-            ],
-            annotations=[
-                dict(x=0.01, y=0.95, xref="paper", yref="y", text="🦅 ŞAHİN BÖLGESİ", showarrow=False, font=dict(size=14, color="darkred", weight="bold")),
-                dict(x=0.01, y=-0.95, xref="paper", yref="y", text="🕊️ GÜVERCİN BÖLGESİ", showarrow=False, font=dict(size=14, color="darkblue", weight="bold"))
-            ]
+            title="Merkez Bankası Tonu ve Piyasa Verileri", 
+            hovermode="x unified", 
+            height=600,
+            shapes=layout_shapes,          # Hazırladığımız şekil listesi
+            annotations=layout_annotations # Hazırladığımız etiket listesi
         )
+        
         fig.update_yaxes(title_text="Skor", range=[-1.1, 1.1], secondary_y=False, zeroline=False)
         fig.update_yaxes(title_text="Faiz & Enflasyon (%)", secondary_y=True)
 
@@ -123,7 +167,6 @@ with tab1:
 with tab2:
     st.subheader("Veri İşlemleri")
     
-    # DB Verileri
     df_all = utils.fetch_all_data()
     if not df_all.empty: 
         df_all['period_date'] = pd.to_datetime(df_all['period_date'])
@@ -132,7 +175,6 @@ with tab2:
     current_id = st.session_state['form_data']['id']
     
     with st.container(border=True):
-        # YENİ VERİ GİRİŞİ BUTONU (SEÇİMİ DE KALDIRIR)
         if st.button("➕ YENİ VERİ GİRİŞİ (Ekranı Temizle)", type="secondary", use_container_width=True):
             reset_form()
             st.rerun()
@@ -150,9 +192,8 @@ with tab2:
 
         with c2:
             val_text = st.session_state['form_data']['text']
-            txt = st.text_area("Metin", value=val_text, height=200, placeholder="Analiz edilecek metni buraya yapıştırın...")
+            txt = st.text_area("Metin", value=val_text, height=200, placeholder="Metni buraya yapıştırın...")
         
-        # --- MANTIK VE BUTONLAR ---
         st.markdown("---")
         
         # 1. ÇAKIŞMA DURUMU
@@ -207,7 +248,6 @@ with tab2:
                 
                 if st.button(btn_label, type="primary"):
                     if txt:
-                        # DB Kontrolü
                         collision_record = None
                         if not df_all.empty:
                             mask = df_all['date_only'] == selected_date
@@ -303,21 +343,16 @@ with tab2:
         df_show = df_all.copy()
         df_show['Dönem'] = df_show['period_date'].dt.strftime('%Y-%m')
         
-        # Dinamik Key kullanarak tabloyu resetliyoruz
         event = st.dataframe(
             df_show[['id', 'Dönem', 'period_date', 'source', 'score_abg']].sort_values('period_date', ascending=False),
-            on_select="rerun", 
-            selection_mode="single-row", 
-            use_container_width=True, 
-            hide_index=True,
-            key=st.session_state['table_key'] # BU KISIM ÖNEMLİ
+            on_select="rerun", selection_mode="single-row", use_container_width=True, hide_index=True,
+            key=st.session_state['table_key']
         )
         
         if len(event.selection.rows) > 0:
             sel_idx = event.selection.rows[0]
             sel_id = df_show.iloc[sel_idx]['id']
             
-            # Herhangi bir onay modu açıksa kapat
             if st.session_state['collision_state']['active'] or st.session_state['update_state']['active']:
                 st.session_state['collision_state']['active'] = False
                 st.session_state['update_state']['active'] = False

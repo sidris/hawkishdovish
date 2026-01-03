@@ -3,7 +3,6 @@ import pandas as pd
 import datetime
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-# utils importu
 import utils 
 
 st.set_page_config(page_title="Piyasa Analiz", layout="wide")
@@ -31,7 +30,8 @@ if not st.session_state['logged_in']:
                 st.error("Hatalı Şifre!")
     st.stop()
 
-# --- 2. SESSION STATE ---
+# --- 2. SESSION STATE YÖNETİMİ ---
+# Form verileri
 if 'form_data' not in st.session_state:
     st.session_state['form_data'] = {
         'id': None,
@@ -39,6 +39,19 @@ if 'form_data' not in st.session_state:
         'source': "TCMB",
         'text': ""
     }
+
+# Çakışma Yönetimi (Collision State)
+if 'collision_state' not in st.session_state:
+    st.session_state['collision_state'] = {
+        'active': False,       # Çakışma modu aktif mi?
+        'target_id': None,     # Üzerine yazılacak ID
+        'pending_data': None,  # Kaydedilmeyi bekleyen veriler (analiz sonuçları)
+        'target_date': None    # Çakışan tarih
+    }
+
+def reset_form():
+    st.session_state['form_data'] = {'id': None, 'date': datetime.date.today(), 'source': "TCMB", 'text': ""}
+    st.session_state['collision_state'] = {'active': False, 'target_id': None, 'pending_data': None, 'target_date': None}
 
 # --- ARAYÜZ ---
 c1, c2 = st.columns([6, 1])
@@ -70,7 +83,6 @@ with tab1:
         
         fig = make_subplots(specs=[[{"secondary_y": True}]])
         
-        # ABG Skoru
         fig.add_trace(go.Scatter(
             x=merged['period_date'], y=merged['score_abg'], name="Şahin/Güvercin Skoru", 
             line=dict(color='black', width=3), marker=dict(size=8, color='black')
@@ -101,116 +113,140 @@ with tab1:
     else: st.info("Kayıt yok.")
 
 # ==============================================================================
-# TAB 2: VERİ GİRİŞİ (GÜVENLİ VE KONTROLLÜ)
+# TAB 2: VERİ GİRİŞİ (ÇAKIŞMA ONAY MEKANİZMASI)
 # ==============================================================================
 with tab2:
     st.subheader("Veri İşlemleri")
     
-    # Verileri Çek
+    # DB Verilerini Hazırla
     df_all = utils.fetch_all_data()
     if not df_all.empty: 
         df_all['period_date'] = pd.to_datetime(df_all['period_date'])
         df_all['date_only'] = df_all['period_date'].dt.date
     
-    # Şu anki form durumunu al
     current_id = st.session_state['form_data']['id']
     
     with st.container(border=True):
         c1, c2 = st.columns([1, 2])
         with c1:
             val_date = st.session_state['form_data']['date']
+            # Tarih değişince veritabanına bakmıyoruz, sadece değişkeni güncelliyoruz
             selected_date = st.date_input("Tarih", value=val_date)
             
             val_source = st.session_state['form_data']['source']
             source = st.text_input("Kaynak", value=val_source)
             st.caption(f"Dönem: **{selected_date.strftime('%Y-%m')}**")
-            
-            # --- ÇAKIŞMA KONTROLÜ (SADECE OKUMA, YAZMA YOK) ---
-            collision_record = None
-            if not df_all.empty:
-                mask = df_all['date_only'] == selected_date
-                if mask.any(): collision_record = df_all[mask].iloc[0]
-            
-            # Çakışma var mı? (Şu an düzenlediğimiz kayıt kendisi değilse)
-            is_collision = (collision_record is not None) and (current_id != collision_record['id'])
 
         with c2:
             val_text = st.session_state['form_data']['text']
             txt = st.text_area("Metin", value=val_text, height=200, placeholder="Metni buraya yapıştırın...")
         
-        # --- BUTON MANTIĞI ---
-        col_b1, col_b2, col_b3 = st.columns([2, 1, 1])
+        # --- BUTON VE MANTIK ALANI ---
+        st.markdown("---")
         
-        with col_b1:
-            if is_collision:
-                # 1. ÇAKIŞMA VARSA: NORMAL BUTONU GİZLE, UYARI VE ŞİFRE GÖSTER
-                st.error(f"⚠️ Bu tarihte ({selected_date}) zaten bir kayıt var!")
-                st.markdown("Üzerine yazmak için **Admin Şifresi** giriniz:")
-                
-                admin_pass = st.text_input("Admin Şifresi", type="password", key="overwrite_pass")
-                if st.button("⚠️ Onayla ve Üzerine Yaz", type="primary"):
-                    if admin_pass == ADMIN_PWD:
-                        if txt:
-                            s_abg, h_cnt, d_cnt, hawks, doves, h_ctx, d_ctx = utils.run_full_analysis(txt)
-                            target_id = int(collision_record['id'])
-                            
-                            # ÜZERİNE YAZMA İŞLEMİ
-                            utils.update_entry(target_id, selected_date, txt, source, s_abg, s_abg)
-                            
-                            st.success("Veri başarıyla güncellendi (Overwrite).")
-                            # Temizle
-                            st.session_state['form_data'] = {'id': None, 'date': datetime.date.today(), 'source': "TCMB", 'text': ""}
-                            st.rerun()
-                        else: st.error("Metin giriniz.")
-                    else:
-                        st.error("Admin şifresi hatalı.")
+        # DURUM 1: ÇAKIŞMA MODU AKTİFSE (Kullanıcı Kaydet'e bastı ve sistem çakışma buldu)
+        if st.session_state['collision_state']['active']:
+            col_alert, col_act = st.columns([2, 2])
             
-            else:
-                # 2. ÇAKIŞMA YOKSA: NORMAL KAYDET/GÜNCELLE BUTONU
-                btn_label = "💾 Güncelle" if current_id else "💾 Kaydet / Analiz Et"
-                if st.button(btn_label, type="primary"):
-                    if txt:
-                        s_abg, h_cnt, d_cnt, hawks, doves, h_ctx, d_ctx = utils.run_full_analysis(txt)
-                        
-                        if current_id:
-                            # Güncelleme (Listeden seçilen)
-                            utils.update_entry(current_id, selected_date, txt, source, s_abg, s_abg)
-                            st.success("Kayıt güncellendi!")
-                        else:
-                            # Yeni Kayıt
-                            utils.insert_entry(selected_date, txt, source, s_abg, s_abg)
-                            st.success("Yeni kayıt eklendi!")
-                        
-                        # Temizle
-                        st.session_state['form_data'] = {'id': None, 'date': datetime.date.today(), 'source': "TCMB", 'text': ""}
-                        st.rerun()
-                    else:
-                        st.error("Metin giriniz.")
-
-        with col_b2:
-            if st.button("Temizle"):
-                st.session_state['form_data'] = {'id': None, 'date': datetime.date.today(), 'source': "TCMB", 'text': ""}
-                st.rerun()
-
-        # 3. SİLME (HER ZAMAN ADMİN ŞİFRESİ İSTER)
-        with col_b3:
-            if current_id:
-                with st.popover("🗑️ Sil"):
-                    st.write("Silmek için Admin şifresi girin:")
-                    del_pass = st.text_input("Şifre", type="password", key="del_pass")
-                    if st.button("🔥 Onayla ve Sil"):
-                        if del_pass == ADMIN_PWD:
-                            utils.delete_entry(current_id)
-                            st.success("Silindi!")
-                            st.session_state['form_data'] = {'id': None, 'date': datetime.date.today(), 'source': "TCMB", 'text': ""}
+            with col_alert:
+                target_date = st.session_state['collision_state']['target_date']
+                st.error(f"⚠️ **ÇAKIŞMA TESPİT EDİLDİ!**")
+                st.write(f"**{target_date}** tarihinde zaten bir kayıt mevcut.")
+                st.info("Devam etmek için **Admin Şifresi** ile onaylamanız gerekmektedir.")
+            
+            with col_act:
+                admin_pass = st.text_input("Admin Şifresi", type="password", key="overwrite_pass")
+                
+                c_b1, c_b2 = st.columns(2)
+                with c_b1:
+                    if st.button("🚨 Onayla ve Üzerine Yaz", type="primary", use_container_width=True):
+                        if admin_pass == ADMIN_PWD:
+                            # Bekleyen verileri al
+                            p_data = st.session_state['collision_state']['pending_data']
+                            t_id = st.session_state['collision_state']['target_id']
+                            
+                            # Güncelleme Yap
+                            utils.update_entry(t_id, selected_date, txt, source, 
+                                               p_data['s_abg'], p_data['s_abg']) # FinBERT yok, ABG kullanılıyor
+                            
+                            st.success("Veri başarıyla güncellendi!")
+                            reset_form()
                             st.rerun()
                         else:
                             st.error("Şifre Hatalı!")
+                
+                with c_b2:
+                    if st.button("❌ İptal Et", use_container_width=True):
+                        # Çakışma modunu kapat
+                        st.session_state['collision_state']['active'] = False
+                        st.rerun()
 
-        # CANLI ANALİZ GÖSTERİMİ
+        # DURUM 2: NORMAL MOD (Çakışma yok veya henüz kontrol edilmedi)
+        else:
+            col_b1, col_b2, col_b3 = st.columns([2, 1, 1])
+            with col_b1:
+                btn_label = "💾 Güncelle" if current_id else "💾 Kaydet / Analiz Et"
+                
+                if st.button(btn_label, type="primary"):
+                    if txt:
+                        # 1. ÖNCE ANALİZ YAP (Veri hazırlığı)
+                        s_abg, h_cnt, d_cnt, hawks, doves, h_ctx, d_ctx = utils.run_full_analysis(txt)
+                        
+                        # 2. VERİTABANI KONTROLÜ (ŞİMDİ YAPIYORUZ)
+                        collision_record = None
+                        if not df_all.empty:
+                            mask = df_all['date_only'] == selected_date
+                            if mask.any(): collision_record = df_all[mask].iloc[0]
+                        
+                        # A) Eğer biz zaten bir kaydı düzenliyorsak (Listeden seçtik) -> Direkt Güncelle
+                        if current_id:
+                            utils.update_entry(current_id, selected_date, txt, source, s_abg, s_abg)
+                            st.success("Kayıt güncellendi!")
+                            reset_form()
+                            st.rerun()
+                        
+                        # B) Yeni kayıt ama tarih dolu -> ÇAKIŞMA MODUNU AÇ
+                        elif collision_record is not None:
+                            # State'e bilgileri kaydet ve arayüzü değiştir
+                            st.session_state['collision_state'] = {
+                                'active': True,
+                                'target_id': int(collision_record['id']),
+                                'target_date': selected_date,
+                                'pending_data': {'s_abg': s_abg} # Analizi sakla
+                            }
+                            st.rerun() # Sayfayı yenile ki aşağıdaki uyarı ekranı gelsin
+                        
+                        # C) Sorun yok -> Direkt Ekle
+                        else:
+                            utils.insert_entry(selected_date, txt, source, s_abg, s_abg)
+                            st.success("Yeni kayıt eklendi!")
+                            reset_form()
+                            st.rerun()
+                    else:
+                        st.error("Metin alanı boş olamaz.")
+
+            with col_b2:
+                if st.button("Temizle"):
+                    reset_form()
+                    st.rerun()
+
+            with col_b3:
+                if current_id:
+                    with st.popover("🗑️ Sil"):
+                        st.write("Admin şifresi girin:")
+                        del_pass = st.text_input("Şifre", type="password", key="del_pass")
+                        if st.button("🔥 Sil"):
+                            if del_pass == ADMIN_PWD:
+                                utils.delete_entry(current_id)
+                                st.success("Silindi!")
+                                reset_form()
+                                st.rerun()
+                            else:
+                                st.error("Şifre Hatalı!")
+
+        # CANLI ANALİZ GÖSTERİMİ (Her durumda göster)
         if txt:
             s_live, h_cnt, d_cnt, h_list, d_list, h_ctx, d_ctx = utils.run_full_analysis(txt)
-            
             total_sigs = h_cnt + d_cnt
             if total_sigs > 0:
                 h_pct = (h_cnt / total_sigs) * 100
@@ -264,6 +300,10 @@ with tab2:
         if len(event.selection.rows) > 0:
             sel_idx = event.selection.rows[0]
             sel_id = df_show.iloc[sel_idx]['id']
+            # Eğer collision modu açıksa seçim yapınca kapat (kullanıcı vazgeçmiş olabilir)
+            if st.session_state['collision_state']['active']:
+                st.session_state['collision_state']['active'] = False
+            
             if st.session_state['form_data']['id'] != sel_id:
                 orig = df_all[df_all['id'] == sel_id].iloc[0]
                 st.session_state['form_data'] = {

@@ -87,7 +87,7 @@ with tab1:
         merged = pd.merge(df_logs, df_market, on="Donem", how="left")
         merged = merged.sort_values("period_date")
         
-        # Veri Tipi Dönüşümü ve Max Değer Hesabı
+        # Veri Tipi Dönüşümü ve Max Değer Hesabı (HATA ÖNLEYİCİ)
         if 'Yıllık TÜFE' in merged.columns: merged['Yıllık TÜFE'] = pd.to_numeric(merged['Yıllık TÜFE'], errors='coerce')
         if 'PPK Faizi' in merged.columns: merged['PPK Faizi'] = pd.to_numeric(merged['PPK Faizi'], errors='coerce')
         
@@ -100,25 +100,25 @@ with tab1:
         # --- ANA GRAFİK ---
         fig = make_subplots(specs=[[{"secondary_y": True}]])
         
-        # 1. Kelime Sayısı (Arka Plan Bar)
+        # 1. Kelime Sayısı (Arka Plan Bar - Gizli Eksen Y3)
         fig.add_trace(go.Bar(
             x=merged['period_date'], y=merged['word_count'], name="Metin Uzunluğu",
             marker=dict(color='gray'), opacity=0.15, yaxis="y3", hoverinfo="x+y+name"
         ))
 
-        # 2. Skor Çizgisi
+        # 2. Skor Çizgisi (Sol Eksen Y1)
         fig.add_trace(go.Scatter(
             x=merged['period_date'], y=merged['score_abg_scaled'], name="Şahin/Güvercin Skoru", 
             line=dict(color='black', width=3), marker=dict(size=8, color='black')
         ), secondary_y=False)
         
-        # 3. Piyasa Verileri
+        # 3. Piyasa Verileri (Sağ Eksen Y2)
         if 'Yıllık TÜFE' in merged.columns:
             fig.add_trace(go.Scatter(x=merged['period_date'], y=merged['Yıllık TÜFE'], name="Yıllık TÜFE (%)", line=dict(color='red', dash='dot')), secondary_y=True)
         if 'PPK Faizi' in merged.columns:
             fig.add_trace(go.Scatter(x=merged['period_date'], y=merged['PPK Faizi'], name="Faiz (%)", line=dict(color='orange', dash='dot')), secondary_y=True)
 
-        # 4. Okunabilirlik Skoru
+        # 4. Okunabilirlik Skoru (Sağ Eksen Y2 - Yuvarlak Noktalar)
         fig.add_trace(go.Scatter(
             x=merged['period_date'], 
             y=merged['flesch_score'], 
@@ -150,8 +150,17 @@ with tab1:
             hovermode="x unified", height=600,
             shapes=layout_shapes, annotations=layout_annotations,
             showlegend=False,
+            # Sol Eksen: Skor (-150 / +150 Aralığı)
             yaxis=dict(title="Net Skor (-100 / +100)", range=[-150, 150], zeroline=False),
-            yaxis2=dict(title="Faiz, Enflasyon & Okunabilirlik", overlaying="y", side="right", range=[-market_max, market_max], showgrid=False),
+            # Sağ Eksen: Faiz, Enflasyon ve Okunabilirlik
+            yaxis2=dict(
+                title="Faiz, Enflasyon & Okunabilirlik", 
+                overlaying="y", 
+                side="right", 
+                range=[-market_max, market_max], 
+                showgrid=False
+            ),
+            # Gizli Eksen: Kelime Sayısı
             yaxis3=dict(title="Kelime", overlaying="y", side="right", showgrid=False, visible=False, range=[0, merged['word_count'].max() * 2])
         )
         st.plotly_chart(fig, use_container_width=True)
@@ -165,9 +174,7 @@ with tab1:
 with tab2:
     st.subheader("Veri İşlemleri")
     
-    # --- YENİ EKLENEN BİLGİLENDİRME NOTU ---
     st.info("ℹ️ **BİLGİ:** Aşağıdaki geçmiş kayıtlar listesinden istediğiniz dönemi seçerek, hangi cümlelerin hesaplamaya alındığını görebilirsiniz.")
-    # ---------------------------------------
 
     df_all = utils.fetch_all_data()
     if not df_all.empty: 
@@ -305,20 +312,22 @@ with tab2:
                                 for s in d_ctx[t]: st.caption(f"📝 ...{s}...")
                     else: st.write("-")
 
-    st.markdown("### 📋 Geçmiş Kayıtlar")
-    if not df_all.empty:
-        df_show = df_all.copy()
-        df_show['Dönem'] = df_show['period_date'].dt.strftime('%Y-%m')
-        df_show['Görsel Skor'] = df_show['score_abg'].apply(lambda x: x*100 if abs(x)<=1 else x)
-        event = st.dataframe(df_show[['id', 'Dönem', 'period_date', 'source', 'Görsel Skor']].sort_values('period_date', ascending=False), on_select="rerun", selection_mode="single-row", use_container_width=True, hide_index=True, key=st.session_state['table_key'])
-        if len(event.selection.rows) > 0:
-            sel_id = df_show.iloc[event.selection.rows[0]]['id']
-            if st.session_state['collision_state']['active'] or st.session_state['update_state']['active']:
-                st.session_state['collision_state']['active'] = False; st.session_state['update_state']['active'] = False
-            if st.session_state['form_data']['id'] != sel_id:
-                orig = df_all[df_all['id'] == sel_id].iloc[0]
-                st.session_state['form_data'] = {'id': int(orig['id']), 'date': pd.to_datetime(orig['period_date']).date(), 'source': orig['source'], 'text': orig['text_content']}
-                st.rerun()
+    # --- GEÇMİŞ KAYITLAR (KONTEYNER İÇİNE ALARAK İZOLE ETTİK) ---
+    with st.container():
+        st.markdown("### 📋 Geçmiş Kayıtlar")
+        if not df_all.empty:
+            df_show = df_all.copy()
+            df_show['Dönem'] = df_show['period_date'].dt.strftime('%Y-%m')
+            df_show['Görsel Skor'] = df_show['score_abg'].apply(lambda x: x*100 if abs(x)<=1 else x)
+            event = st.dataframe(df_show[['id', 'Dönem', 'period_date', 'source', 'Görsel Skor']].sort_values('period_date', ascending=False), on_select="rerun", selection_mode="single-row", use_container_width=True, hide_index=True, key=st.session_state['table_key'])
+            if len(event.selection.rows) > 0:
+                sel_id = df_show.iloc[event.selection.rows[0]]['id']
+                if st.session_state['collision_state']['active'] or st.session_state['update_state']['active']:
+                    st.session_state['collision_state']['active'] = False; st.session_state['update_state']['active'] = False
+                if st.session_state['form_data']['id'] != sel_id:
+                    orig = df_all[df_all['id'] == sel_id].iloc[0]
+                    st.session_state['form_data'] = {'id': int(orig['id']), 'date': pd.to_datetime(orig['period_date']).date(), 'source': orig['source'], 'text': orig['text_content']}
+                    st.rerun()
 
 with tab3:
     st.header("Piyasa Verileri")

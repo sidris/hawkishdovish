@@ -3,7 +3,7 @@ import pandas as pd
 import datetime
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-from transformers import pipeline
+# transformers (FinBERT) importu kaldırıldı
 import utils 
 
 st.set_page_config(page_title="Piyasa Analiz", layout="wide")
@@ -17,25 +17,14 @@ if 'form_data' not in st.session_state:
         'text': ""
     }
 
-# --- AI ---
-@st.cache_resource
-def load_models():
-    try: return pipeline("sentiment-analysis", model="ProsusAI/finbert")
-    except: return None
-classifier = load_models()
-
-def analyze_finbert(text):
-    if not classifier: return 0, "neutral"
-    res = classifier(text[:512])[0]
-    score = res['score'] if res['label'] == "positive" else -res['score'] if res['label'] == "negative" else 0
-    return score, res['label']
+# --- AI MODEL YÜKLEME VE ANALİZ FONKSİYONLARI KALDIRILDI ---
 
 # --- ARAYÜZ ---
 st.title("🦅 Şahin/Güvercin Analiz Paneli")
 tab1, tab2, tab3 = st.tabs(["📈 Dashboard", "📝 Veri Girişi & Yönetimi", "📊 Piyasa Verileri"])
 
 # ==============================================================================
-# TAB 1: DASHBOARD
+# TAB 1: DASHBOARD (GÖRSEL GÜNCELLEME)
 # ==============================================================================
 with tab1:
     with st.spinner("Yükleniyor..."):
@@ -53,26 +42,86 @@ with tab1:
         merged = merged.sort_values("period_date")
         
         fig = make_subplots(specs=[[{"secondary_y": True}]])
-        fig.add_trace(go.Scatter(x=merged['period_date'], y=merged['score_finbert'], name="FinBERT (AI)", line=dict(color='blue')), secondary_y=False)
-        fig.add_trace(go.Scatter(x=merged['period_date'], y=merged['score_abg'], name="ABG (N-Gram)", line=dict(color='green', dash='dot')), secondary_y=False)
+        
+        # FinBERT çizgisi kaldırıldı. Sadece ABG var.
+        fig.add_trace(go.Scatter(
+            x=merged['period_date'], 
+            y=merged['score_abg'], 
+            name="Şahin/Güvercin Skoru (ABG)", 
+            line=dict(color='black', width=3), # Çizgiyi belirginleştirdim
+            marker=dict(size=8)
+        ), secondary_y=False)
         
         if 'Yıllık TÜFE' in merged.columns:
-            fig.add_trace(go.Scatter(x=merged['period_date'], y=merged['Yıllık TÜFE'], name="Yıllık TÜFE (%)", line=dict(color='red')), secondary_y=True)
+            fig.add_trace(go.Scatter(x=merged['period_date'], y=merged['Yıllık TÜFE'], name="Yıllık TÜFE (%)", line=dict(color='red', dash='dot')), secondary_y=True)
         if 'PPK Faizi' in merged.columns:
-            fig.add_trace(go.Scatter(x=merged['period_date'], y=merged['PPK Faizi'], name="Faiz (%)", line=dict(color='orange')), secondary_y=True)
+            fig.add_trace(go.Scatter(x=merged['period_date'], y=merged['PPK Faizi'], name="Faiz (%)", line=dict(color='orange', dash='dot')), secondary_y=True)
 
-        fig.update_layout(title="Metin Analizi ve Ekonomi", hovermode="x unified", height=500)
+        # --- GÖRSEL GELİŞTİRMELER (GRADIENT VE ÇİZGİLER) ---
+        fig.update_layout(
+            title="Merkez Bankası Tonu ve Piyasa Verileri",
+            hovermode="x unified", 
+            height=600,
+            # Arka plan bölgeleri (Şekiller)
+            shapes=[
+                # 1. Kırmızı Gradient Bölge (Şahin - Üst)
+                dict(
+                    type="rect", xref="paper", yref="y",
+                    x0=0, x1=1, y0=0, y1=1.2, # 0'dan yukarı
+                    fillcolor="rgba(255, 0, 0, 0.1)", # Hafif kırmızı
+                    fillgradient=dict(
+                        type='vertical',
+                        colorscale=[[0, 'rgba(255,0,0,0)'], [1, 'rgba(255,0,0,0.3)']] # Sıfırda şeffaf, yukarıda kırmızı
+                    ),
+                    line_width=0, layer="below"
+                ),
+                # 2. Mavi Gradient Bölge (Güvercin - Alt)
+                dict(
+                    type="rect", xref="paper", yref="y",
+                    x0=0, x1=1, y0=-1.2, y1=0, # 0'dan aşağı
+                    fillcolor="rgba(0, 0, 255, 0.1)", # Hafif mavi
+                    fillgradient=dict(
+                        type='vertical',
+                        colorscale=[[0, 'rgba(0,0,255,0.3)'], [1, 'rgba(0,0,255,0)']] # Aşağıda mavi, sıfırda şeffaf
+                    ),
+                    line_width=0, layer="below"
+                ),
+                # 3. Kalın Sıfır Çizgisi
+                dict(
+                    type="line", xref="paper", yref="y",
+                    x0=0, x1=1, y0=0, y1=0,
+                    line=dict(color="black", width=4), layer="below"
+                ),
+            ],
+            # Metin Etiketleri (Annotations)
+            annotations=[
+                dict(
+                    x=0.01, y=0.95, xref="paper", yref="y", # Sol üst
+                    text="🦅 ŞAHİN BÖLGESİ", showarrow=False,
+                    font=dict(size=14, color="darkred", weight="bold")
+                ),
+                dict(
+                    x=0.01, y=-0.95, xref="paper", yref="y", # Sol alt
+                    text="🕊️ GÜVERCİN BÖLGESİ", showarrow=False,
+                    font=dict(size=14, color="darkblue", weight="bold")
+                )
+            ]
+        )
+        
+        # Y Ekseni Ayarları (Skorun her zaman -1.2 ile 1.2 arasında görünmesi için)
+        fig.update_yaxes(title_text="Şahin (+) / Güvercin (-) Skoru", range=[-1.2, 1.2], secondary_y=False, zeroline=False) # Kendi zeroline'ımızı çizdik
+        fig.update_yaxes(title_text="Faiz & Enflasyon (%)", secondary_y=True)
+
         st.plotly_chart(fig, use_container_width=True)
         if st.button("🔄 Yenile"): st.cache_data.clear(); st.rerun()
     else: st.info("Kayıt yok.")
 
 # ==============================================================================
-# TAB 2: VERİ GİRİŞİ (HATASI GİDERİLDİ)
+# TAB 2: VERİ GİRİŞİ (FinBERT Kaldırıldı)
 # ==============================================================================
 with tab2:
     st.subheader("Veri İşlemleri")
     
-    # Tüm verileri çek (Kontrol için)
     df_all = utils.fetch_all_data()
     if not df_all.empty: 
         df_all['period_date'] = pd.to_datetime(df_all['period_date'])
@@ -90,14 +139,12 @@ with tab2:
             source = st.text_input("Kaynak", value=val_source)
             st.caption(f"Dönem: **{selected_date.strftime('%Y-%m')}**")
             
-            # --- ÇAKIŞMA KONTROLÜ ---
             collision_record = None
             if not df_all.empty:
                 mask = df_all['date_only'] == selected_date
                 if mask.any():
                     collision_record = df_all[mask].iloc[0]
             
-            # HATA BURADAYDI: "is not None" EKLENDİ
             if collision_record is not None and (current_id != collision_record['id']):
                 st.warning(f"⚠️ **DİKKAT:** {selected_date} tarihinde zaten bir kayıt var!")
                 st.markdown(f"*Kaydet tuşuna basarsanız mevcut verinin **üzerine yazılacaktır**.*")
@@ -108,9 +155,7 @@ with tab2:
         
         col_b1, col_b2, col_b3 = st.columns([2, 1, 1])
         with col_b1:
-            # Buton Metni
             btn_text = "💾 Kaydet / Analiz Et"
-            # HATA BURADAYDI: "is not None" EKLENDİ
             if collision_record is not None and (current_id != collision_record['id']):
                 btn_text = "⚠️ Üzerine Yaz ve Kaydet"
             elif current_id:
@@ -118,23 +163,22 @@ with tab2:
 
             if st.button(btn_text, type="primary"):
                 if txt:
-                    # Analiz (7 Değişkenli)
+                    # Analiz (FinBERT yok)
                     s_abg, h_cnt, d_cnt, hawks, doves, h_ctx, d_ctx = utils.run_full_analysis(txt)
-                    s_fb, l_fb = analyze_finbert(txt)
+                    # FinBERT analizi kaldırıldı
                     
-                    # KAYIT SENARYOLARI
+                    # DB Kayıt (FinBERT parametreleri gönderilmiyor)
                     if current_id:
-                        utils.update_entry(current_id, selected_date, txt, source, s_abg, s_abg, s_fb, l_fb)
+                        utils.update_entry(current_id, selected_date, txt, source, s_abg, s_abg)
                         st.success("Kayıt güncellendi!")
                         
-                    # HATA BURADAYDI: "is not None" EKLENDİ
                     elif collision_record is not None:
                         target_id = int(collision_record['id'])
-                        utils.update_entry(target_id, selected_date, txt, source, s_abg, s_abg, s_fb, l_fb)
+                        utils.update_entry(target_id, selected_date, txt, source, s_abg, s_abg)
                         st.warning(f"{selected_date} tarihli eski kayıt güncellendi.")
                         
                     else:
-                        utils.insert_entry(selected_date, txt, source, s_abg, s_abg, s_fb, l_fb)
+                        utils.insert_entry(selected_date, txt, source, s_abg, s_abg)
                         st.success("Yeni kayıt eklendi!")
                     
                     st.session_state['form_data'] = {'id': None, 'date': datetime.date.today(), 'source': "TCMB", 'text': ""}

@@ -3,13 +3,36 @@ import pandas as pd
 import datetime
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-# FinBERT kaldırıldı
+# transformers importu
 import utils 
 
 st.set_page_config(page_title="Piyasa Analiz", layout="wide")
 
-# --- SESSION STATE ---
-# Form verilerini tutan hafıza
+# --- 0. GÜVENLİK VE AYARLAR ---
+# Şifreleri secrets dosyasından alıyoruz
+APP_PWD = st.secrets.get("APP_PASSWORD", "123")   # Varsayılan: 123
+ADMIN_PWD = st.secrets.get("ADMIN_PASSWORD", "999") # Varsayılan: 999
+
+# --- 1. GİRİŞ EKRANI (LOGIN) ---
+if 'logged_in' not in st.session_state:
+    st.session_state['logged_in'] = False
+
+if not st.session_state['logged_in']:
+    # Şık bir giriş ekranı
+    col1, col2, col3 = st.columns([1, 1, 1])
+    with col2:
+        st.markdown("<h2 style='text-align: center;'>🔐 Güvenli Giriş</h2>", unsafe_allow_html=True)
+        pwd_input = st.text_input("Uygulama Şifresi", type="password")
+        if st.button("Giriş Yap", type="primary", use_container_width=True):
+            if pwd_input == APP_PWD:
+                st.session_state['logged_in'] = True
+                st.success("Giriş Başarılı!")
+                st.rerun()
+            else:
+                st.error("Hatalı Şifre!")
+    st.stop() # Giriş yapılmadıysa kodun geri kalanını çalıştırma
+
+# --- 2. SESSION STATE (FORM VERİLERİ) ---
 if 'form_data' not in st.session_state:
     st.session_state['form_data'] = {
         'id': None,
@@ -18,15 +41,34 @@ if 'form_data' not in st.session_state:
         'text': ""
     }
 
-# --- ARAYÜZ ---
-st.title("🦅 Şahin/Güvercin Analiz Paneli")
+# --- AI ---
+@st.cache_resource
+def load_models():
+    try: from transformers import pipeline; return pipeline("sentiment-analysis", model="ProsusAI/finbert")
+    except: return None
+classifier = load_models()
+
+def analyze_finbert(text):
+    if not classifier: return 0, "neutral"
+    res = classifier(text[:512])[0]
+    score = res['score'] if res['label'] == "positive" else -res['score'] if res['label'] == "negative" else 0
+    return score, res['label']
+
+# --- ARAYÜZ BAŞLANGICI ---
+c_head1, c_head2 = st.columns([6, 1])
+with c_head1: st.title("🦅 Şahin/Güvercin Analiz Paneli")
+with c_head2: 
+    if st.button("Çıkış Yap"):
+        st.session_state['logged_in'] = False
+        st.rerun()
+
 tab1, tab2, tab3 = st.tabs(["📈 Dashboard", "📝 Veri Girişi & Yönetimi", "📊 Piyasa Verileri"])
 
 # ==============================================================================
 # TAB 1: DASHBOARD
 # ==============================================================================
 with tab1:
-    with st.spinner("Yükleniyor..."):
+    with st.spinner("Veriler Yükleniyor..."):
         df_logs = utils.fetch_all_data()
     
     if not df_logs.empty:
@@ -44,11 +86,8 @@ with tab1:
         
         # ABG Skoru
         fig.add_trace(go.Scatter(
-            x=merged['period_date'], 
-            y=merged['score_abg'], 
-            name="Şahin/Güvercin Skoru", 
-            line=dict(color='black', width=3),
-            marker=dict(size=8, color='black')
+            x=merged['period_date'], y=merged['score_abg'], name="Şahin/Güvercin Skoru", 
+            line=dict(color='black', width=3), marker=dict(size=8, color='black')
         ), secondary_y=False)
         
         if 'Yıllık TÜFE' in merged.columns:
@@ -56,17 +95,11 @@ with tab1:
         if 'PPK Faizi' in merged.columns:
             fig.add_trace(go.Scatter(x=merged['period_date'], y=merged['PPK Faizi'], name="Faiz (%)", line=dict(color='orange', dash='dot')), secondary_y=True)
 
-        # Görsel Ayarlar
         fig.update_layout(
-            title="Merkez Bankası Tonu ve Piyasa Verileri",
-            hovermode="x unified", 
-            height=600,
+            title="Merkez Bankası Tonu ve Piyasa Verileri", hovermode="x unified", height=600,
             shapes=[
-                # Kırmızı Bölge (Şahin)
                 dict(type="rect", xref="paper", yref="y", x0=0, x1=1, y0=0, y1=1.5, fillcolor="rgba(255, 0, 0, 0.08)", line_width=0, layer="below"),
-                # Mavi Bölge (Güvercin)
                 dict(type="rect", xref="paper", yref="y", x0=0, x1=1, y0=-1.5, y1=0, fillcolor="rgba(0, 0, 255, 0.08)", line_width=0, layer="below"),
-                # Sıfır Çizgisi
                 dict(type="line", xref="paper", yref="y", x0=0, x1=1, y0=0, y1=0, line=dict(color="black", width=3), layer="below"),
             ],
             annotations=[
@@ -82,7 +115,7 @@ with tab1:
     else: st.info("Kayıt yok.")
 
 # ==============================================================================
-# TAB 2: VERİ GİRİŞİ (OTO-TEMİZLEME EKLENDİ)
+# TAB 2: VERİ GİRİŞİ (ADMİN KORUMALI)
 # ==============================================================================
 with tab2:
     st.subheader("Veri İşlemleri")
@@ -92,7 +125,6 @@ with tab2:
         df_all['period_date'] = pd.to_datetime(df_all['period_date'])
         df_all['date_only'] = df_all['period_date'].dt.date
     
-    # Hafızadaki ID'yi al
     current_id = st.session_state['form_data']['id']
     
     with st.container(border=True):
@@ -105,76 +137,82 @@ with tab2:
             source = st.text_input("Kaynak", value=val_source)
             st.caption(f"Dönem: **{selected_date.strftime('%Y-%m')}**")
             
-            # Çakışma Kontrolü
+            # --- ÇAKIŞMA KONTROLÜ ---
             collision_record = None
             if not df_all.empty:
                 mask = df_all['date_only'] == selected_date
-                if mask.any():
-                    collision_record = df_all[mask].iloc[0]
+                if mask.any(): collision_record = df_all[mask].iloc[0]
             
-            # Eğer tarih veritabanında varsa VE biz şu an o kaydı düzenlemiyorsak (ID eşleşmiyorsa)
-            if collision_record is not None and (current_id != collision_record['id']):
-                st.warning(f"⚠️ **DİKKAT:** {selected_date} tarihinde zaten bir kayıt var!")
-                st.markdown(f"*Kaydet tuşuna basarsanız mevcut verinin **üzerine yazılacaktır**.*")
+            # Çakışma varsa ve düzenleme modunda değilsek uyarı ver
+            is_collision = (collision_record is not None) and (current_id != collision_record['id'])
+            
+            if is_collision:
+                st.error(f"⚠️ **ÇAKIŞMA:** {selected_date} tarihinde zaten veri var!")
+                st.info("Üzerine yazmak için aşağıya **Admin Şifresi** giriniz.")
 
         with c2:
             val_text = st.session_state['form_data']['text']
             txt = st.text_area("Metin", value=val_text, height=200)
         
+        # BUTONLAR
         col_b1, col_b2, col_b3 = st.columns([2, 1, 1])
+        
         with col_b1:
-            btn_text = "💾 Kaydet / Analiz Et"
-            if collision_record is not None and (current_id != collision_record['id']):
-                btn_text = "⚠️ Üzerine Yaz ve Kaydet"
-            elif current_id:
-                btn_text = "💾 Güncelle"
-
-            if st.button(btn_text, type="primary"):
-                if txt:
-                    # Analiz
-                    s_abg, h_cnt, d_cnt, hawks, doves, h_ctx, d_ctx = utils.run_full_analysis(txt)
-                    
-                    # 1. GÜNCELLEME (Listeden seçildiyse)
-                    if current_id:
-                        utils.update_entry(current_id, selected_date, txt, source, s_abg, s_abg)
-                        st.success("Kayıt güncellendi!")
+            # 1. DURUM: ÇAKIŞMA VAR (ADMIN ŞİFRESİ İSTE)
+            if is_collision:
+                admin_pass_input = st.text_input("Admin Şifresi (Üzerine Yaz)", type="password", key="overwrite_pass")
+                if st.button("⚠️ Onayla ve Üzerine Yaz", type="primary"):
+                    if admin_pass_input == ADMIN_PWD:
+                        if txt:
+                            s_abg, h_cnt, d_cnt, hawks, doves, h_ctx, d_ctx = utils.run_full_analysis(txt)
+                            target_id = int(collision_record['id'])
+                            utils.update_entry(target_id, selected_date, txt, source, s_abg, s_abg)
+                            st.success("Veri başarıyla üzerine yazıldı!")
+                            # TEMİZLE
+                            st.session_state['form_data'] = {'id': None, 'date': datetime.date.today(), 'source': "TCMB", 'text': ""}
+                            st.rerun()
+                        else: st.error("Metin giriniz.")
+                    else: st.error("Admin şifresi yanlış!")
+            
+            # 2. DURUM: NORMAL KAYIT / GÜNCELLEME (ŞİFRE İSTEMEZ)
+            else:
+                btn_text = "💾 Güncelle" if current_id else "💾 Yeni Kayıt Ekle"
+                if st.button(btn_text, type="primary"):
+                    if txt:
+                        s_abg, h_cnt, d_cnt, hawks, doves, h_ctx, d_ctx = utils.run_full_analysis(txt)
                         
-                    # 2. ÜZERİNE YAZMA (Tarih çakışması varsa)
-                    elif collision_record is not None:
-                        target_id = int(collision_record['id'])
-                        utils.update_entry(target_id, selected_date, txt, source, s_abg, s_abg)
-                        st.warning(f"{selected_date} tarihli eski veri silindi, yenisi yazıldı.")
+                        if current_id:
+                            utils.update_entry(current_id, selected_date, txt, source, s_abg, s_abg)
+                            st.success("Güncellendi!")
+                        else:
+                            utils.insert_entry(selected_date, txt, source, s_abg, s_abg)
+                            st.success("Eklendi!")
                         
-                    # 3. YENİ KAYIT
-                    else:
-                        utils.insert_entry(selected_date, txt, source, s_abg, s_abg)
-                        st.success("Yeni kayıt eklendi!")
-                    
-                    # --- KRİTİK NOKTA: İŞLEM BİTTİ, HER ŞEYİ TEMİZLE ---
-                    st.session_state['form_data'] = {
-                        'id': None, 
-                        'date': datetime.date.today(), 
-                        'source': "TCMB", 
-                        'text': ""
-                    }
-                    # Sayfayı yenile ki form boşalsın
-                    st.rerun()
-                else:
-                    st.error("Metin giriniz.")
+                        # TEMİZLE
+                        st.session_state['form_data'] = {'id': None, 'date': datetime.date.today(), 'source': "TCMB", 'text': ""}
+                        st.rerun()
+                    else: st.error("Metin giriniz.")
 
         with col_b2:
             if st.button("Temizle"):
                 st.session_state['form_data'] = {'id': None, 'date': datetime.date.today(), 'source': "TCMB", 'text': ""}
                 st.rerun()
 
+        # 3. SİLME İŞLEMİ (ADMIN ŞİFRELİ POPOVER)
         with col_b3:
             if current_id:
-                if st.button("🗑️ Sil", type="primary"):
-                    utils.delete_entry(current_id)
-                    st.success("Silindi!")
-                    # Silince de temizle
-                    st.session_state['form_data'] = {'id': None, 'date': datetime.date.today(), 'source': "TCMB", 'text': ""}
-                    st.rerun()
+                # Expander yerine Popover (daha şık)
+                with st.popover("🗑️ Sil"):
+                    st.write("Silmek için Admin şifresi girin:")
+                    del_pass = st.text_input("Şifre", type="password", key="del_pass")
+                    if st.button("🔥 Kalıcı Olarak Sil"):
+                        if del_pass == ADMIN_PWD:
+                            utils.delete_entry(current_id)
+                            st.success("Silindi!")
+                            st.session_state['form_data'] = {'id': None, 'date': datetime.date.today(), 'source': "TCMB", 'text': ""}
+                            st.rerun()
+                        else:
+                            st.error("Şifre Hatalı!")
 
         # CANLI ANALİZ GÖSTERİMİ
         if txt:
@@ -209,7 +247,6 @@ with tab2:
                             if term in h_ctx:
                                 for s in h_ctx[term]: st.caption(f"📝 ...{s}...")
                     else: st.write("- Yok")
-                
                 with k2:
                     st.markdown("**🕊️ Güvercin İfadeler**")
                     if d_list:

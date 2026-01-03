@@ -149,7 +149,14 @@ with tab1:
             title="Merkez Bankası Analiz Paneli (Ton, Piyasa ve Okunabilirlik)", 
             hovermode="x unified", height=600,
             shapes=layout_shapes, annotations=layout_annotations,
-            showlegend=False,
+            showlegend=True, # LEGEND AKTİF EDİLDİ
+            legend=dict(
+                orientation="h", # Yatay
+                yanchor="bottom", 
+                y=1.02, # Grafiğin hemen üzerinde
+                xanchor="right", 
+                x=1
+            ),
             # Sol Eksen: Skor (-150 / +150 Aralığı)
             yaxis=dict(title="Net Skor (-100 / +100)", range=[-150, 150], zeroline=False),
             # Sağ Eksen: Faiz, Enflasyon ve Okunabilirlik
@@ -176,146 +183,147 @@ with tab2:
     
     st.info("ℹ️ **BİLGİ:** Aşağıdaki geçmiş kayıtlar listesinden istediğiniz dönemi seçerek, hangi cümlelerin hesaplamaya alındığını görebilirsiniz.")
 
-    df_all = utils.fetch_all_data()
-    if not df_all.empty: 
-        df_all['period_date'] = pd.to_datetime(df_all['period_date'])
-        df_all['date_only'] = df_all['period_date'].dt.date
-    
-    current_id = st.session_state['form_data']['id']
-    
-    with st.container(border=True):
-        if st.button("➕ YENİ VERİ GİRİŞİ (Ekranı Temizle)", type="secondary", use_container_width=True):
-            reset_form(); st.rerun()
-        st.markdown("---")
-        c1, c2 = st.columns([1, 2])
-        with c1:
-            val_date = st.session_state['form_data']['date']
-            selected_date = st.date_input("Tarih", value=val_date)
-            val_source = st.session_state['form_data']['source']
-            source = st.text_input("Kaynak", value=val_source)
-            st.caption(f"Dönem: **{selected_date.strftime('%Y-%m')}**")
-        with c2:
-            val_text = st.session_state['form_data']['text']
-            txt = st.text_area("Metin", value=val_text, height=200, placeholder="Metni buraya yapıştırın...")
-        st.markdown("---")
-        
-        # 1. ÇAKIŞMA
-        if st.session_state['collision_state']['active']:
-            col_alert, col_act = st.columns([2, 2])
-            with col_alert:
-                t_date = st.session_state['collision_state']['target_date']
-                st.error(f"⚠️ **ÇAKIŞMA:** {t_date} tarihinde kayıt var!")
-            with col_act:
-                admin_pass = st.text_input("Admin Şifresi", type="password", key="overwrite_pass")
-                c_b1, c_b2 = st.columns(2)
-                with c_b1:
-                    if st.button("🚨 Onayla ve Üzerine Yaz", type="primary", use_container_width=True):
-                        if admin_pass == ADMIN_PWD:
-                            p_txt = st.session_state['collision_state']['pending_text']
-                            t_id = st.session_state['collision_state']['target_id']
-                            s_abg, h_cnt, d_cnt, hawks, doves, h_ctx, d_ctx, flesch = utils.run_full_analysis(p_txt)
-                            utils.update_entry(t_id, selected_date, p_txt, source, s_abg, s_abg)
-                            st.success("Başarıyla üzerine yazıldı!"); reset_form(); st.rerun()
-                        else: st.error("Şifre Hatalı!")
-                with c_b2:
-                    if st.button("❌ İptal", use_container_width=True):
-                        st.session_state['collision_state']['active'] = False; st.rerun()
-
-        # 2. GÜNCELLEME
-        elif st.session_state['update_state']['active']:
-            col_alert, col_act = st.columns([2, 2])
-            with col_alert:
-                st.warning("Değişikliği kaydetmek için **Admin Şifresi** giriniz.")
-            with col_act:
-                update_pass = st.text_input("Admin Şifresi", type="password", key="update_pass")
-                c_b1, c_b2 = st.columns(2)
-                with c_b1:
-                    if st.button("💾 Onayla ve Güncelle", type="primary", use_container_width=True):
-                        if update_pass == ADMIN_PWD:
-                            p_txt = st.session_state['update_state']['pending_text']
-                            s_abg, h_cnt, d_cnt, hawks, doves, h_ctx, d_ctx, flesch = utils.run_full_analysis(p_txt)
-                            utils.update_entry(current_id, selected_date, p_txt, source, s_abg, s_abg)
-                            st.success("Kayıt güncellendi!"); reset_form(); st.rerun()
-                        else: st.error("Şifre Hatalı!")
-                with c_b2:
-                    if st.button("❌ İptal", use_container_width=True):
-                        st.session_state['update_state']['active'] = False; st.rerun()
-
-        # 3. NORMAL
-        else:
-            col_b1, col_b2, col_b3 = st.columns([2, 1, 1])
-            with col_b1:
-                btn_label = "💾 Güncelle" if current_id else "💾 Kaydet / Analiz Et"
-                if st.button(btn_label, type="primary"):
-                    if txt:
-                        collision_record = None
-                        if not df_all.empty:
-                            mask = df_all['date_only'] == selected_date
-                            if mask.any(): collision_record = df_all[mask].iloc[0]
-                        
-                        is_self_update = current_id and ((collision_record is None) or (collision_record is not None and int(collision_record['id']) == current_id))
-
-                        if is_self_update:
-                            st.session_state['update_state'] = {'active': True, 'pending_text': txt}
-                            st.rerun()
-                        elif collision_record is not None:
-                            st.session_state['collision_state'] = {
-                                'active': True, 'target_id': int(collision_record['id']), 'target_date': selected_date, 'pending_text': txt
-                            }
-                            st.rerun()
-                        else:
-                            s_abg, h_cnt, d_cnt, hawks, doves, h_ctx, d_ctx, flesch = utils.run_full_analysis(txt)
-                            utils.insert_entry(selected_date, txt, source, s_abg, s_abg)
-                            st.success("Yeni kayıt eklendi!"); reset_form(); st.rerun()
-                    else: st.error("Metin alanı boş.")
-            with col_b2:
-                if st.button("Temizle"): reset_form(); st.rerun()
-            with col_b3:
-                if current_id:
-                    with st.popover("🗑️ Sil"):
-                        st.write("Admin şifresi:"); del_pass = st.text_input("Şifre", type="password", key="del_pass")
-                        if st.button("🔥 Sil"):
-                            if del_pass == ADMIN_PWD:
-                                utils.delete_entry(current_id); st.success("Silindi!"); reset_form(); st.rerun()
-                            else: st.error("Şifre Hatalı!")
-
-        # CANLI ANALİZ
-        if txt:
-            s_live, h_cnt, d_cnt, h_list, d_list, h_ctx, d_ctx, flesch_live = utils.run_full_analysis(txt)
-            st.markdown("---")
-            met1, met2, met3 = st.columns(3)
-            with met1: st.metric("Şahin", f"{h_cnt} Kelime")
-            with met2: st.metric("Güvercin", f"{d_cnt} Kelime")
-            with met3: 
-                d_col = "normal" if flesch_live > 60 else "inverse" if flesch_live < 30 else "off"
-                st.metric("Okunabilirlik", f"{flesch_live:.1f}", delta_color=d_col)
-            
-            st.caption(f"**Net Skor:** {s_live:.2f} (Ölçek: -100 / +100)")
-            
-            exp = st.expander("🔍 Detaylar", expanded=True)
-            with exp:
-                k1, k2 = st.columns(2)
-                with k1:
-                    st.markdown("**🦅 Şahin**"); 
-                    if h_list: 
-                        for item in h_list:
-                            t = item.split(' (')[0]; st.write(f"🔹 **{item}**")
-                            if t in h_ctx: 
-                                for s in h_ctx[t]: st.caption(f"📝 ...{s}...")
-                    else: st.write("-")
-                with k2:
-                    st.markdown("**🕊️ Güvercin**"); 
-                    if d_list: 
-                        for item in d_list:
-                            t = item.split(' (')[0]; st.write(f"🔹 **{item}**")
-                            if t in d_ctx: 
-                                for s in d_ctx[t]: st.caption(f"📝 ...{s}...")
-                    else: st.write("-")
-
-    # --- GEÇMİŞ KAYITLAR (KONTEYNER İÇİNE ALARAK İZOLE ETTİK) ---
+    # --- GEÇMİŞ KAYITLAR (KONTEYNER İÇİNDE - HATA ÖNLEYİCİ) ---
     with st.container():
-        st.markdown("### 📋 Geçmiş Kayıtlar")
-        if not df_all.empty:
+        df_all = utils.fetch_all_data()
+        if not df_all.empty: 
+            df_all['period_date'] = pd.to_datetime(df_all['period_date'])
+            df_all['date_only'] = df_all['period_date'].dt.date
+            
+            # Form ID kontrolü
+            current_id = st.session_state['form_data']['id']
+    
+            with st.container(border=True):
+                if st.button("➕ YENİ VERİ GİRİŞİ (Ekranı Temizle)", type="secondary", use_container_width=True):
+                    reset_form(); st.rerun()
+                st.markdown("---")
+                c1, c2 = st.columns([1, 2])
+                with c1:
+                    val_date = st.session_state['form_data']['date']
+                    selected_date = st.date_input("Tarih", value=val_date)
+                    val_source = st.session_state['form_data']['source']
+                    source = st.text_input("Kaynak", value=val_source)
+                    st.caption(f"Dönem: **{selected_date.strftime('%Y-%m')}**")
+                with c2:
+                    val_text = st.session_state['form_data']['text']
+                    txt = st.text_area("Metin", value=val_text, height=200, placeholder="Metni buraya yapıştırın...")
+                st.markdown("---")
+                
+                # 1. ÇAKIŞMA
+                if st.session_state['collision_state']['active']:
+                    col_alert, col_act = st.columns([2, 2])
+                    with col_alert:
+                        t_date = st.session_state['collision_state']['target_date']
+                        st.error(f"⚠️ **ÇAKIŞMA:** {t_date} tarihinde kayıt var!")
+                    with col_act:
+                        admin_pass = st.text_input("Admin Şifresi", type="password", key="overwrite_pass")
+                        c_b1, c_b2 = st.columns(2)
+                        with c_b1:
+                            if st.button("🚨 Onayla ve Üzerine Yaz", type="primary", use_container_width=True):
+                                if admin_pass == ADMIN_PWD:
+                                    p_txt = st.session_state['collision_state']['pending_text']
+                                    t_id = st.session_state['collision_state']['target_id']
+                                    s_abg, h_cnt, d_cnt, hawks, doves, h_ctx, d_ctx, flesch = utils.run_full_analysis(p_txt)
+                                    utils.update_entry(t_id, selected_date, p_txt, source, s_abg, s_abg)
+                                    st.success("Başarıyla üzerine yazıldı!"); reset_form(); st.rerun()
+                                else: st.error("Şifre Hatalı!")
+                        with c_b2:
+                            if st.button("❌ İptal", use_container_width=True):
+                                st.session_state['collision_state']['active'] = False; st.rerun()
+
+                # 2. GÜNCELLEME
+                elif st.session_state['update_state']['active']:
+                    col_alert, col_act = st.columns([2, 2])
+                    with col_alert:
+                        st.warning("Değişikliği kaydetmek için **Admin Şifresi** giriniz.")
+                    with col_act:
+                        update_pass = st.text_input("Admin Şifresi", type="password", key="update_pass")
+                        c_b1, c_b2 = st.columns(2)
+                        with c_b1:
+                            if st.button("💾 Onayla ve Güncelle", type="primary", use_container_width=True):
+                                if update_pass == ADMIN_PWD:
+                                    p_txt = st.session_state['update_state']['pending_text']
+                                    s_abg, h_cnt, d_cnt, hawks, doves, h_ctx, d_ctx, flesch = utils.run_full_analysis(p_txt)
+                                    utils.update_entry(current_id, selected_date, p_txt, source, s_abg, s_abg)
+                                    st.success("Kayıt güncellendi!"); reset_form(); st.rerun()
+                                else: st.error("Şifre Hatalı!")
+                        with c_b2:
+                            if st.button("❌ İptal", use_container_width=True):
+                                st.session_state['update_state']['active'] = False; st.rerun()
+
+                # 3. NORMAL
+                else:
+                    col_b1, col_b2, col_b3 = st.columns([2, 1, 1])
+                    with col_b1:
+                        btn_label = "💾 Güncelle" if current_id else "💾 Kaydet / Analiz Et"
+                        if st.button(btn_label, type="primary"):
+                            if txt:
+                                collision_record = None
+                                if not df_all.empty:
+                                    mask = df_all['date_only'] == selected_date
+                                    if mask.any(): collision_record = df_all[mask].iloc[0]
+                                
+                                is_self_update = current_id and ((collision_record is None) or (collision_record is not None and int(collision_record['id']) == current_id))
+
+                                if is_self_update:
+                                    st.session_state['update_state'] = {'active': True, 'pending_text': txt}
+                                    st.rerun()
+                                elif collision_record is not None:
+                                    st.session_state['collision_state'] = {
+                                        'active': True, 'target_id': int(collision_record['id']), 'target_date': selected_date, 'pending_text': txt
+                                    }
+                                    st.rerun()
+                                else:
+                                    s_abg, h_cnt, d_cnt, hawks, doves, h_ctx, d_ctx, flesch = utils.run_full_analysis(txt)
+                                    utils.insert_entry(selected_date, txt, source, s_abg, s_abg)
+                                    st.success("Yeni kayıt eklendi!"); reset_form(); st.rerun()
+                            else: st.error("Metin alanı boş.")
+                    with col_b2:
+                        if st.button("Temizle"): reset_form(); st.rerun()
+                    with col_b3:
+                        if current_id:
+                            with st.popover("🗑️ Sil"):
+                                st.write("Admin şifresi:"); del_pass = st.text_input("Şifre", type="password", key="del_pass")
+                                if st.button("🔥 Sil"):
+                                    if del_pass == ADMIN_PWD:
+                                        utils.delete_entry(current_id); st.success("Silindi!"); reset_form(); st.rerun()
+                                    else: st.error("Şifre Hatalı!")
+
+                # CANLI ANALİZ
+                if txt:
+                    s_live, h_cnt, d_cnt, h_list, d_list, h_ctx, d_ctx, flesch_live = utils.run_full_analysis(txt)
+                    st.markdown("---")
+                    met1, met2, met3 = st.columns(3)
+                    with met1: st.metric("Şahin", f"{h_cnt} Kelime")
+                    with met2: st.metric("Güvercin", f"{d_cnt} Kelime")
+                    with met3: 
+                        d_col = "normal" if flesch_live > 60 else "inverse" if flesch_live < 30 else "off"
+                        st.metric("Okunabilirlik", f"{flesch_live:.1f}", delta_color=d_col)
+                    
+                    st.caption(f"**Net Skor:** {s_live:.2f} (Ölçek: -100 / +100)")
+                    
+                    exp = st.expander("🔍 Detaylar", expanded=True)
+                    with exp:
+                        k1, k2 = st.columns(2)
+                        with k1:
+                            st.markdown("**🦅 Şahin**"); 
+                            if h_list: 
+                                for item in h_list:
+                                    t = item.split(' (')[0]; st.write(f"🔹 **{item}**")
+                                    if t in h_ctx: 
+                                        for s in h_ctx[t]: st.caption(f"📝 ...{s}...")
+                            else: st.write("-")
+                        with k2:
+                            st.markdown("**🕊️ Güvercin**"); 
+                            if d_list: 
+                                for item in d_list:
+                                    t = item.split(' (')[0]; st.write(f"🔹 **{item}**")
+                                    if t in d_ctx: 
+                                        for s in d_ctx[t]: st.caption(f"📝 ...{s}...")
+                            else: st.write("-")
+
+            st.markdown("### 📋 Geçmiş Kayıtlar")
+            
             df_show = df_all.copy()
             df_show['Dönem'] = df_show['period_date'].dt.strftime('%Y-%m')
             df_show['Görsel Skor'] = df_show['score_abg'].apply(lambda x: x*100 if abs(x)<=1 else x)

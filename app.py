@@ -149,17 +149,15 @@ with tab1:
             title="Merkez Bankası Analiz Paneli (Ton, Piyasa ve Okunabilirlik)", 
             hovermode="x unified", height=600,
             shapes=layout_shapes, annotations=layout_annotations,
-            showlegend=True, # LEGEND AKTİF EDİLDİ
+            showlegend=True,
             legend=dict(
-                orientation="h", # Yatay
+                orientation="h",
                 yanchor="bottom", 
-                y=1.02, # Grafiğin hemen üzerinde
+                y=1.02,
                 xanchor="right", 
                 x=1
             ),
-            # Sol Eksen: Skor (-150 / +150 Aralığı)
             yaxis=dict(title="Net Skor (-100 / +100)", range=[-150, 150], zeroline=False),
-            # Sağ Eksen: Faiz, Enflasyon ve Okunabilirlik
             yaxis2=dict(
                 title="Faiz, Enflasyon & Okunabilirlik", 
                 overlaying="y", 
@@ -167,10 +165,43 @@ with tab1:
                 range=[-market_max, market_max], 
                 showgrid=False
             ),
-            # Gizli Eksen: Kelime Sayısı
             yaxis3=dict(title="Kelime", overlaying="y", side="right", showgrid=False, visible=False, range=[0, merged['word_count'].max() * 2])
         )
-        st.plotly_chart(fig, use_container_width=True)
+        
+        # --- ETKİLEŞİMLİ GRAFİK VE YAPAY ZEKA ÖZETİ ---
+        st.markdown("##### 🖱️ Grafikte bir noktaya tıklayarak Yapay Zeka Özeti alabilirsiniz:")
+        
+        # 'on_select="rerun"' ve 'selection_mode="points"' kullanarak tıklamayı yakalıyoruz
+        selected_points = st.plotly_chart(fig, use_container_width=True, on_select="rerun", selection_mode="points")
+        
+        if selected_points and selected_points["selection"]["points"]:
+            try:
+                # Seçilen noktanın verisini bul
+                point_data = selected_points["selection"]["points"][0]
+                clicked_date = point_data.get("x")
+                
+                if clicked_date:
+                    # Tarihe göre satırı filtrele
+                    row = merged[merged['period_date'] == clicked_date].iloc[0]
+                    
+                    st.divider()
+                    st.subheader("🤖 Yapay Zeka Destekli Dönem Analizi")
+                    
+                    # Akıllı Özet Üret
+                    ai_summary = utils.generate_smart_summary(row)
+                    
+                    with st.chat_message("assistant"):
+                        st.write(ai_summary)
+                        
+                    # Ekstra metrikler (Özetin altında şık dursun)
+                    c1, c2, c3, c4 = st.columns(4)
+                    c1.metric("Skor", f"{row['score_abg_scaled']:.1f}")
+                    c2.metric("Enflasyon", f"%{row.get('Yıllık TÜFE', 0)}")
+                    c3.metric("Faiz", f"%{row.get('PPK Faizi', 0)}")
+                    c4.metric("Okunabilirlik", f"{row.get('flesch_score', 0)}")
+                    
+            except Exception as e:
+                st.error(f"Analiz sırasında hata oluştu: {e}")
 
         if st.button("🔄 Yenile"): st.cache_data.clear(); st.rerun()
     else: st.info("Kayıt yok.")

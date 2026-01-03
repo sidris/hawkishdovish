@@ -68,7 +68,6 @@ def split_into_sentences(text):
     return re.split(r'(?<=[.!?])\s+', text)
 
 def count_syllables(word):
-    """Basit hece sayma (İngilizce için yaklaşık)"""
     word = word.lower()
     if len(word) <= 3: return 1
     word = re.sub(r'(?:[^laeiouy]es|ed|[^laeiouy]e)$', '', word)
@@ -77,7 +76,6 @@ def count_syllables(word):
     return max(1, syllables)
 
 def calculate_flesch_reading_ease(text):
-    """Flesch Reading Ease Skoru Hesaplar"""
     if not text: return 0
     sentences = split_into_sentences(text)
     words = re.findall(r"[a-z']+", text.lower())
@@ -88,7 +86,6 @@ def calculate_flesch_reading_ease(text):
     
     if num_words == 0 or num_sentences == 0: return 0
     
-    # Flesch Formülü
     score = 206.835 - 1.015 * (num_words / num_sentences) - 84.6 * (num_syllables / num_words)
     return round(score, 2)
 
@@ -106,9 +103,6 @@ def find_context_sentences(text, found_phrases):
     return contexts
 
 def run_full_analysis(text):
-    """
-    Return: (net_score, hawk_total, dove_total, hawk_list, dove_list, hawk_contexts, dove_contexts, flesch_score)
-    """
     if not text: return 0, 0, 0, [], [], {}, {}, 0
 
     clean_text = text.lower()
@@ -148,8 +142,9 @@ def run_full_analysis(text):
     dove_total = dove_ngram_count + dove_single_count
     total_signal = hawk_total + dove_total
 
+    # --- ÖNEMLİ GÜNCELLEME: SKORU 100 İLE ÇARPIYORUZ (-100, +100 Aralığı) ---
     if total_signal > 0:
-        net_score = float(hawk_total - dove_total) / float(total_signal)
+        net_score = (float(hawk_total - dove_total) / float(total_signal)) * 100
     else:
         net_score = 0.0
 

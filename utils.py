@@ -7,7 +7,7 @@ import datetime
 import re
 from collections import Counter, defaultdict
 
-# --- 1. AYARLAR VE BAĞLANTI ---
+# --- AYARLAR ---
 try:
     if "supabase" in st.secrets:
         url = st.secrets["supabase"]["url"]
@@ -26,13 +26,8 @@ except Exception as e:
     st.error(f"Ayarlar hatası: {e}")
     st.stop()
 
-# Sabitler
 EVDS_BASE = "https://evds2.tcmb.gov.tr/service/evds"
 EVDS_TUFE_SERIES = "TP.FG.J0"
-
-# =============================================================================
-# 2. GELİŞMİŞ N-GRAM ABG ALGORİTMASI VE OKUNABİLİRLİK
-# =============================================================================
 
 # --- SÖZLÜKLER ---
 NOUNS = {
@@ -59,8 +54,7 @@ DOVISH_ADJECTIVES = {
 HAWKISH_SINGLE = {"tight","tightening","restrictive","elevated","high","overheating","pressures","pressure","risk","risks","upside","vigilant","decisive"}
 DOVISH_SINGLE = {"disinflation","decline","declining","fall","falling","decrease","decreasing","lower","low","subdued","contained","anchored","cooling","slow","slower","improvement","better","easing","relief"}
 
-# --- YARDIMCI FONKSİYONLAR ---
-
+# --- FONKSİYONLAR ---
 def make_ngrams(tokens, n):
     return [" ".join(tokens[i:i+n]) for i in range(len(tokens) - n + 1)]
 
@@ -109,7 +103,6 @@ def run_full_analysis(text):
     tokens = re.findall(r"[a-z']+", clean_text)
     token_counts = Counter(tokens)
     
-    # Flesch Hesapla
     flesch_score = calculate_flesch_reading_ease(text)
     
     bigrams = make_ngrams(tokens, 2)
@@ -142,7 +135,7 @@ def run_full_analysis(text):
     dove_total = dove_ngram_count + dove_single_count
     total_signal = hawk_total + dove_total
 
-    # --- ÖNEMLİ GÜNCELLEME: SKORU 100 İLE ÇARPIYORUZ (-100, +100 Aralığı) ---
+    # SKORU 100 İLE ÇARPARAK -100/+100 ARALIĞINA GETİRİYORUZ
     if total_signal > 0:
         net_score = (float(hawk_total - dove_total) / float(total_signal)) * 100
     else:
@@ -158,10 +151,6 @@ def run_full_analysis(text):
     dove_contexts = find_context_sentences(text, all_dove_matches.keys())
 
     return net_score, hawk_total, dove_total, hawk_list, dove_list, hawk_contexts, dove_contexts, flesch_score
-
-# =============================================================================
-# 3. VERİ ÇEKME & DB
-# =============================================================================
 
 @st.cache_data(ttl=600)
 def fetch_market_data_adapter(start_date, end_date):

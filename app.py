@@ -3,15 +3,15 @@ import pandas as pd
 import datetime
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-# transformers importu
+# transformers importu kaldırıldı (utils içinde kullanılıyor)
 import utils 
 
 st.set_page_config(page_title="Piyasa Analiz", layout="wide")
 
-# --- 0. GÜVENLİK VE AYARLAR ---
-# Şifreleri secrets dosyasından alıyoruz
-APP_PWD = st.secrets.get("APP_PASSWORD", "123")   # Varsayılan: 123
-ADMIN_PWD = st.secrets.get("ADMIN_PASSWORD", "999") # Varsayılan: 999
+# --- 0. GÜVENLİK VE AYARLAR (GÜNCELLENDİ) ---
+# Şifreleri artık secrets dosyasından aramıyoruz, direkt buraya yazdık.
+APP_PWD = "SahinGuvercin34"      
+ADMIN_PWD = "SahinGuvercin06"    
 
 # --- 1. GİRİŞ EKRANI (LOGIN) ---
 if 'logged_in' not in st.session_state:
@@ -21,8 +21,12 @@ if not st.session_state['logged_in']:
     # Şık bir giriş ekranı
     col1, col2, col3 = st.columns([1, 1, 1])
     with col2:
+        st.markdown("<br><br>", unsafe_allow_html=True)
         st.markdown("<h2 style='text-align: center;'>🔐 Güvenli Giriş</h2>", unsafe_allow_html=True)
+        st.info("Lütfen yetkili şifrenizi giriniz.")
+        
         pwd_input = st.text_input("Uygulama Şifresi", type="password")
+        
         if st.button("Giriş Yap", type="primary", use_container_width=True):
             if pwd_input == APP_PWD:
                 st.session_state['logged_in'] = True
@@ -40,19 +44,6 @@ if 'form_data' not in st.session_state:
         'source': "TCMB",
         'text': ""
     }
-
-# --- AI ---
-@st.cache_resource
-def load_models():
-    try: from transformers import pipeline; return pipeline("sentiment-analysis", model="ProsusAI/finbert")
-    except: return None
-classifier = load_models()
-
-def analyze_finbert(text):
-    if not classifier: return 0, "neutral"
-    res = classifier(text[:512])[0]
-    score = res['score'] if res['label'] == "positive" else -res['score'] if res['label'] == "negative" else 0
-    return score, res['label']
 
 # --- ARAYÜZ BAŞLANGICI ---
 c_head1, c_head2 = st.columns([6, 1])
@@ -164,9 +155,11 @@ with tab2:
                 if st.button("⚠️ Onayla ve Üzerine Yaz", type="primary"):
                     if admin_pass_input == ADMIN_PWD:
                         if txt:
+                            # 7 Değişkenli Fonksiyon Çağrısı
                             s_abg, h_cnt, d_cnt, hawks, doves, h_ctx, d_ctx = utils.run_full_analysis(txt)
                             target_id = int(collision_record['id'])
-                            utils.update_entry(target_id, selected_date, txt, source, s_abg, s_abg)
+                            # FinBERT kaldırıldığı için son iki parametreyi dummy (0, "") geçiyoruz
+                            utils.update_entry(target_id, selected_date, txt, source, s_abg, s_abg, 0, "")
                             st.success("Veri başarıyla üzerine yazıldı!")
                             # TEMİZLE
                             st.session_state['form_data'] = {'id': None, 'date': datetime.date.today(), 'source': "TCMB", 'text': ""}
@@ -182,10 +175,10 @@ with tab2:
                         s_abg, h_cnt, d_cnt, hawks, doves, h_ctx, d_ctx = utils.run_full_analysis(txt)
                         
                         if current_id:
-                            utils.update_entry(current_id, selected_date, txt, source, s_abg, s_abg)
+                            utils.update_entry(current_id, selected_date, txt, source, s_abg, s_abg, 0, "")
                             st.success("Güncellendi!")
                         else:
-                            utils.insert_entry(selected_date, txt, source, s_abg, s_abg)
+                            utils.insert_entry(selected_date, txt, source, s_abg, s_abg, 0, "")
                             st.success("Eklendi!")
                         
                         # TEMİZLE
@@ -281,7 +274,9 @@ with tab2:
                 }
                 st.rerun()
 
+# ==============================================================================
 # TAB 3: PİYASA
+# ==============================================================================
 with tab3:
     st.header("Piyasa Verileri")
     c1, c2 = st.columns(2)

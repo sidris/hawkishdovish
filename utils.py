@@ -5,7 +5,7 @@ import requests
 import io
 import datetime
 import re
-from collections import Counter, defaultdict
+from collections import Counter
 
 # --- 1. AYARLAR VE BAĞLANTI ---
 try:
@@ -31,146 +31,109 @@ EVDS_BASE = "https://evds2.tcmb.gov.tr/service/evds"
 EVDS_TUFE_SERIES = "TP.FG.J0"
 
 # =============================================================================
-# 2. GELİŞMİŞ ALGORİTMA
+# 2. GELİŞMİŞ N-GRAM ABG ALGORİTMASI (SİZİN KODUNUZ)
 # =============================================================================
 
-WORD_RE = re.compile(r"[a-z']+")
-SENT_SPLIT = re.compile(r"(?<=[.!?])\s+")
+# --- SÖZLÜKLER ---
+NOUNS = {
+    "cost","costs","expenditures","consumption","growth","output","demand","activity","production",
+    "investment","productivity","labor","labour","job","jobs","participation","wage","wages",
+    "recovery","slowdown","contraction","expansion","cycle","conditions","credit","lending",
+    "borrowing","liquidity","stability","markets","volatility","uncertainty","risks","easing",
+    "rates","policy","stance","outlook","pressures","inflation","price","prices","gold",
+    # multi-word nouns:
+    "oil price","oil prices","cyclical position","development","employment","unemployment"
+}
 
-# --- BAĞLAM SÖZLÜKLERİ ---
-DOVE_CONTEXT_BIGRAMS = {("disinflationary", "levels"), ("disinflationary", "impact")}
-DOVE_CONTEXT_UNIGRAMS = {"disinflationary", "weak", "weaken", "weakened", "slowdown", "slowed", "declined", "cooling", "moderation"}
-DOVE_CONTEXT_TERMS = {"demand", "domestic", "conditions", "activity", "growth"}
+HAWKISH_ADJECTIVES = {
+    "high","higher","strong","stronger","increasing","increased","fast","faster","elevated","rising",
+    "accelerating","robust","persistent","mounting","excessive","solid","resilient","vigorous",
+    "overheating","tightening","restrictive","constrained","limited","upside","significant","notable"
+}
 
-HAWK_CONTEXT_UNIGRAMS = {"tight", "tightness", "tightening", "restrictive", "maintained", "maintain", "strengthen", "strengthening", "decisive", "prudently", "tools", "stability"}
-HAWK_CONTEXT_TERMS = {"stance", "policy", "rate", "price", "stability", "inflation", "expectations", "lira"}
-
-# --- GENEL SÖZLÜKLER ---
-NOUNS = ["cost","costs","expenditures","consumption","growth","output","demand","activity","production","investment","productivity","labor","labour","job","jobs","participation","wage","wages","recovery","slowdown","contraction","expansion","cycle","conditions","credit","lending","borrowing","liquidity","stability","markets","volatility","uncertainty","risks","easing","rates","policy","stance","outlook","pressures","inflation","price", "prices","wage", "wages","oil price", "oil prices","cyclical position","growth","development","employment","unemployment","recovery","cost", "costs","gold"]
-
-HAWKISH_ADJ = ["high", "higher","strong", "stronger","increasing", "increased","fast", "faster","elevated","rising","accelerating","robust","persistent","mounting","excessive","solid","resillent","vigorous","overheating","tightening","restrivtive","constrained","limited","upside","significant","notable"]
-DOVISH_ADJ = ["low", "lower","weak", "weaker","decreasing", "decreased","slow", "slower","falling","declining","subdued","weak","weaker","soft","softer","easing","slow","slower","moderate","moderating","cooling","softening","downside","adverse"]
+DOVISH_ADJECTIVES = {
+    "low","lower","weak","weaker","decreasing","decreased","slow","slower","falling","declining",
+    "subdued","soft","softer","easing","moderate","moderating","cooling","softening","downside","adverse"
+}
 
 HAWKISH_SINGLE = {"tight","tightening","restrictive","elevated","high","overheating","pressures","pressure","risk","risks","upside","vigilant","decisive"}
-DOVISH_SINGLE = {"disinflation","decline","declining","fall","falling","decrease","decreasing","lower","low","subdued","contained","anchored","cooling","slow","slower","improvement","improvement","better","easing","relief"}
+DOVISH_SINGLE = {"disinflation","decline","declining","fall","falling","decrease","decreasing","lower","low","subdued","contained","anchored","cooling","slow","slower","improvement","better","easing","relief"}
 
-HAWK_DICT = {}
-DOVE_DICT = {}
+# --- YARDIMCI FONKSİYONLAR ---
 
-for term in NOUNS:
-    HAWK_DICT[term] = set(HAWKISH_ADJ)
-    DOVE_DICT[term] = set(DOVISH_ADJ)
-
-for w in HAWKISH_SINGLE: HAWK_DICT[w] = {w}
-for w in DOVISH_SINGLE: DOVE_DICT[w] = {w}
-
-HAWK_DICT["disinf_hawk"] = {"disinf_hawk"}
-DOVE_DICT["disinf_dove"] = {"disinf_dove"}
-
-# --- FONKSİYONLAR ---
-
-def tokenize(text: str): return WORD_RE.findall(text.lower())
-
-def build_positions(tokens):
-    pos_uni = defaultdict(list)
-    for i, w in enumerate(tokens): pos_uni[w].append(i)
-    bigrams = [" ".join(tokens[i:i+2]) for i in range(len(tokens)-1)]
-    pos_bi = defaultdict(list)
-    for i, bg in enumerate(bigrams): pos_bi[bg].append(i)
-    return pos_uni, pos_bi
-
-def get_term_positions(term: str, pos_uni, pos_bi):
-    return pos_bi.get(term, []) if " " in term else pos_uni.get(term, [])
-
-def relabel_disinflation_in_sentence(tokens, window=6):
-    out = tokens[:]
-    bigrams = {(tokens[i], tokens[i+1]) for i in range(len(tokens)-1)}
-    for i, w in enumerate(tokens):
-        if w == "disinflationary": out[i] = "disinf_dove"; continue
-        if w != "disinflation": continue
-        left = max(0, i - window); right = min(len(tokens), i + window + 1)
-        ctx = tokens[left:right]; ctx_set = set(ctx)
-        
-        d_sc = 0; h_sc = 0
-        if any(bg in bigrams for bg in DOVE_CONTEXT_BIGRAMS): d_sc += 2
-        d_sc += sum(1 for t in ctx if t in DOVE_CONTEXT_UNIGRAMS)
-        h_sc += sum(1 for t in ctx if t in HAWK_CONTEXT_UNIGRAMS)
-        if ctx_set & DOVE_CONTEXT_TERMS: d_sc += 1
-        if ctx_set & HAWK_CONTEXT_TERMS: h_sc += 1
-        
-        if d_sc > h_sc and d_sc >= 2: out[i] = "disinf_dove"
-        elif h_sc > d_sc and h_sc >= 2: out[i] = "disinf_hawk"
-        else: out[i] = "disinf_neutral"
-    return out
-
-def preprocess_disinflation(text: str):
-    processed_sents = []
-    for sent in SENT_SPLIT.split(text.strip()):
-        toks = tokenize(sent)
-        if not toks: continue
-        processed_sents.append(" ".join(relabel_disinflation_in_sentence(toks, window=6)))
-    return ". ".join(processed_sents)
-
-def abg_2019_count(text: str, hawk_dict: dict, dove_dict: dict, window: int = 7):
-    hawk_hits = Counter(); dove_hits = Counter()
-    hawk_terms_sorted = sorted(hawk_dict.keys(), key=len, reverse=True)
-    dove_terms_sorted = sorted(dove_dict.keys(), key=len, reverse=True)
-
-    for sent in SENT_SPLIT.split(text.strip()):
-        toks = tokenize(sent)
-        if not toks: continue
-        pos_uni, pos_bi = build_positions(toks)
-        occupied_spans = []
-
-        def overlaps(a, b): return not (a[1] <= b[0] or b[1] <= a[0])
-        def is_occupied(start, length): return any(overlaps((start, start+length), sp) for sp in occupied_spans)
-        def mark(start, length): occupied_spans.append((start, start+length))
-
-        def count_side(term_list, term_to_mods, out_counter):
-            for term in term_list:
-                mods = term_to_mods[term]
-                is_bigram = (" " in term); term_len = 2 if is_bigram else 1
-                for term_i in get_term_positions(term, pos_uni, pos_bi):
-                    if is_occupied(term_i, term_len): continue
-                    left = max(0, term_i - window); right = min(len(toks), term_i + term_len + window + 1)
-                    window_tokens = toks[left:right]
-                    for m in mods:
-                        c = window_tokens.count(m)
-                        if c:
-                            disp = term
-                            if term == "disinf_hawk": disp = "disinflation (bağlam: şahin)"
-                            if term == "disinf_dove": disp = "disinflation (bağlam: güvercin)"
-                            key = f"{m} -> {disp}" if m != term else disp
-                            out_counter[key] += c
-                            mark(term_i, term_len)
-                            break
-        
-        count_side(hawk_terms_sorted, hawk_dict, hawk_hits)
-        count_side(dove_terms_sorted, dove_dict, dove_hits)
-
-    H = sum(hawk_hits.values())
-    D = sum(dove_hits.values())
-    net_score = (H - D) / (H + D) if (H + D) > 0 else 0
-    return net_score, hawk_hits, dove_hits
+def make_ngrams(tokens, n):
+    return [" ".join(tokens[i:i+n]) for i in range(len(tokens) - n + 1)]
 
 def run_full_analysis(text):
     """
-    ÖNEMLİ GÜNCELLEME: Artık toplam sayıları da döndürüyor.
-    Return: (score, hawk_count, dove_count, hawk_list, dove_list)
+    Verilen metni N-Gram mantığıyla analiz eder.
+    Return: (net_score, hawk_total, dove_total, hawk_list_formatted, dove_list_formatted)
     """
-    pp_text = preprocess_disinflation(text)
-    score, h_hits, d_hits = abg_2019_count(pp_text, HAWK_DICT, DOVE_DICT, window=7)
+    if not text:
+        return 0, 0, 0, [], []
+
+    # 1. Tokenize
+    clean_text = text.lower()
+    tokens = re.findall(r"[a-z']+", clean_text)
     
-    h_total = sum(h_hits.values())
-    d_total = sum(d_hits.values())
+    token_counts = Counter(tokens)
     
-    hawk_list = [f"{k} ({v})" for k, v in h_hits.most_common()]
-    dove_list = [f"{k} ({v})" for k, v in d_hits.most_common()]
+    # 2. N-Gram Oluşturma
     
-    return score, h_total, d_total, hawk_list, dove_list
+    bigrams = make_ngrams(tokens, 2)
+    trigrams = make_ngrams(tokens, 3)
+    
+    bigram_counts = Counter(bigrams)
+    trigr_counts = Counter(trigrams)
+
+    # 3. Phrase Setlerini Oluştur
+    hawkish_phrases = {f"{adj} {noun}" for adj in HAWKISH_ADJECTIVES for noun in NOUNS}
+    dovish_phrases  = {f"{adj} {noun}" for adj in DOVISH_ADJECTIVES  for noun in NOUNS}
+
+    # 4. Phrase Sayım Mantığı (2'li mi 3'lü mü kontrolü)
+    def phrase_count(phrase):
+        n = len(phrase.split())
+        if n == 2: return bigram_counts[phrase]
+        elif n == 3: return trigr_counts[phrase]
+        else: return 0
+
+    # Kullanılanları ve Toplamları Bul
+    used_hawkish_ngrams = {p: phrase_count(p) for p in hawkish_phrases if phrase_count(p) > 0}
+    used_dovish_ngrams  = {p: phrase_count(p) for p in dovish_phrases  if phrase_count(p) > 0}
+    
+    hawk_ngram_count = sum(used_hawkish_ngrams.values())
+    dove_ngram_count = sum(used_dovish_ngrams.values())
+
+    # 5. Tek Kelime Sinyalleri
+    used_hawkish_single = {w: token_counts[w] for w in HAWKISH_SINGLE if token_counts[w] > 0}
+    used_dovish_single  = {w: token_counts[w] for w in DOVISH_SINGLE  if token_counts[w] > 0}
+
+    hawk_single_count = sum(used_hawkish_single.values())
+    dove_single_count = sum(used_dovish_single.values())
+
+    # 6. Genel Toplamlar
+    hawk_total = hawk_ngram_count + hawk_single_count
+    dove_total = dove_ngram_count + dove_single_count
+    total_signal = hawk_total + dove_total
+
+    # 7. Skor Hesaplama (Grafik için -1 ile 1 arası normalize)
+    if total_signal > 0:
+        net_score = (hawk_total - dove_total) / total_signal
+    else:
+        net_score = 0
+
+    # 8. Listeleri Formatla (Ekranda göstermek için)
+    # Sözlükleri birleştir
+    all_hawk_matches = {**used_hawkish_ngrams, **used_hawkish_single}
+    all_dove_matches = {**used_dovish_ngrams, **used_dovish_single}
+
+    hawk_list = [f"{k} ({v})" for k, v in sorted(all_hawk_matches.items(), key=lambda x: -x[1])]
+    dove_list = [f"{k} ({v})" for k, v in sorted(all_dove_matches.items(), key=lambda x: -x[1])]
+
+    return net_score, hawk_total, dove_total, hawk_list, dove_list
 
 # =============================================================================
-# 3. VERİ ÇEKME & DB
+# 3. VERİ ÇEKME & DB (MEVCUT YAPI)
 # =============================================================================
 
 @st.cache_data(ttl=600)

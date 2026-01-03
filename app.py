@@ -4,6 +4,7 @@ import datetime
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import utils 
+import uuid # Tabloyu resetlemek için benzersiz ID üretecek
 
 st.set_page_config(page_title="Piyasa Analiz", layout="wide")
 
@@ -39,6 +40,10 @@ if 'form_data' not in st.session_state:
         'text': ""
     }
 
+# Tabloyu resetlemek için Key (YENİ EKLENDİ)
+if 'table_key' not in st.session_state:
+    st.session_state['table_key'] = str(uuid.uuid4())
+
 # Çakışma ve Güncelleme Durumları
 if 'collision_state' not in st.session_state:
     st.session_state['collision_state'] = {'active': False, 'target_id': None, 'pending_text': None, 'target_date': None}
@@ -46,10 +51,12 @@ if 'update_state' not in st.session_state:
     st.session_state['update_state'] = {'active': False, 'pending_text': None}
 
 def reset_form():
-    """Formu tamamen sıfırlar ve yeni kayıt moduna geçirir"""
+    """Formu temizler VE tablodaki seçimi kaldırır"""
     st.session_state['form_data'] = {'id': None, 'date': datetime.date.today(), 'source': "TCMB", 'text': ""}
     st.session_state['collision_state'] = {'active': False, 'target_id': None, 'pending_text': None, 'target_date': None}
     st.session_state['update_state'] = {'active': False, 'pending_text': None}
+    # Tablo key'ini değiştirerek seçimi zorla kaldırıyoruz:
+    st.session_state['table_key'] = str(uuid.uuid4())
 
 # --- ARAYÜZ ---
 c1, c2 = st.columns([6, 1])
@@ -111,7 +118,7 @@ with tab1:
     else: st.info("Kayıt yok.")
 
 # ==============================================================================
-# TAB 2: VERİ GİRİŞİ (YENİ KAYIT BUTONU EKLENDİ)
+# TAB 2: VERİ GİRİŞİ
 # ==============================================================================
 with tab2:
     st.subheader("Veri İşlemleri")
@@ -125,8 +132,7 @@ with tab2:
     current_id = st.session_state['form_data']['id']
     
     with st.container(border=True):
-        # --- YENİ VERİ GİRİŞİ BUTONU ---
-        # Bu buton her şeyi sıfırlar ve temiz bir sayfa açar.
+        # YENİ VERİ GİRİŞİ BUTONU (SEÇİMİ DE KALDIRIR)
         if st.button("➕ YENİ VERİ GİRİŞİ (Ekranı Temizle)", type="secondary", use_container_width=True):
             reset_form()
             st.rerun()
@@ -149,7 +155,7 @@ with tab2:
         # --- MANTIK VE BUTONLAR ---
         st.markdown("---")
         
-        # 1. ÇAKIŞMA DURUMU (Üzerine Yazma Onayı)
+        # 1. ÇAKIŞMA DURUMU
         if st.session_state['collision_state']['active']:
             col_alert, col_act = st.columns([2, 2])
             with col_alert:
@@ -172,7 +178,7 @@ with tab2:
                     if st.button("❌ İptal", use_container_width=True):
                         st.session_state['collision_state']['active'] = False; st.rerun()
 
-        # 2. GÜNCELLEME DURUMU (Mevcut Kaydı Düzenleme Onayı)
+        # 2. GÜNCELLEME DURUMU
         elif st.session_state['update_state']['active']:
             col_alert, col_act = st.columns([2, 2])
             with col_alert:
@@ -193,11 +199,10 @@ with tab2:
                     if st.button("❌ İptal", use_container_width=True):
                         st.session_state['update_state']['active'] = False; st.rerun()
 
-        # 3. NORMAL DURUM (Henüz işlem yok)
+        # 3. NORMAL DURUM
         else:
             col_b1, col_b2, col_b3 = st.columns([2, 1, 1])
             with col_b1:
-                # Buton Etiketi
                 btn_label = "💾 Güncelle" if current_id else "💾 Kaydet / Analiz Et"
                 
                 if st.button(btn_label, type="primary"):
@@ -208,7 +213,7 @@ with tab2:
                             mask = df_all['date_only'] == selected_date
                             if mask.any(): collision_record = df_all[mask].iloc[0]
                         
-                        # A) GÜNCELLEME (Kendi kaydımız veya listeden seçili)
+                        # A) GÜNCELLEME
                         is_self_update = current_id and (
                             (collision_record is None) or 
                             (collision_record is not None and int(collision_record['id']) == current_id)
@@ -218,7 +223,7 @@ with tab2:
                             st.session_state['update_state'] = {'active': True, 'pending_text': txt}
                             st.rerun()
 
-                        # B) ÇAKIŞMA (Başka kayıt var)
+                        # B) ÇAKIŞMA
                         elif collision_record is not None:
                             st.session_state['collision_state'] = {
                                 'active': True,
@@ -228,7 +233,7 @@ with tab2:
                             }
                             st.rerun()
                         
-                        # C) YENİ KAYIT (Tertemiz)
+                        # C) YENİ KAYIT
                         else:
                             s_abg, h_cnt, d_cnt, hawks, doves, h_ctx, d_ctx = utils.run_full_analysis(txt)
                             utils.insert_entry(selected_date, txt, source, s_abg, s_abg)
@@ -238,7 +243,6 @@ with tab2:
                         st.error("Metin alanı boş olamaz.")
 
             with col_b2:
-                # Küçük temizle butonu
                 if st.button("Temizle"): reset_form(); st.rerun()
 
             with col_b3:
@@ -252,7 +256,7 @@ with tab2:
                                 st.success("Silindi!"); reset_form(); st.rerun()
                             else: st.error("Şifre Hatalı!")
 
-        # CANLI ANALİZ GÖSTERİMİ
+        # CANLI ANALİZ
         if txt:
             s_live, h_cnt, d_cnt, h_list, d_list, h_ctx, d_ctx = utils.run_full_analysis(txt)
             total_sigs = h_cnt + d_cnt
@@ -299,15 +303,21 @@ with tab2:
         df_show = df_all.copy()
         df_show['Dönem'] = df_show['period_date'].dt.strftime('%Y-%m')
         
+        # Dinamik Key kullanarak tabloyu resetliyoruz
         event = st.dataframe(
             df_show[['id', 'Dönem', 'period_date', 'source', 'score_abg']].sort_values('period_date', ascending=False),
-            on_select="rerun", selection_mode="single-row", use_container_width=True, hide_index=True
+            on_select="rerun", 
+            selection_mode="single-row", 
+            use_container_width=True, 
+            hide_index=True,
+            key=st.session_state['table_key'] # BU KISIM ÖNEMLİ
         )
         
         if len(event.selection.rows) > 0:
             sel_idx = event.selection.rows[0]
             sel_id = df_show.iloc[sel_idx]['id']
             
+            # Herhangi bir onay modu açıksa kapat
             if st.session_state['collision_state']['active'] or st.session_state['update_state']['active']:
                 st.session_state['collision_state']['active'] = False
                 st.session_state['update_state']['active'] = False

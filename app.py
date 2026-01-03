@@ -3,12 +3,13 @@ import pandas as pd
 import datetime
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-# transformers (FinBERT) importu kaldırıldı
+# FinBERT kaldırıldı
 import utils 
 
 st.set_page_config(page_title="Piyasa Analiz", layout="wide")
 
 # --- SESSION STATE ---
+# Form verilerini tutan hafıza
 if 'form_data' not in st.session_state:
     st.session_state['form_data'] = {
         'id': None,
@@ -22,7 +23,7 @@ st.title("🦅 Şahin/Güvercin Analiz Paneli")
 tab1, tab2, tab3 = st.tabs(["📈 Dashboard", "📝 Veri Girişi & Yönetimi", "📊 Piyasa Verileri"])
 
 # ==============================================================================
-# TAB 1: DASHBOARD (GÖRSEL DÜZELTME - GRADIENT KALDIRILDI)
+# TAB 1: DASHBOARD
 # ==============================================================================
 with tab1:
     with st.spinner("Yükleniyor..."):
@@ -41,11 +42,11 @@ with tab1:
         
         fig = make_subplots(specs=[[{"secondary_y": True}]])
         
-        # ABG Skoru Çizgisi
+        # ABG Skoru
         fig.add_trace(go.Scatter(
             x=merged['period_date'], 
             y=merged['score_abg'], 
-            name="Şahin/Güvercin Skoru (ABG)", 
+            name="Şahin/Güvercin Skoru", 
             line=dict(color='black', width=3),
             marker=dict(size=8, color='black')
         ), secondary_y=False)
@@ -55,50 +56,25 @@ with tab1:
         if 'PPK Faizi' in merged.columns:
             fig.add_trace(go.Scatter(x=merged['period_date'], y=merged['PPK Faizi'], name="Faiz (%)", line=dict(color='orange', dash='dot')), secondary_y=True)
 
-        # --- GÖRSEL AYARLAR (DÜZELTİLDİ) ---
+        # Görsel Ayarlar
         fig.update_layout(
             title="Merkez Bankası Tonu ve Piyasa Verileri",
             hovermode="x unified", 
             height=600,
-            # Şekiller (Gradient yerine düz şeffaf renkler kullanıldı)
             shapes=[
-                # 1. Kırmızı Bölge (Şahin - Üst)
-                dict(
-                    type="rect", xref="paper", yref="y",
-                    x0=0, x1=1, y0=0, y1=1.5, # 0'dan yukarı
-                    fillcolor="rgba(255, 0, 0, 0.08)", # Çok hafif kırmızı
-                    line_width=0, layer="below"
-                ),
-                # 2. Mavi Bölge (Güvercin - Alt)
-                dict(
-                    type="rect", xref="paper", yref="y",
-                    x0=0, x1=1, y0=-1.5, y1=0, # 0'dan aşağı
-                    fillcolor="rgba(0, 0, 255, 0.08)", # Çok hafif mavi
-                    line_width=0, layer="below"
-                ),
-                # 3. Kalın Sıfır Çizgisi
-                dict(
-                    type="line", xref="paper", yref="y",
-                    x0=0, x1=1, y0=0, y1=0,
-                    line=dict(color="black", width=3), layer="below"
-                ),
+                # Kırmızı Bölge (Şahin)
+                dict(type="rect", xref="paper", yref="y", x0=0, x1=1, y0=0, y1=1.5, fillcolor="rgba(255, 0, 0, 0.08)", line_width=0, layer="below"),
+                # Mavi Bölge (Güvercin)
+                dict(type="rect", xref="paper", yref="y", x0=0, x1=1, y0=-1.5, y1=0, fillcolor="rgba(0, 0, 255, 0.08)", line_width=0, layer="below"),
+                # Sıfır Çizgisi
+                dict(type="line", xref="paper", yref="y", x0=0, x1=1, y0=0, y1=0, line=dict(color="black", width=3), layer="below"),
             ],
             annotations=[
-                dict(
-                    x=0.01, y=0.95, xref="paper", yref="y",
-                    text="🦅 ŞAHİN BÖLGESİ", showarrow=False,
-                    font=dict(size=14, color="darkred", weight="bold")
-                ),
-                dict(
-                    x=0.01, y=-0.95, xref="paper", yref="y",
-                    text="🕊️ GÜVERCİN BÖLGESİ", showarrow=False,
-                    font=dict(size=14, color="darkblue", weight="bold")
-                )
+                dict(x=0.01, y=0.95, xref="paper", yref="y", text="🦅 ŞAHİN BÖLGESİ", showarrow=False, font=dict(size=14, color="darkred", weight="bold")),
+                dict(x=0.01, y=-0.95, xref="paper", yref="y", text="🕊️ GÜVERCİN BÖLGESİ", showarrow=False, font=dict(size=14, color="darkblue", weight="bold"))
             ]
         )
-        
-        # Y Eksenleri
-        fig.update_yaxes(title_text="Şahin (+) / Güvercin (-) Skoru", range=[-1.1, 1.1], secondary_y=False, zeroline=False)
+        fig.update_yaxes(title_text="Skor", range=[-1.1, 1.1], secondary_y=False, zeroline=False)
         fig.update_yaxes(title_text="Faiz & Enflasyon (%)", secondary_y=True)
 
         st.plotly_chart(fig, use_container_width=True)
@@ -106,7 +82,7 @@ with tab1:
     else: st.info("Kayıt yok.")
 
 # ==============================================================================
-# TAB 2: VERİ GİRİŞİ
+# TAB 2: VERİ GİRİŞİ (OTO-TEMİZLEME EKLENDİ)
 # ==============================================================================
 with tab2:
     st.subheader("Veri İşlemleri")
@@ -116,6 +92,7 @@ with tab2:
         df_all['period_date'] = pd.to_datetime(df_all['period_date'])
         df_all['date_only'] = df_all['period_date'].dt.date
     
+    # Hafızadaki ID'yi al
     current_id = st.session_state['form_data']['id']
     
     with st.container(border=True):
@@ -128,12 +105,14 @@ with tab2:
             source = st.text_input("Kaynak", value=val_source)
             st.caption(f"Dönem: **{selected_date.strftime('%Y-%m')}**")
             
+            # Çakışma Kontrolü
             collision_record = None
             if not df_all.empty:
                 mask = df_all['date_only'] == selected_date
                 if mask.any():
                     collision_record = df_all[mask].iloc[0]
             
+            # Eğer tarih veritabanında varsa VE biz şu an o kaydı düzenlemiyorsak (ID eşleşmiyorsa)
             if collision_record is not None and (current_id != collision_record['id']):
                 st.warning(f"⚠️ **DİKKAT:** {selected_date} tarihinde zaten bir kayıt var!")
                 st.markdown(f"*Kaydet tuşuna basarsanız mevcut verinin **üzerine yazılacaktır**.*")
@@ -155,21 +134,30 @@ with tab2:
                     # Analiz
                     s_abg, h_cnt, d_cnt, hawks, doves, h_ctx, d_ctx = utils.run_full_analysis(txt)
                     
-                    # DB Kayıt
+                    # 1. GÜNCELLEME (Listeden seçildiyse)
                     if current_id:
                         utils.update_entry(current_id, selected_date, txt, source, s_abg, s_abg)
                         st.success("Kayıt güncellendi!")
                         
+                    # 2. ÜZERİNE YAZMA (Tarih çakışması varsa)
                     elif collision_record is not None:
                         target_id = int(collision_record['id'])
                         utils.update_entry(target_id, selected_date, txt, source, s_abg, s_abg)
-                        st.warning(f"{selected_date} tarihli eski kayıt güncellendi.")
+                        st.warning(f"{selected_date} tarihli eski veri silindi, yenisi yazıldı.")
                         
+                    # 3. YENİ KAYIT
                     else:
                         utils.insert_entry(selected_date, txt, source, s_abg, s_abg)
                         st.success("Yeni kayıt eklendi!")
                     
-                    st.session_state['form_data'] = {'id': None, 'date': datetime.date.today(), 'source': "TCMB", 'text': ""}
+                    # --- KRİTİK NOKTA: İŞLEM BİTTİ, HER ŞEYİ TEMİZLE ---
+                    st.session_state['form_data'] = {
+                        'id': None, 
+                        'date': datetime.date.today(), 
+                        'source': "TCMB", 
+                        'text': ""
+                    }
+                    # Sayfayı yenile ki form boşalsın
                     st.rerun()
                 else:
                     st.error("Metin giriniz.")
@@ -184,6 +172,7 @@ with tab2:
                 if st.button("🗑️ Sil", type="primary"):
                     utils.delete_entry(current_id)
                     st.success("Silindi!")
+                    # Silince de temizle
                     st.session_state['form_data'] = {'id': None, 'date': datetime.date.today(), 'source': "TCMB", 'text': ""}
                     st.rerun()
 
@@ -218,8 +207,7 @@ with tab2:
                             term = item.split(' (')[0]
                             st.write(f"🔹 **{item}**")
                             if term in h_ctx:
-                                for s in h_ctx[term]:
-                                    st.caption(f"📝 ...{s}...")
+                                for s in h_ctx[term]: st.caption(f"📝 ...{s}...")
                     else: st.write("- Yok")
                 
                 with k2:
@@ -229,8 +217,7 @@ with tab2:
                             term = item.split(' (')[0]
                             st.write(f"🔹 **{item}**")
                             if term in d_ctx:
-                                for s in d_ctx[term]:
-                                    st.caption(f"📝 ...{s}...")
+                                for s in d_ctx[term]: st.caption(f"📝 ...{s}...")
                     else: st.write("- Yok")
 
     # LİSTE

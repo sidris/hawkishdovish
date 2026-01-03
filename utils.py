@@ -5,7 +5,7 @@ import requests
 import io
 import datetime
 
-# --- 1. BAĞLANTI AYARLARI ---
+# --- 1. AYARLAR VE BAĞLANTI ---
 try:
     if "supabase" in st.secrets:
         url = st.secrets["supabase"]["url"]
@@ -34,7 +34,7 @@ EVDS_TUFE_SERIES = "TP.FG.J0"
 def fetch_market_data_adapter(start_date, end_date):
     """
     TCMB (Enflasyon) ve BIS (Faiz) verilerini çeker.
-    Hepsini 'Donem' (YYYY-MM) bazında birleştirir.
+    X Ekseni için 'Donem' (YYYY-MM) bazlı birleştirir.
     """
     if not EVDS_API_KEY:
         return pd.DataFrame(), "EVDS Anahtarı Eksik."
@@ -43,13 +43,11 @@ def fetch_market_data_adapter(start_date, end_date):
     df_inf = pd.DataFrame()
     try:
         s = start_date.strftime("%d-%m-%Y"); e = end_date.strftime("%d-%m-%Y")
-        # Aylık (1) ve Yıllık (3) değişim
         for form, col in [(1, "Aylık TÜFE"), (3, "Yıllık TÜFE")]:
             url = f"{EVDS_BASE}/series={EVDS_TUFE_SERIES}&startDate={s}&endDate={e}&type=json&formulas={form}"
             r = requests.get(url, headers={"key": EVDS_API_KEY}, timeout=20)
             if r.status_code == 200 and r.json().get("items"):
                 temp = pd.DataFrame(r.json()["items"])
-                # Tarih İşleme
                 temp["dt"] = pd.to_datetime(temp["Tarih"], dayfirst=True, errors="coerce")
                 if temp["dt"].isnull().all(): temp["dt"] = pd.to_datetime(temp["Tarih"], format="%Y-%m", errors="coerce")
                 temp = temp.dropna(subset=["dt"])
@@ -82,7 +80,6 @@ def fetch_market_data_adapter(start_date, end_date):
     except Exception as e: return pd.DataFrame(), f"BIS Hatası: {e}"
 
     # --- C. BİRLEŞTİRME ---
-    # Ortak anahtar: "Donem"
     master_df = pd.DataFrame()
     if not df_inf.empty and not df_pol.empty:
         master_df = pd.merge(df_inf, df_pol, on="Donem", how="outer")
@@ -91,9 +88,9 @@ def fetch_market_data_adapter(start_date, end_date):
 
     if master_df.empty: return pd.DataFrame(), "Veri bulunamadı."
     
-    # Grafik için tarih (Ayın 1'i temsili)
-    master_df["Tarih"] = pd.to_datetime(master_df["Donem"] + "-01")
-    return master_df.sort_values("Donem"), None
+    # Grafik X ekseni için Donem string olarak kalsın, sıralama için tarih üretelim
+    master_df["SortDate"] = pd.to_datetime(master_df["Donem"] + "-01")
+    return master_df.sort_values("SortDate"), None
 
 # --- 3. VERİTABANI İŞLEMLERİ ---
 
@@ -104,11 +101,9 @@ def fetch_all_data():
 
 def insert_entry(date, text, source, s_dict, s_abg, s_fb, l_fb):
     if not supabase: return
-    # Tarihi string olarak kaydet
     data = {
         "period_date": str(date), 
-        "text_content": text, 
-        "source": source,
+        "text_content": text, "source": source,
         "score_dict": s_dict, "score_abg": s_abg, "score_finbert": s_fb, "finbert_label": l_fb
     }
     supabase.table("market_logs").insert(data).execute()

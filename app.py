@@ -76,6 +76,9 @@ with tab1:
         df_logs['period_date'] = pd.to_datetime(df_logs['period_date'])
         df_logs['Donem'] = df_logs['period_date'].dt.strftime('%Y-%m')
         
+        # Kelime Sayısını Hesapla
+        df_logs['word_count'] = df_logs['text_content'].apply(lambda x: len(str(x).split()) if x else 0)
+        
         min_d = df_logs['period_date'].min().date()
         max_d = datetime.date.today()
         df_market, err = utils.fetch_market_data_adapter(min_d, max_d)
@@ -85,36 +88,45 @@ with tab1:
         
         fig = make_subplots(specs=[[{"secondary_y": True}]])
         
-        # 1. Veri Çizgileri
+        # 1. KELİME SAYISI BAR CHART (EN ARKADA)
+        # Bunu secondary_y=False yapıyoruz ama ona özel bir 'yaxis3' atayacağız (Layout kısmında)
+        fig.add_trace(go.Bar(
+            x=merged['period_date'], 
+            y=merged['word_count'], 
+            name="Metin Uzunluğu (Kelime)",
+            marker=dict(color='gray'),
+            opacity=0.15, # Çok silik ve şeffaf
+            yaxis="y3",   # Gizli 3. ekseni kullan
+            hoverinfo="x+y+name"
+        ))
+
+        # 2. ŞAHİN/GÜVERCİN SKORU (ÇİZGİ)
         fig.add_trace(go.Scatter(
             x=merged['period_date'], y=merged['score_abg'], name="Şahin/Güvercin Skoru", 
             line=dict(color='black', width=3), marker=dict(size=8, color='black')
         ), secondary_y=False)
         
+        # 3. PİYASA VERİLERİ (ÇİZGİLER)
         if 'Yıllık TÜFE' in merged.columns:
             fig.add_trace(go.Scatter(x=merged['period_date'], y=merged['Yıllık TÜFE'], name="Yıllık TÜFE (%)", line=dict(color='red', dash='dot')), secondary_y=True)
         if 'PPK Faizi' in merged.columns:
             fig.add_trace(go.Scatter(x=merged['period_date'], y=merged['PPK Faizi'], name="Faiz (%)", line=dict(color='orange', dash='dot')), secondary_y=True)
 
         # ----------------------------------------------------------------------
-        # ŞEKİLLER (SHAPES) VE ETİKETLER (ANNOTATIONS) HAZIRLIĞI
+        # ŞEKİLLER VE ETİKETLER
         # ----------------------------------------------------------------------
-        
-        # 1. Temel Şekiller (Bölgeler ve Sıfır Çizgisi)
         layout_shapes = [
             dict(type="rect", xref="paper", yref="y", x0=0, x1=1, y0=0, y1=1.5, fillcolor="rgba(255, 0, 0, 0.08)", line_width=0, layer="below"),
             dict(type="rect", xref="paper", yref="y", x0=0, x1=1, y0=-1.5, y1=0, fillcolor="rgba(0, 0, 255, 0.08)", line_width=0, layer="below"),
             dict(type="line", xref="paper", yref="y", x0=0, x1=1, y0=0, y1=0, line=dict(color="black", width=3), layer="below"),
         ]
         
-        # 2. Temel Etiketler (Şahin/Güvercin Yazıları)
         layout_annotations = [
             dict(x=0.01, y=0.95, xref="paper", yref="y", text="🦅 ŞAHİN BÖLGESİ", showarrow=False, font=dict(size=14, color="darkred", weight="bold")),
             dict(x=0.01, y=-0.95, xref="paper", yref="y", text="🕊️ GÜVERCİN BÖLGESİ", showarrow=False, font=dict(size=14, color="darkblue", weight="bold"))
         ]
 
-        # 3. BAŞKAN DÖNEMLERİ (YENİ EKLENEN KISIM)
-        # Format: (Başlangıç Tarihi, İsim)
+        # Başkan Dönemleri
         governors = [
             ("2020-11-01", "Naci Ağbal"),
             ("2021-04-01", "Şahap Kavcıoğlu"),
@@ -123,39 +135,34 @@ with tab1:
         ]
 
         for start_date, name in governors:
-            # Dikey Ayırıcı Çizgi
             layout_shapes.append(
-                dict(
-                    type="line", xref="x", yref="paper",
-                    x0=start_date, x1=start_date, y0=0, y1=1,
-                    line=dict(color="gray", width=1, dash="longdash"),
-                    layer="below"
-                )
+                dict(type="line", xref="x", yref="paper", x0=start_date, x1=start_date, y0=0, y1=1, line=dict(color="gray", width=1, dash="longdash"), layer="below")
             )
-            # İsim Etiketi (Çizginin hemen sağına, en tepeye)
             layout_annotations.append(
-                dict(
-                    x=start_date, y=1.05, xref="x", yref="paper", # y=1.05 grafiğin hemen üstü
-                    text=f" <b>{name}</b>", # Kalın font
-                    showarrow=False,
-                    xanchor="left", # Yazı çizginin sağından başlasın
-                    font=dict(size=11, color="#555")
-                )
+                dict(x=start_date, y=1.05, xref="x", yref="paper", text=f" <b>{name}</b>", showarrow=False, xanchor="left", font=dict(size=11, color="#555"))
             )
 
         # ----------------------------------------------------------------------
-        # GRAFİK AYARLARI GÜNCELLEME
+        # GRAFİK AYARLARI (3. EKSEN EKLENDİ)
         # ----------------------------------------------------------------------
         fig.update_layout(
-            title="Merkez Bankası Tonu ve Piyasa Verileri", 
+            title="Merkez Bankası Tonu, Kelime Hacmi ve Piyasa Verileri", 
             hovermode="x unified", 
             height=600,
-            shapes=layout_shapes,          # Hazırladığımız şekil listesi
-            annotations=layout_annotations # Hazırladığımız etiket listesi
+            shapes=layout_shapes,          
+            annotations=layout_annotations,
+            # Eksen Ayarları
+            yaxis=dict(title="Skor", range=[-1.1, 1.1], zeroline=False), # Sol Eksen (Skor)
+            yaxis2=dict(title="Faiz & Enflasyon (%)", overlaying="y", side="right"), # Sağ Eksen 1 (Faiz)
+            yaxis3=dict(
+                title="Kelime Sayısı", 
+                overlaying="y", 
+                side="right", # Sağda dursun ama görünmesin
+                showgrid=False, 
+                visible=False, # Eksen çizgilerini gizle (göz yormasın)
+                range=[0, merged['word_count'].max() * 1.5] # Bar'lar grafiğin alt yarısında kalsın diye range'i büyük tutuyoruz
+            )
         )
-        
-        fig.update_yaxes(title_text="Skor", range=[-1.1, 1.1], secondary_y=False, zeroline=False)
-        fig.update_yaxes(title_text="Faiz & Enflasyon (%)", secondary_y=True)
 
         st.plotly_chart(fig, use_container_width=True)
         if st.button("🔄 Yenile"): st.cache_data.clear(); st.rerun()

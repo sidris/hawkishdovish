@@ -40,18 +40,18 @@ if 'form_data' not in st.session_state:
         'text': ""
     }
 
-# Çakışma Yönetimi (Collision State)
+# Çakışma Yönetimi (Collision State) - BU KISIM YENİ
 if 'collision_state' not in st.session_state:
     st.session_state['collision_state'] = {
         'active': False,       # Çakışma modu aktif mi?
-        'target_id': None,     # Üzerine yazılacak ID
-        'pending_data': None,  # Kaydedilmeyi bekleyen veriler (analiz sonuçları)
+        'target_id': None,     # Üzerine yazılacak ID (DB'deki eski kayıt)
+        'pending_text': None,  # Kaydedilmek istenen yeni metin
         'target_date': None    # Çakışan tarih
     }
 
 def reset_form():
     st.session_state['form_data'] = {'id': None, 'date': datetime.date.today(), 'source': "TCMB", 'text': ""}
-    st.session_state['collision_state'] = {'active': False, 'target_id': None, 'pending_data': None, 'target_date': None}
+    st.session_state['collision_state'] = {'active': False, 'target_id': None, 'pending_text': None, 'target_date': None}
 
 # --- ARAYÜZ ---
 c1, c2 = st.columns([6, 1])
@@ -113,24 +113,25 @@ with tab1:
     else: st.info("Kayıt yok.")
 
 # ==============================================================================
-# TAB 2: VERİ GİRİŞİ (ÇAKIŞMA ONAY MEKANİZMASI)
+# TAB 2: VERİ GİRİŞİ (AKILLI ÇAKIŞMA YÖNETİMİ)
 # ==============================================================================
 with tab2:
     st.subheader("Veri İşlemleri")
     
-    # DB Verilerini Hazırla
+    # DB Verilerini Çek (Kontrol için)
     df_all = utils.fetch_all_data()
     if not df_all.empty: 
         df_all['period_date'] = pd.to_datetime(df_all['period_date'])
         df_all['date_only'] = df_all['period_date'].dt.date
     
+    # Şu anki form durumunu al
     current_id = st.session_state['form_data']['id']
     
     with st.container(border=True):
         c1, c2 = st.columns([1, 2])
         with c1:
             val_date = st.session_state['form_data']['date']
-            # Tarih değişince veritabanına bakmıyoruz, sadece değişkeni güncelliyoruz
+            # Tarihi seçince hiçbir şey yapma, sadece değişkeni güncelle
             selected_date = st.date_input("Tarih", value=val_date)
             
             val_source = st.session_state['form_data']['source']
@@ -144,15 +145,15 @@ with tab2:
         # --- BUTON VE MANTIK ALANI ---
         st.markdown("---")
         
-        # DURUM 1: ÇAKIŞMA MODU AKTİFSE (Kullanıcı Kaydet'e bastı ve sistem çakışma buldu)
+        # SENARYO 1: ÇAKIŞMA TESPİT EDİLDİ (Kullanıcı Kaydet'e bastıktan sonra burası açılır)
         if st.session_state['collision_state']['active']:
             col_alert, col_act = st.columns([2, 2])
             
             with col_alert:
                 target_date = st.session_state['collision_state']['target_date']
-                st.error(f"⚠️ **ÇAKIŞMA TESPİT EDİLDİ!**")
-                st.write(f"**{target_date}** tarihinde zaten bir kayıt mevcut.")
-                st.info("Devam etmek için **Admin Şifresi** ile onaylamanız gerekmektedir.")
+                st.error(f"⚠️ **ÇAKIŞMA VAR!**")
+                st.write(f"**{target_date}** tarihinde veritabanında zaten bir kayıt var.")
+                st.info("Bu eski kaydı silip, yazdığınız yeni veriyi kaydetmek için **Admin Şifresi** girin.")
             
             with col_act:
                 admin_pass = st.text_input("Admin Şifresi", type="password", key="overwrite_pass")
@@ -161,15 +162,17 @@ with tab2:
                 with c_b1:
                     if st.button("🚨 Onayla ve Üzerine Yaz", type="primary", use_container_width=True):
                         if admin_pass == ADMIN_PWD:
-                            # Bekleyen verileri al
-                            p_data = st.session_state['collision_state']['pending_data']
+                            # Bekleyen verileri ve hedef ID'yi al
+                            pending_txt = st.session_state['collision_state']['pending_text']
                             t_id = st.session_state['collision_state']['target_id']
                             
-                            # Güncelleme Yap
-                            utils.update_entry(t_id, selected_date, txt, source, 
-                                               p_data['s_abg'], p_data['s_abg']) # FinBERT yok, ABG kullanılıyor
+                            # Analizi tekrar yap (Veri kaybı olmasın)
+                            s_abg, h_cnt, d_cnt, hawks, doves, h_ctx, d_ctx = utils.run_full_analysis(pending_txt)
                             
-                            st.success("Veri başarıyla güncellendi!")
+                            # Güncelleme Yap (Overwrite)
+                            utils.update_entry(t_id, selected_date, pending_txt, source, s_abg, s_abg)
+                            
+                            st.success("Eski veri silindi, yenisi kaydedildi!")
                             reset_form()
                             st.rerun()
                         else:
@@ -177,49 +180,52 @@ with tab2:
                 
                 with c_b2:
                     if st.button("❌ İptal Et", use_container_width=True):
-                        # Çakışma modunu kapat
+                        st.warning("İşlem iptal edildi.")
                         st.session_state['collision_state']['active'] = False
                         st.rerun()
 
-        # DURUM 2: NORMAL MOD (Çakışma yok veya henüz kontrol edilmedi)
+        # SENARYO 2: NORMAL DURUM (Henüz butona basılmadı veya çakışma yok)
         else:
             col_b1, col_b2, col_b3 = st.columns([2, 1, 1])
             with col_b1:
+                # Buton ismi: Eğer listeden seçili bir kayıt varsa "Güncelle", yoksa "Kaydet"
                 btn_label = "💾 Güncelle" if current_id else "💾 Kaydet / Analiz Et"
                 
                 if st.button(btn_label, type="primary"):
                     if txt:
-                        # 1. ÖNCE ANALİZ YAP (Veri hazırlığı)
-                        s_abg, h_cnt, d_cnt, hawks, doves, h_ctx, d_ctx = utils.run_full_analysis(txt)
-                        
-                        # 2. VERİTABANI KONTROLÜ (ŞİMDİ YAPIYORUZ)
+                        # 1. VERİTABANI KONTROLÜ (BUTONA BASINCA YAPILIYOR)
                         collision_record = None
                         if not df_all.empty:
                             mask = df_all['date_only'] == selected_date
                             if mask.any(): collision_record = df_all[mask].iloc[0]
                         
-                        # A) Eğer biz zaten bir kaydı düzenliyorsak (Listeden seçtik) -> Direkt Güncelle
-                        if current_id:
+                        # --- KARAR MEKANİZMASI ---
+                        
+                        # A) Biz zaten bir kaydı düzenliyorsak (Listeden seçtik, ID var)
+                        # Ve seçtiğimiz tarih o kaydın kendi tarihiyse -> Direkt Güncelle
+                        if current_id and (collision_record is not None) and (int(collision_record['id']) == current_id):
+                            s_abg, h_cnt, d_cnt, hawks, doves, h_ctx, d_ctx = utils.run_full_analysis(txt)
                             utils.update_entry(current_id, selected_date, txt, source, s_abg, s_abg)
                             st.success("Kayıt güncellendi!")
                             reset_form()
                             st.rerun()
-                        
-                        # B) Yeni kayıt ama tarih dolu -> ÇAKIŞMA MODUNU AÇ
+
+                        # B) Çakışma var! (Başka bir ID'li kayıt bu tarihte var)
                         elif collision_record is not None:
-                            # State'e bilgileri kaydet ve arayüzü değiştir
+                            # Çakışma modunu aç, kaydı durdur
                             st.session_state['collision_state'] = {
                                 'active': True,
                                 'target_id': int(collision_record['id']),
                                 'target_date': selected_date,
-                                'pending_data': {'s_abg': s_abg} # Analizi sakla
+                                'pending_text': txt # Metni sakla ki şifre girince kullanalım
                             }
-                            st.rerun() # Sayfayı yenile ki aşağıdaki uyarı ekranı gelsin
+                            st.rerun() # Sayfayı yenile ki yukarıdaki uyarı ekranı açılsın
                         
-                        # C) Sorun yok -> Direkt Ekle
+                        # C) Tertemiz, çakışma yok -> Yeni Kayıt
                         else:
+                            s_abg, h_cnt, d_cnt, hawks, doves, h_ctx, d_ctx = utils.run_full_analysis(txt)
                             utils.insert_entry(selected_date, txt, source, s_abg, s_abg)
-                            st.success("Yeni kayıt eklendi!")
+                            st.success("Yeni kayıt başarıyla eklendi!")
                             reset_form()
                             st.rerun()
                     else:
@@ -244,7 +250,7 @@ with tab2:
                             else:
                                 st.error("Şifre Hatalı!")
 
-        # CANLI ANALİZ GÖSTERİMİ (Her durumda göster)
+        # CANLI ANALİZ GÖSTERİMİ (Her zaman göster)
         if txt:
             s_live, h_cnt, d_cnt, h_list, d_list, h_ctx, d_ctx = utils.run_full_analysis(txt)
             total_sigs = h_cnt + d_cnt
@@ -300,7 +306,8 @@ with tab2:
         if len(event.selection.rows) > 0:
             sel_idx = event.selection.rows[0]
             sel_id = df_show.iloc[sel_idx]['id']
-            # Eğer collision modu açıksa seçim yapınca kapat (kullanıcı vazgeçmiş olabilir)
+            
+            # Eğer çakışma modu açıksa kapat (kullanıcı listeden başka bir şey seçti)
             if st.session_state['collision_state']['active']:
                 st.session_state['collision_state']['active'] = False
             

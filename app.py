@@ -43,7 +43,6 @@ if 'form_data' not in st.session_state:
 if 'table_key' not in st.session_state:
     st.session_state['table_key'] = str(uuid.uuid4())
 
-# Çakışma ve Güncelleme Durumları
 if 'collision_state' not in st.session_state:
     st.session_state['collision_state'] = {'active': False, 'target_id': None, 'pending_text': None, 'target_date': None}
 if 'update_state' not in st.session_state:
@@ -76,8 +75,11 @@ with tab1:
         df_logs['period_date'] = pd.to_datetime(df_logs['period_date'])
         df_logs['Donem'] = df_logs['period_date'].dt.strftime('%Y-%m')
         
-        # Kelime Sayısını Hesapla
+        # --- ON-THE-FLY HESAPLAMALAR ---
+        # 1. Kelime Sayısı
         df_logs['word_count'] = df_logs['text_content'].apply(lambda x: len(str(x).split()) if x else 0)
+        # 2. Okunabilirlik Skoru (Veritabanında sütun olmasa bile burada hesaplanır)
+        df_logs['flesch_score'] = df_logs['text_content'].apply(lambda x: utils.calculate_flesch_reading_ease(str(x)))
         
         min_d = df_logs['period_date'].min().date()
         max_d = datetime.date.today()
@@ -86,85 +88,82 @@ with tab1:
         merged = pd.merge(df_logs, df_market, on="Donem", how="left")
         merged = merged.sort_values("period_date")
         
+        # --- ANA GRAFİK (ŞAHİN/GÜVERCİN) ---
         fig = make_subplots(specs=[[{"secondary_y": True}]])
         
-        # 1. KELİME SAYISI BAR CHART (EN ARKADA)
-        # Bunu secondary_y=False yapıyoruz ama ona özel bir 'yaxis3' atayacağız (Layout kısmında)
+        # Kelime Sayısı (Arka Plan Bar)
         fig.add_trace(go.Bar(
             x=merged['period_date'], 
             y=merged['word_count'], 
-            name="Metin Uzunluğu (Kelime)",
-            marker=dict(color='gray'),
-            opacity=0.15, # Çok silik ve şeffaf
-            yaxis="y3",   # Gizli 3. ekseni kullan
-            hoverinfo="x+y+name"
+            name="Metin Uzunluğu",
+            marker=dict(color='gray'), opacity=0.15, yaxis="y3", hoverinfo="x+y+name"
         ))
 
-        # 2. ŞAHİN/GÜVERCİN SKORU (ÇİZGİ)
+        # Skor Çizgisi
         fig.add_trace(go.Scatter(
             x=merged['period_date'], y=merged['score_abg'], name="Şahin/Güvercin Skoru", 
             line=dict(color='black', width=3), marker=dict(size=8, color='black')
         ), secondary_y=False)
         
-        # 3. PİYASA VERİLERİ (ÇİZGİLER)
+        # Piyasa Verileri
         if 'Yıllık TÜFE' in merged.columns:
             fig.add_trace(go.Scatter(x=merged['period_date'], y=merged['Yıllık TÜFE'], name="Yıllık TÜFE (%)", line=dict(color='red', dash='dot')), secondary_y=True)
         if 'PPK Faizi' in merged.columns:
             fig.add_trace(go.Scatter(x=merged['period_date'], y=merged['PPK Faizi'], name="Faiz (%)", line=dict(color='orange', dash='dot')), secondary_y=True)
 
-        # ----------------------------------------------------------------------
-        # ŞEKİLLER VE ETİKETLER
-        # ----------------------------------------------------------------------
+        # Şekiller ve Etiketler
         layout_shapes = [
             dict(type="rect", xref="paper", yref="y", x0=0, x1=1, y0=0, y1=1.5, fillcolor="rgba(255, 0, 0, 0.08)", line_width=0, layer="below"),
             dict(type="rect", xref="paper", yref="y", x0=0, x1=1, y0=-1.5, y1=0, fillcolor="rgba(0, 0, 255, 0.08)", line_width=0, layer="below"),
             dict(type="line", xref="paper", yref="y", x0=0, x1=1, y0=0, y1=0, line=dict(color="black", width=3), layer="below"),
         ]
-        
         layout_annotations = [
             dict(x=0.01, y=0.95, xref="paper", yref="y", text="🦅 ŞAHİN BÖLGESİ", showarrow=False, font=dict(size=14, color="darkred", weight="bold")),
             dict(x=0.01, y=-0.95, xref="paper", yref="y", text="🕊️ GÜVERCİN BÖLGESİ", showarrow=False, font=dict(size=14, color="darkblue", weight="bold"))
         ]
-
-        # Başkan Dönemleri
-        governors = [
-            ("2020-11-01", "Naci Ağbal"),
-            ("2021-04-01", "Şahap Kavcıoğlu"),
-            ("2023-06-01", "Hafize Gaye Erkan"),
-            ("2024-02-01", "Fatih Karahan")
-        ]
-
+        governors = [("2020-11-01", "Naci Ağbal"), ("2021-04-01", "Şahap Kavcıoğlu"), ("2023-06-01", "Hafize Gaye Erkan"), ("2024-02-01", "Fatih Karahan")]
         for start_date, name in governors:
-            layout_shapes.append(
-                dict(type="line", xref="x", yref="paper", x0=start_date, x1=start_date, y0=0, y1=1, line=dict(color="gray", width=1, dash="longdash"), layer="below")
-            )
-            layout_annotations.append(
-                dict(x=start_date, y=1.05, xref="x", yref="paper", text=f" <b>{name}</b>", showarrow=False, xanchor="left", font=dict(size=11, color="#555"))
-            )
+            layout_shapes.append(dict(type="line", xref="x", yref="paper", x0=start_date, x1=start_date, y0=0, y1=1, line=dict(color="gray", width=1, dash="longdash"), layer="below"))
+            layout_annotations.append(dict(x=start_date, y=1.05, xref="x", yref="paper", text=f" <b>{name}</b>", showarrow=False, xanchor="left", font=dict(size=11, color="#555")))
 
-        # ----------------------------------------------------------------------
-        # GRAFİK AYARLARI (3. EKSEN EKLENDİ)
-        # ----------------------------------------------------------------------
         fig.update_layout(
-            title="Merkez Bankası Tonu, Kelime Hacmi ve Piyasa Verileri", 
-            hovermode="x unified", 
-            height=600,
-            shapes=layout_shapes,          
-            annotations=layout_annotations,
-            # Eksen Ayarları
-            yaxis=dict(title="Skor", range=[-1.1, 1.1], zeroline=False), # Sol Eksen (Skor)
-            yaxis2=dict(title="Faiz & Enflasyon (%)", overlaying="y", side="right"), # Sağ Eksen 1 (Faiz)
-            yaxis3=dict(
-                title="Kelime Sayısı", 
-                overlaying="y", 
-                side="right", # Sağda dursun ama görünmesin
-                showgrid=False, 
-                visible=False, # Eksen çizgilerini gizle (göz yormasın)
-                range=[0, merged['word_count'].max() * 1.5] # Bar'lar grafiğin alt yarısında kalsın diye range'i büyük tutuyoruz
-            )
+            title="Merkez Bankası Tonu, Kelime Hacmi ve Piyasa", hovermode="x unified", height=500,
+            shapes=layout_shapes, annotations=layout_annotations,
+            yaxis=dict(title="Skor", range=[-1.1, 1.1], zeroline=False),
+            yaxis2=dict(title="Faiz & Enflasyon (%)", overlaying="y", side="right"),
+            yaxis3=dict(title="Kelime", overlaying="y", side="right", showgrid=False, visible=False, range=[0, merged['word_count'].max() * 1.5])
         )
-
         st.plotly_chart(fig, use_container_width=True)
+
+        # --- YENİ GRAFİK: OKUNABİLİRLİK SKORU ---
+        st.subheader("📚 Metin Okunabilirlik Analizi (Flesch Reading Ease)")
+        st.caption("Skor 0-100 arasındadır. Düşük skor (0-30) metnin çok karmaşık/akademik olduğunu, Yüksek skor (60+) daha anlaşılır olduğunu gösterir.")
+        
+        fig_flesch = go.Figure()
+        fig_flesch.add_trace(go.Scatter(
+            x=merged['period_date'], 
+            y=merged['flesch_score'], 
+            mode='lines+markers',
+            name='Okunabilirlik',
+            line=dict(color='teal', width=2),
+            fill='tozeroy', # Altını doldur
+            fillcolor='rgba(0, 128, 128, 0.1)'
+        ))
+        
+        # Başkan çizgilerini buraya da ekleyelim
+        flesch_shapes = []
+        flesch_annotations = []
+        for start_date, name in governors:
+            flesch_shapes.append(dict(type="line", xref="x", yref="paper", x0=start_date, x1=start_date, y0=0, y1=1, line=dict(color="gray", width=1, dash="longdash")))
+            flesch_annotations.append(dict(x=start_date, y=1.05, xref="x", yref="paper", text=f" {name}", showarrow=False, xanchor="left", font=dict(size=10, color="#555")))
+
+        fig_flesch.update_layout(
+            height=300, hovermode="x unified",
+            shapes=flesch_shapes, annotations=flesch_annotations,
+            yaxis=dict(title="Flesch Skoru (0-100)", range=[0, 100])
+        )
+        st.plotly_chart(fig_flesch, use_container_width=True)
+
         if st.button("🔄 Yenile"): st.cache_data.clear(); st.rerun()
     else: st.info("Kayıt yok.")
 
@@ -173,7 +172,6 @@ with tab1:
 # ==============================================================================
 with tab2:
     st.subheader("Veri İşlemleri")
-    
     df_all = utils.fetch_all_data()
     if not df_all.empty: 
         df_all['period_date'] = pd.to_datetime(df_all['period_date'])
@@ -183,24 +181,18 @@ with tab2:
     
     with st.container(border=True):
         if st.button("➕ YENİ VERİ GİRİŞİ (Ekranı Temizle)", type="secondary", use_container_width=True):
-            reset_form()
-            st.rerun()
-        
+            reset_form(); st.rerun()
         st.markdown("---")
-
         c1, c2 = st.columns([1, 2])
         with c1:
             val_date = st.session_state['form_data']['date']
             selected_date = st.date_input("Tarih", value=val_date)
-            
             val_source = st.session_state['form_data']['source']
             source = st.text_input("Kaynak", value=val_source)
             st.caption(f"Dönem: **{selected_date.strftime('%Y-%m')}**")
-
         with c2:
             val_text = st.session_state['form_data']['text']
             txt = st.text_area("Metin", value=val_text, height=200, placeholder="Metni buraya yapıştırın...")
-        
         st.markdown("---")
         
         # 1. ÇAKIŞMA DURUMU
@@ -209,7 +201,6 @@ with tab2:
             with col_alert:
                 t_date = st.session_state['collision_state']['target_date']
                 st.error(f"⚠️ **ÇAKIŞMA:** {t_date} tarihinde kayıt var!")
-                st.info("Eski veriyi silip üzerine yazmak için **Admin Şifresi** giriniz.")
             with col_act:
                 admin_pass = st.text_input("Admin Şifresi", type="password", key="overwrite_pass")
                 c_b1, c_b2 = st.columns(2)
@@ -218,7 +209,8 @@ with tab2:
                         if admin_pass == ADMIN_PWD:
                             p_txt = st.session_state['collision_state']['pending_text']
                             t_id = st.session_state['collision_state']['target_id']
-                            s_abg, h_cnt, d_cnt, hawks, doves, h_ctx, d_ctx = utils.run_full_analysis(p_txt)
+                            # UNPACKING 8 DEĞER (Flesch Eklendi)
+                            s_abg, h_cnt, d_cnt, hawks, doves, h_ctx, d_ctx, flesch = utils.run_full_analysis(p_txt)
                             utils.update_entry(t_id, selected_date, p_txt, source, s_abg, s_abg)
                             st.success("Başarıyla üzerine yazıldı!"); reset_form(); st.rerun()
                         else: st.error("Şifre Hatalı!")
@@ -230,7 +222,6 @@ with tab2:
         elif st.session_state['update_state']['active']:
             col_alert, col_act = st.columns([2, 2])
             with col_alert:
-                st.info("ℹ️ **GÜNCELLEME ONAYI**")
                 st.warning("Değişikliği kaydetmek için **Admin Şifresi** giriniz.")
             with col_act:
                 update_pass = st.text_input("Admin Şifresi", type="password", key="update_pass")
@@ -239,7 +230,8 @@ with tab2:
                     if st.button("💾 Onayla ve Güncelle", type="primary", use_container_width=True):
                         if update_pass == ADMIN_PWD:
                             p_txt = st.session_state['update_state']['pending_text']
-                            s_abg, h_cnt, d_cnt, hawks, doves, h_ctx, d_ctx = utils.run_full_analysis(p_txt)
+                            # UNPACKING 8 DEĞER
+                            s_abg, h_cnt, d_cnt, hawks, doves, h_ctx, d_ctx, flesch = utils.run_full_analysis(p_txt)
                             utils.update_entry(current_id, selected_date, p_txt, source, s_abg, s_abg)
                             st.success("Kayıt güncellendi!"); reset_form(); st.rerun()
                         else: st.error("Şifre Hatalı!")
@@ -252,7 +244,6 @@ with tab2:
             col_b1, col_b2, col_b3 = st.columns([2, 1, 1])
             with col_b1:
                 btn_label = "💾 Güncelle" if current_id else "💾 Kaydet / Analiz Et"
-                
                 if st.button(btn_label, type="primary"):
                     if txt:
                         collision_record = None
@@ -260,7 +251,6 @@ with tab2:
                             mask = df_all['date_only'] == selected_date
                             if mask.any(): collision_record = df_all[mask].iloc[0]
                         
-                        # A) GÜNCELLEME
                         is_self_update = current_id and (
                             (collision_record is None) or 
                             (collision_record is not None and int(collision_record['id']) == current_id)
@@ -269,112 +259,84 @@ with tab2:
                         if is_self_update:
                             st.session_state['update_state'] = {'active': True, 'pending_text': txt}
                             st.rerun()
-
-                        # B) ÇAKIŞMA
                         elif collision_record is not None:
                             st.session_state['collision_state'] = {
-                                'active': True,
-                                'target_id': int(collision_record['id']),
-                                'target_date': selected_date,
-                                'pending_text': txt
+                                'active': True, 'target_id': int(collision_record['id']), 'target_date': selected_date, 'pending_text': txt
                             }
                             st.rerun()
-                        
-                        # C) YENİ KAYIT
                         else:
-                            s_abg, h_cnt, d_cnt, hawks, doves, h_ctx, d_ctx = utils.run_full_analysis(txt)
+                            # UNPACKING 8 DEĞER
+                            s_abg, h_cnt, d_cnt, hawks, doves, h_ctx, d_ctx, flesch = utils.run_full_analysis(txt)
                             utils.insert_entry(selected_date, txt, source, s_abg, s_abg)
-                            st.success("Yeni kayıt eklendi!")
-                            reset_form(); st.rerun()
-                    else:
-                        st.error("Metin alanı boş olamaz.")
-
+                            st.success("Yeni kayıt eklendi!"); reset_form(); st.rerun()
+                    else: st.error("Metin alanı boş.")
             with col_b2:
                 if st.button("Temizle"): reset_form(); st.rerun()
-
             with col_b3:
                 if current_id:
                     with st.popover("🗑️ Sil"):
-                        st.write("Admin şifresi girin:")
-                        del_pass = st.text_input("Şifre", type="password", key="del_pass")
+                        st.write("Admin şifresi:"); del_pass = st.text_input("Şifre", type="password", key="del_pass")
                         if st.button("🔥 Sil"):
                             if del_pass == ADMIN_PWD:
-                                utils.delete_entry(current_id)
-                                st.success("Silindi!"); reset_form(); st.rerun()
+                                utils.delete_entry(current_id); st.success("Silindi!"); reset_form(); st.rerun()
                             else: st.error("Şifre Hatalı!")
 
         # CANLI ANALİZ
         if txt:
-            s_live, h_cnt, d_cnt, h_list, d_list, h_ctx, d_ctx = utils.run_full_analysis(txt)
+            # UNPACKING 8 DEĞER
+            s_live, h_cnt, d_cnt, h_list, d_list, h_ctx, d_ctx, flesch_live = utils.run_full_analysis(txt)
             total_sigs = h_cnt + d_cnt
-            if total_sigs > 0:
-                h_pct = (h_cnt / total_sigs) * 100
-                d_pct = (d_cnt / total_sigs) * 100
-                tone_label = "ŞAHİN" if h_pct > d_pct else "GÜVERCİN" if d_pct > h_pct else "DENGELİ"
-            else:
-                h_pct = 0; d_pct = 0; tone_label = "NÖTR"
+            h_pct = (h_cnt/total_sigs)*100 if total_sigs > 0 else 0
+            d_pct = (d_cnt/total_sigs)*100 if total_sigs > 0 else 0
             
             st.markdown("---")
-            c1, c2 = st.columns(2)
-            with c1: st.metric("Şahin (Hawkish)", f"%{h_pct:.1f}", f"{h_cnt} Sinyal")
-            with c2: st.metric("Güvercin (Dovish)", f"%{d_pct:.1f}", f"{d_cnt} Sinyal")
-            
-            st.progress(h_pct / 100)
-            st.caption(f"Genel Ton: **{tone_label}** | Skor: {s_live:.2f}")
+            # --- YENİ METRİK GÖRÜNÜMÜ: ŞAHİN, GÜVERCİN, OKUNABİLİRLİK ---
+            met1, met2, met3 = st.columns(3)
+            with met1: st.metric("Şahin (Hawkish)", f"%{h_pct:.1f}", f"{h_cnt} Sinyal")
+            with met2: st.metric("Güvercin (Dovish)", f"%{d_pct:.1f}", f"{d_cnt} Sinyal")
+            with met3: 
+                # Renkli gösterim için
+                delta_color = "normal"
+                if flesch_live > 60: delta_color="normal" # İyi
+                elif flesch_live < 30: delta_color="inverse" # Kötü/Zor
+                st.metric("Okunabilirlik (Flesch)", f"{flesch_live:.1f}", "0-100 Arası", delta_color=delta_color)
 
+            st.progress(h_pct / 100)
+            
             exp = st.expander("🔍 Kelime ve Cümle Detayları", expanded=True)
             with exp:
                 k1, k2 = st.columns(2)
                 with k1:
-                    st.markdown("**🦅 Şahin İfadeler**")
-                    if h_list:
+                    st.markdown("**🦅 Şahin**"); 
+                    if h_list: 
                         for item in h_list:
-                            term = item.split(' (')[0]
-                            st.write(f"🔹 **{item}**")
-                            if term in h_ctx:
-                                for s in h_ctx[term]: st.caption(f"📝 ...{s}...")
-                    else: st.write("- Yok")
+                            t = item.split(' (')[0]; st.write(f"🔹 **{item}**")
+                            if t in h_ctx: 
+                                for s in h_ctx[t]: st.caption(f"📝 ...{s}...")
+                    else: st.write("-")
                 with k2:
-                    st.markdown("**🕊️ Güvercin İfadeler**")
-                    if d_list:
+                    st.markdown("**🕊️ Güvercin**"); 
+                    if d_list: 
                         for item in d_list:
-                            term = item.split(' (')[0]
-                            st.write(f"🔹 **{item}**")
-                            if term in d_ctx:
-                                for s in d_ctx[term]: st.caption(f"📝 ...{s}...")
-                    else: st.write("- Yok")
+                            t = item.split(' (')[0]; st.write(f"🔹 **{item}**")
+                            if t in d_ctx: 
+                                for s in d_ctx[t]: st.caption(f"📝 ...{s}...")
+                    else: st.write("-")
 
-    # LİSTE
     st.markdown("### 📋 Geçmiş Kayıtlar")
     if not df_all.empty:
         df_show = df_all.copy()
         df_show['Dönem'] = df_show['period_date'].dt.strftime('%Y-%m')
-        
-        event = st.dataframe(
-            df_show[['id', 'Dönem', 'period_date', 'source', 'score_abg']].sort_values('period_date', ascending=False),
-            on_select="rerun", selection_mode="single-row", use_container_width=True, hide_index=True,
-            key=st.session_state['table_key']
-        )
-        
+        event = st.dataframe(df_show[['id', 'Dönem', 'period_date', 'source', 'score_abg']].sort_values('period_date', ascending=False), on_select="rerun", selection_mode="single-row", use_container_width=True, hide_index=True, key=st.session_state['table_key'])
         if len(event.selection.rows) > 0:
-            sel_idx = event.selection.rows[0]
-            sel_id = df_show.iloc[sel_idx]['id']
-            
+            sel_id = df_show.iloc[event.selection.rows[0]]['id']
             if st.session_state['collision_state']['active'] or st.session_state['update_state']['active']:
-                st.session_state['collision_state']['active'] = False
-                st.session_state['update_state']['active'] = False
-            
+                st.session_state['collision_state']['active'] = False; st.session_state['update_state']['active'] = False
             if st.session_state['form_data']['id'] != sel_id:
                 orig = df_all[df_all['id'] == sel_id].iloc[0]
-                st.session_state['form_data'] = {
-                    'id': int(orig['id']),
-                    'date': pd.to_datetime(orig['period_date']).date(),
-                    'source': orig['source'],
-                    'text': orig['text_content']
-                }
+                st.session_state['form_data'] = {'id': int(orig['id']), 'date': pd.to_datetime(orig['period_date']).date(), 'source': orig['source'], 'text': orig['text_content']}
                 st.rerun()
 
-# TAB 3: PİYASA
 with tab3:
     st.header("Piyasa Verileri")
     c1, c2 = st.columns(2)

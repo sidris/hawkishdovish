@@ -78,9 +78,14 @@ with tab1:
         # --- ON-THE-FLY HESAPLAMALAR ---
         # 1. Kelime Sayısı
         df_logs['word_count'] = df_logs['text_content'].apply(lambda x: len(str(x).split()) if x else 0)
-        # 2. Okunabilirlik Skoru (Veritabanında sütun olmasa bile burada hesaplanır)
+        
+        # 2. Okunabilirlik Skoru
         df_logs['flesch_score'] = df_logs['text_content'].apply(lambda x: utils.calculate_flesch_reading_ease(str(x)))
         
+        # 3. VERİTABANI DÜZELTME (Eğer eski skorlar varsa 100 ile çarpılmış gibi gösterelim)
+        # Not: Kayıt güncellenince veritabanı düzelir ama grafik anlık düzgün görünsün
+        df_logs['score_abg_scaled'] = df_logs['score_abg'].apply(lambda x: x*100 if abs(x) <= 1 else x)
+
         min_d = df_logs['period_date'].min().date()
         max_d = datetime.date.today()
         df_market, err = utils.fetch_market_data_adapter(min_d, max_d)
@@ -99,9 +104,9 @@ with tab1:
             marker=dict(color='gray'), opacity=0.15, yaxis="y3", hoverinfo="x+y+name"
         ))
 
-        # Skor Çizgisi
+        # Skor Çizgisi (DÜZELTİLDİ: -100 / +100 Skalası)
         fig.add_trace(go.Scatter(
-            x=merged['period_date'], y=merged['score_abg'], name="Şahin/Güvercin Skoru", 
+            x=merged['period_date'], y=merged['score_abg_scaled'], name="Şahin/Güvercin Skoru", 
             line=dict(color='black', width=3), marker=dict(size=8, color='black')
         ), secondary_y=False)
         
@@ -111,10 +116,13 @@ with tab1:
         if 'PPK Faizi' in merged.columns:
             fig.add_trace(go.Scatter(x=merged['period_date'], y=merged['PPK Faizi'], name="Faiz (%)", line=dict(color='orange', dash='dot')), secondary_y=True)
 
-        # Şekiller ve Etiketler
+        # Şekiller ve Etiketler (YENİ SKALAYA GÖRE)
         layout_shapes = [
-            dict(type="rect", xref="paper", yref="y", x0=0, x1=1, y0=0, y1=1.5, fillcolor="rgba(255, 0, 0, 0.08)", line_width=0, layer="below"),
-            dict(type="rect", xref="paper", yref="y", x0=0, x1=1, y0=-1.5, y1=0, fillcolor="rgba(0, 0, 255, 0.08)", line_width=0, layer="below"),
+            # Kırmızı Alan (0 ile 150 arası)
+            dict(type="rect", xref="paper", yref="y", x0=0, x1=1, y0=0, y1=150, fillcolor="rgba(255, 0, 0, 0.08)", line_width=0, layer="below"),
+            # Mavi Alan (0 ile -150 arası)
+            dict(type="rect", xref="paper", yref="y", x0=0, x1=1, y0=-150, y1=0, fillcolor="rgba(0, 0, 255, 0.08)", line_width=0, layer="below"),
+            # Sıfır Çizgisi
             dict(type="line", xref="paper", yref="y", x0=0, x1=1, y0=0, y1=0, line=dict(color="black", width=3), layer="below"),
         ]
         layout_annotations = [
@@ -129,7 +137,8 @@ with tab1:
         fig.update_layout(
             title="Merkez Bankası Tonu, Kelime Hacmi ve Piyasa", hovermode="x unified", height=500,
             shapes=layout_shapes, annotations=layout_annotations,
-            yaxis=dict(title="Skor", range=[-1.1, 1.1], zeroline=False),
+            # Sol Eksen: -110 ile +110 arası
+            yaxis=dict(title="Net Skor (-100 / +100)", range=[-110, 110], zeroline=False),
             yaxis2=dict(title="Faiz & Enflasyon (%)", overlaying="y", side="right"),
             yaxis3=dict(title="Kelime", overlaying="y", side="right", showgrid=False, visible=False, range=[0, merged['word_count'].max() * 1.5])
         )
@@ -146,7 +155,7 @@ with tab1:
             mode='lines+markers',
             name='Okunabilirlik',
             line=dict(color='teal', width=2),
-            fill='tozeroy', # Altını doldur
+            fill='tozeroy',
             fillcolor='rgba(0, 128, 128, 0.1)'
         ))
         
@@ -209,7 +218,7 @@ with tab2:
                         if admin_pass == ADMIN_PWD:
                             p_txt = st.session_state['collision_state']['pending_text']
                             t_id = st.session_state['collision_state']['target_id']
-                            # UNPACKING 8 DEĞER (Flesch Eklendi)
+                            # UNPACKING
                             s_abg, h_cnt, d_cnt, hawks, doves, h_ctx, d_ctx, flesch = utils.run_full_analysis(p_txt)
                             utils.update_entry(t_id, selected_date, p_txt, source, s_abg, s_abg)
                             st.success("Başarıyla üzerine yazıldı!"); reset_form(); st.rerun()
@@ -230,7 +239,6 @@ with tab2:
                     if st.button("💾 Onayla ve Güncelle", type="primary", use_container_width=True):
                         if update_pass == ADMIN_PWD:
                             p_txt = st.session_state['update_state']['pending_text']
-                            # UNPACKING 8 DEĞER
                             s_abg, h_cnt, d_cnt, hawks, doves, h_ctx, d_ctx, flesch = utils.run_full_analysis(p_txt)
                             utils.update_entry(current_id, selected_date, p_txt, source, s_abg, s_abg)
                             st.success("Kayıt güncellendi!"); reset_form(); st.rerun()
@@ -265,7 +273,6 @@ with tab2:
                             }
                             st.rerun()
                         else:
-                            # UNPACKING 8 DEĞER
                             s_abg, h_cnt, d_cnt, hawks, doves, h_ctx, d_ctx, flesch = utils.run_full_analysis(txt)
                             utils.insert_entry(selected_date, txt, source, s_abg, s_abg)
                             st.success("Yeni kayıt eklendi!"); reset_form(); st.rerun()
@@ -283,25 +290,19 @@ with tab2:
 
         # CANLI ANALİZ
         if txt:
-            # UNPACKING 8 DEĞER
             s_live, h_cnt, d_cnt, h_list, d_list, h_ctx, d_ctx, flesch_live = utils.run_full_analysis(txt)
-            total_sigs = h_cnt + d_cnt
-            h_pct = (h_cnt/total_sigs)*100 if total_sigs > 0 else 0
-            d_pct = (d_cnt/total_sigs)*100 if total_sigs > 0 else 0
-            
+            # Burada da %100 ile çarpmak lazım
             st.markdown("---")
-            # --- YENİ METRİK GÖRÜNÜMÜ: ŞAHİN, GÜVERCİN, OKUNABİLİRLİK ---
             met1, met2, met3 = st.columns(3)
-            with met1: st.metric("Şahin (Hawkish)", f"%{h_pct:.1f}", f"{h_cnt} Sinyal")
-            with met2: st.metric("Güvercin (Dovish)", f"%{d_pct:.1f}", f"{d_cnt} Sinyal")
+            with met1: st.metric("Şahin (Hawkish)", f"{h_cnt} Kelime")
+            with met2: st.metric("Güvercin (Dovish)", f"{d_cnt} Kelime")
             with met3: 
-                # Renkli gösterim için
                 delta_color = "normal"
-                if flesch_live > 60: delta_color="normal" # İyi
-                elif flesch_live < 30: delta_color="inverse" # Kötü/Zor
-                st.metric("Okunabilirlik (Flesch)", f"{flesch_live:.1f}", "0-100 Arası", delta_color=delta_color)
+                if flesch_live > 60: delta_color="normal"
+                elif flesch_live < 30: delta_color="inverse"
+                st.metric("Okunabilirlik (Flesch)", f"{flesch_live:.1f}", delta_color=delta_color)
 
-            st.progress(h_pct / 100)
+            st.caption(f"**Net Skor:** {s_live:.2f} (Ölçek: -100 / +100)")
             
             exp = st.expander("🔍 Kelime ve Cümle Detayları", expanded=True)
             with exp:
@@ -327,7 +328,10 @@ with tab2:
     if not df_all.empty:
         df_show = df_all.copy()
         df_show['Dönem'] = df_show['period_date'].dt.strftime('%Y-%m')
-        event = st.dataframe(df_show[['id', 'Dönem', 'period_date', 'source', 'score_abg']].sort_values('period_date', ascending=False), on_select="rerun", selection_mode="single-row", use_container_width=True, hide_index=True, key=st.session_state['table_key'])
+        # Tabloda gösterirken de eski skorları 100 ile çarpıp gösterelim
+        df_show['Görsel Skor'] = df_show['score_abg'].apply(lambda x: x*100 if abs(x)<=1 else x)
+        
+        event = st.dataframe(df_show[['id', 'Dönem', 'period_date', 'source', 'Görsel Skor']].sort_values('period_date', ascending=False), on_select="rerun", selection_mode="single-row", use_container_width=True, hide_index=True, key=st.session_state['table_key'])
         if len(event.selection.rows) > 0:
             sel_id = df_show.iloc[event.selection.rows[0]]['id']
             if st.session_state['collision_state']['active'] or st.session_state['update_state']['active']:

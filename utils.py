@@ -5,7 +5,7 @@ import requests
 import io
 import datetime
 import re
-from collections import Counter
+from collections import Counter, defaultdict
 
 # --- 1. AYARLAR VE BAĞLANTI ---
 try:
@@ -65,55 +65,36 @@ def make_ngrams(tokens, n):
     return [" ".join(tokens[i:i+n]) for i in range(len(tokens) - n + 1)]
 
 def split_into_sentences(text):
-    # Basit cümle bölücü (Nokta, ünlem, soru işareti)
     return re.split(r'(?<=[.!?])\s+', text)
 
 def find_context_sentences(text, found_phrases):
-    """
-    Bulunan kelimelerin geçtiği cümleleri eşleştirir.
-    Return: { 'kelime': ['cümle 1', 'cümle 2'] }
-    """
     sentences = split_into_sentences(text)
     contexts = {}
-    
     for phrase in found_phrases:
         matched_sentences = []
         for sent in sentences:
-            # Kelime cümlede geçiyor mu? (Basit string match)
-            # Not: Daha hassas olması için regex word boundary (\b) kullanılabilir ama n-gram için string match yeterlidir.
             if phrase in sent.lower():
-                # Kelimeyi bold yapmak için markdown ekle
                 highlighted_sent = re.sub(f"({re.escape(phrase)})", r"**\1**", sent, flags=re.IGNORECASE)
                 matched_sentences.append(highlighted_sent.strip())
-        
         if matched_sentences:
             contexts[phrase] = matched_sentences
-            
     return contexts
 
 def run_full_analysis(text):
-    """
-    Return: (net_score, hawk_total, dove_total, hawk_list, dove_list, hawk_contexts, dove_contexts)
-    """
-    if not text:
-        return 0, 0, 0, [], [], {}, {}
+    if not text: return 0, 0, 0, [], [], {}, {}
 
-    # 1. Tokenize
     clean_text = text.lower()
     tokens = re.findall(r"[a-z']+", clean_text)
     token_counts = Counter(tokens)
     
-    # 2. N-Gram Oluşturma
     bigrams = make_ngrams(tokens, 2)
     trigrams = make_ngrams(tokens, 3)
     bigram_counts = Counter(bigrams)
     trigr_counts = Counter(trigrams)
 
-    # 3. Phrase Setlerini Oluştur
     hawkish_phrases = {f"{adj} {noun}" for adj in HAWKISH_ADJECTIVES for noun in NOUNS}
     dovish_phrases  = {f"{adj} {noun}" for adj in DOVISH_ADJECTIVES  for noun in NOUNS}
 
-    # 4. Phrase Sayım
     def phrase_count(phrase):
         n = len(phrase.split())
         if n == 2: return bigram_counts[phrase]
@@ -126,46 +107,39 @@ def run_full_analysis(text):
     hawk_ngram_count = sum(used_hawkish_ngrams.values())
     dove_ngram_count = sum(used_dovish_ngrams.values())
 
-    # 5. Tek Kelime Sayım
     used_hawkish_single = {w: token_counts[w] for w in HAWKISH_SINGLE if token_counts[w] > 0}
     used_dovish_single  = {w: token_counts[w] for w in DOVISH_SINGLE  if token_counts[w] > 0}
 
     hawk_single_count = sum(used_hawkish_single.values())
     dove_single_count = sum(used_dovish_single.values())
 
-    # 6. Toplamlar
     hawk_total = hawk_ngram_count + hawk_single_count
     dove_total = dove_ngram_count + dove_single_count
     total_signal = hawk_total + dove_total
 
-    # 7. Skor
     if total_signal > 0:
-        net_score = (hawk_total - dove_total) / total_signal
+        net_score = float(hawk_total - dove_total) / float(total_signal)
     else:
-        net_score = 0
+        net_score = 0.0
 
-    # 8. Listeler (Formatlı)
     all_hawk_matches = {**used_hawkish_ngrams, **used_hawkish_single}
     all_dove_matches = {**used_dovish_ngrams, **used_dovish_single}
 
     hawk_list = [f"{k} ({v})" for k, v in sorted(all_hawk_matches.items(), key=lambda x: -x[1])]
     dove_list = [f"{k} ({v})" for k, v in sorted(all_dove_matches.items(), key=lambda x: -x[1])]
 
-    # 9. CÜMLE BAĞLAMLARI (YENİ ÖZELLİK)
-    # Sadece bulunan kelimeler için cümleleri tara
     hawk_contexts = find_context_sentences(text, all_hawk_matches.keys())
     dove_contexts = find_context_sentences(text, all_dove_matches.keys())
 
     return net_score, hawk_total, dove_total, hawk_list, dove_list, hawk_contexts, dove_contexts
 
 # =============================================================================
-# 3. VERİ ÇEKME & DB (AYNI KALDI)
+# 3. VERİ ÇEKME & DB (FinBERT parametreleri çıkarıldı)
 # =============================================================================
 
 @st.cache_data(ttl=600)
 def fetch_market_data_adapter(start_date, end_date):
     if not EVDS_API_KEY: return pd.DataFrame(), "EVDS Anahtarı Eksik."
-    # Enflasyon
     df_inf = pd.DataFrame()
     try:
         s = start_date.strftime("%d-%m-%Y"); e = end_date.strftime("%d-%m-%Y")
@@ -184,7 +158,6 @@ def fetch_market_data_adapter(start_date, end_date):
                 else: df_inf = pd.merge(df_inf, temp, on="Donem", how="outer")
     except Exception as e: return pd.DataFrame(), f"TÜFE Hatası: {e}"
 
-    # Faiz
     df_pol = pd.DataFrame()
     try:
         s_bis = start_date.strftime("%Y-%m-%d"); e_bis = end_date.strftime("%Y-%m-%d")
@@ -212,16 +185,18 @@ def fetch_all_data():
     res = supabase.table("market_logs").select("*").order("period_date", desc=True).execute()
     return pd.DataFrame(res.data)
 
-def insert_entry(date, text, source, s_dict, s_abg, s_fb, l_fb):
+# --- FinBERT parametreleri (s_fb, l_fb) kaldırıldı ---
+def insert_entry(date, text, source, s_dict, s_abg):
     if not supabase: return
+    # score_finbert ve finbert_label veritabanına gönderilmiyor artık
     data = {"period_date": str(date), "text_content": text, "source": source,
-        "score_dict": s_dict, "score_abg": s_abg, "score_finbert": s_fb, "finbert_label": l_fb}
+        "score_dict": s_dict, "score_abg": s_abg}
     supabase.table("market_logs").insert(data).execute()
 
-def update_entry(rid, date, text, source, s_dict, s_abg, s_fb, l_fb):
+def update_entry(rid, date, text, source, s_dict, s_abg):
     if not supabase: return
     data = {"period_date": str(date), "text_content": text, "source": source,
-        "score_dict": s_dict, "score_abg": s_abg, "score_finbert": s_fb, "finbert_label": l_fb}
+        "score_dict": s_dict, "score_abg": s_abg}
     supabase.table("market_logs").update(data).eq("id", rid).execute()
 
 def delete_entry(rid):

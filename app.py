@@ -67,7 +67,7 @@ with tab1:
     else: st.info("Kayıt yok.")
 
 # ==============================================================================
-# TAB 2: VERİ GİRİŞİ (HATA DÜZELTİLDİ: 7 DEĞİŞKEN)
+# TAB 2: VERİ GİRİŞİ (HATASI GİDERİLDİ)
 # ==============================================================================
 with tab2:
     st.subheader("Veri İşlemleri")
@@ -97,7 +97,8 @@ with tab2:
                 if mask.any():
                     collision_record = df_all[mask].iloc[0]
             
-            if collision_record and (current_id != collision_record['id']):
+            # HATA BURADAYDI: "is not None" EKLENDİ
+            if collision_record is not None and (current_id != collision_record['id']):
                 st.warning(f"⚠️ **DİKKAT:** {selected_date} tarihinde zaten bir kayıt var!")
                 st.markdown(f"*Kaydet tuşuna basarsanız mevcut verinin **üzerine yazılacaktır**.*")
 
@@ -109,15 +110,15 @@ with tab2:
         with col_b1:
             # Buton Metni
             btn_text = "💾 Kaydet / Analiz Et"
-            if collision_record and (current_id != collision_record['id']):
+            # HATA BURADAYDI: "is not None" EKLENDİ
+            if collision_record is not None and (current_id != collision_record['id']):
                 btn_text = "⚠️ Üzerine Yaz ve Kaydet"
             elif current_id:
                 btn_text = "💾 Güncelle"
 
             if st.button(btn_text, type="primary"):
                 if txt:
-                    # --- DÜZELTME BURADA YAPILDI (7 DEĞİŞKEN) ---
-                    # utils.run_full_analysis artık cümleleri de (ctx) döndürüyor
+                    # Analiz (7 Değişkenli)
                     s_abg, h_cnt, d_cnt, hawks, doves, h_ctx, d_ctx = utils.run_full_analysis(txt)
                     s_fb, l_fb = analyze_finbert(txt)
                     
@@ -126,7 +127,8 @@ with tab2:
                         utils.update_entry(current_id, selected_date, txt, source, s_abg, s_abg, s_fb, l_fb)
                         st.success("Kayıt güncellendi!")
                         
-                    elif collision_record:
+                    # HATA BURADAYDI: "is not None" EKLENDİ
+                    elif collision_record is not None:
                         target_id = int(collision_record['id'])
                         utils.update_entry(target_id, selected_date, txt, source, s_abg, s_abg, s_fb, l_fb)
                         st.warning(f"{selected_date} tarihli eski kayıt güncellendi.")
@@ -155,7 +157,6 @@ with tab2:
 
         # CANLI ANALİZ GÖSTERİMİ
         if txt:
-            # --- DÜZELTME BURADA DA YAPILDI ---
             s_live, h_cnt, d_cnt, h_list, d_list, h_ctx, d_ctx = utils.run_full_analysis(txt)
             
             total_sigs = h_cnt + d_cnt
@@ -184,7 +185,6 @@ with tab2:
                         for item in h_list:
                             term = item.split(' (')[0]
                             st.write(f"🔹 **{item}**")
-                            # Cümleleri göster
                             if term in h_ctx:
                                 for s in h_ctx[term]:
                                     st.caption(f"📝 ...{s}...")
@@ -225,9 +225,7 @@ with tab2:
                 }
                 st.rerun()
 
-# ==============================================================================
 # TAB 3: PİYASA
-# ==============================================================================
 with tab3:
     st.header("Piyasa Verileri")
     c1, c2 = st.columns(2)

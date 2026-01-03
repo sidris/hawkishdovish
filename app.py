@@ -31,7 +31,6 @@ if not st.session_state['logged_in']:
     st.stop()
 
 # --- 2. SESSION STATE ---
-# Form Verileri
 if 'form_data' not in st.session_state:
     st.session_state['form_data'] = {
         'id': None,
@@ -40,24 +39,14 @@ if 'form_data' not in st.session_state:
         'text': ""
     }
 
-# Çakışma Yönetimi (Collision State) - Üzerine Yazma için
+# Çakışma ve Güncelleme Durumları
 if 'collision_state' not in st.session_state:
-    st.session_state['collision_state'] = {
-        'active': False,
-        'target_id': None,
-        'pending_text': None,
-        'target_date': None
-    }
-
-# Güncelleme Onay Yönetimi (Update State) - YENİ EKLENDİ
+    st.session_state['collision_state'] = {'active': False, 'target_id': None, 'pending_text': None, 'target_date': None}
 if 'update_state' not in st.session_state:
-    st.session_state['update_state'] = {
-        'active': False,
-        'pending_text': None
-    }
+    st.session_state['update_state'] = {'active': False, 'pending_text': None}
 
 def reset_form():
-    """Tüm form ve onay durumlarını sıfırlar"""
+    """Formu tamamen sıfırlar ve yeni kayıt moduna geçirir"""
     st.session_state['form_data'] = {'id': None, 'date': datetime.date.today(), 'source': "TCMB", 'text': ""}
     st.session_state['collision_state'] = {'active': False, 'target_id': None, 'pending_text': None, 'target_date': None}
     st.session_state['update_state'] = {'active': False, 'pending_text': None}
@@ -122,12 +111,12 @@ with tab1:
     else: st.info("Kayıt yok.")
 
 # ==============================================================================
-# TAB 2: VERİ GİRİŞİ (GÜNCELLEME VE ÇAKIŞMA ŞİFRELİ)
+# TAB 2: VERİ GİRİŞİ (YENİ KAYIT BUTONU EKLENDİ)
 # ==============================================================================
 with tab2:
     st.subheader("Veri İşlemleri")
     
-    # DB Verilerini Çek
+    # DB Verileri
     df_all = utils.fetch_all_data()
     if not df_all.empty: 
         df_all['period_date'] = pd.to_datetime(df_all['period_date'])
@@ -136,6 +125,14 @@ with tab2:
     current_id = st.session_state['form_data']['id']
     
     with st.container(border=True):
+        # --- YENİ VERİ GİRİŞİ BUTONU ---
+        # Bu buton her şeyi sıfırlar ve temiz bir sayfa açar.
+        if st.button("➕ YENİ VERİ GİRİŞİ (Ekranı Temizle)", type="secondary", use_container_width=True):
+            reset_form()
+            st.rerun()
+        
+        st.markdown("---")
+
         c1, c2 = st.columns([1, 2])
         with c1:
             val_date = st.session_state['form_data']['date']
@@ -147,19 +144,17 @@ with tab2:
 
         with c2:
             val_text = st.session_state['form_data']['text']
-            txt = st.text_area("Metin", value=val_text, height=200, placeholder="Metni buraya yapıştırın...")
+            txt = st.text_area("Metin", value=val_text, height=200, placeholder="Analiz edilecek metni buraya yapıştırın...")
         
-        # --- BUTON VE MANTIK ALANI ---
+        # --- MANTIK VE BUTONLAR ---
         st.markdown("---")
         
-        # ----------------------------------------------------------------------
-        # DURUM 1: ÇAKIŞMA MODU (ÜZERİNE YAZMA) - ŞİFRE İSTER
-        # ----------------------------------------------------------------------
+        # 1. ÇAKIŞMA DURUMU (Üzerine Yazma Onayı)
         if st.session_state['collision_state']['active']:
             col_alert, col_act = st.columns([2, 2])
             with col_alert:
                 t_date = st.session_state['collision_state']['target_date']
-                st.error(f"⚠️ **ÇAKIŞMA:** {t_date} tarihinde zaten kayıt var!")
+                st.error(f"⚠️ **ÇAKIŞMA:** {t_date} tarihinde kayıt var!")
                 st.info("Eski veriyi silip üzerine yazmak için **Admin Şifresi** giriniz.")
             with col_act:
                 admin_pass = st.text_input("Admin Şifresi", type="password", key="overwrite_pass")
@@ -177,14 +172,11 @@ with tab2:
                     if st.button("❌ İptal", use_container_width=True):
                         st.session_state['collision_state']['active'] = False; st.rerun()
 
-        # ----------------------------------------------------------------------
-        # DURUM 2: GÜNCELLEME MODU (MEVCUT KAYDI DÜZENLEME) - ŞİFRE İSTER
-        # ----------------------------------------------------------------------
+        # 2. GÜNCELLEME DURUMU (Mevcut Kaydı Düzenleme Onayı)
         elif st.session_state['update_state']['active']:
             col_alert, col_act = st.columns([2, 2])
             with col_alert:
                 st.info("ℹ️ **GÜNCELLEME ONAYI**")
-                st.write("Geçmiş bir kaydı değiştirmek üzeresiniz.")
                 st.warning("Değişikliği kaydetmek için **Admin Şifresi** giriniz.")
             with col_act:
                 update_pass = st.text_input("Admin Şifresi", type="password", key="update_pass")
@@ -201,42 +193,33 @@ with tab2:
                     if st.button("❌ İptal", use_container_width=True):
                         st.session_state['update_state']['active'] = False; st.rerun()
 
-        # ----------------------------------------------------------------------
-        # DURUM 3: NORMAL MOD (Henüz işlem yapılmadı)
-        # ----------------------------------------------------------------------
+        # 3. NORMAL DURUM (Henüz işlem yok)
         else:
             col_b1, col_b2, col_b3 = st.columns([2, 1, 1])
             with col_b1:
-                # Buton etiketi
+                # Buton Etiketi
                 btn_label = "💾 Güncelle" if current_id else "💾 Kaydet / Analiz Et"
                 
                 if st.button(btn_label, type="primary"):
                     if txt:
-                        # 1. VERİTABANI KONTROLÜ
+                        # DB Kontrolü
                         collision_record = None
                         if not df_all.empty:
                             mask = df_all['date_only'] == selected_date
                             if mask.any(): collision_record = df_all[mask].iloc[0]
                         
-                        # A) GÜNCELLEME İŞLEMİ (Listeden seçili, kendi tarihi veya tarih değişse bile ID var)
-                        # NOT: Eğer listeden seçtiysek ve tarih değiştirdik ama o tarih BOŞ ise -> Güncelleme sayılır.
-                        # Eğer tarih doluysa -> Çakışma sayılır (Aşağıdaki B şıkkı).
+                        # A) GÜNCELLEME (Kendi kaydımız veya listeden seçili)
                         is_self_update = current_id and (
                             (collision_record is None) or 
                             (collision_record is not None and int(collision_record['id']) == current_id)
                         )
 
                         if is_self_update:
-                            # GÜNCELLEME MODUNU AÇ (ŞİFRE İSTEYECEK)
-                            st.session_state['update_state'] = {
-                                'active': True,
-                                'pending_text': txt
-                            }
+                            st.session_state['update_state'] = {'active': True, 'pending_text': txt}
                             st.rerun()
 
-                        # B) ÇAKIŞMA (Başka bir ID bu tarihte var)
+                        # B) ÇAKIŞMA (Başka kayıt var)
                         elif collision_record is not None:
-                            # ÇAKIŞMA MODUNU AÇ (ŞİFRE İSTEYECEK)
                             st.session_state['collision_state'] = {
                                 'active': True,
                                 'target_id': int(collision_record['id']),
@@ -245,7 +228,7 @@ with tab2:
                             }
                             st.rerun()
                         
-                        # C) YENİ KAYIT (ID yok, Tarih boş) -> ŞİFRESİZ
+                        # C) YENİ KAYIT (Tertemiz)
                         else:
                             s_abg, h_cnt, d_cnt, hawks, doves, h_ctx, d_ctx = utils.run_full_analysis(txt)
                             utils.insert_entry(selected_date, txt, source, s_abg, s_abg)
@@ -255,8 +238,8 @@ with tab2:
                         st.error("Metin alanı boş olamaz.")
 
             with col_b2:
-                if st.button("Temizle"):
-                    reset_form(); st.rerun()
+                # Küçük temizle butonu
+                if st.button("Temizle"): reset_form(); st.rerun()
 
             with col_b3:
                 if current_id:
@@ -325,7 +308,6 @@ with tab2:
             sel_idx = event.selection.rows[0]
             sel_id = df_show.iloc[sel_idx]['id']
             
-            # Herhangi bir onay modu açıksa, listeden seçim yapınca kapat (Kafa karışıklığını önlemek için)
             if st.session_state['collision_state']['active'] or st.session_state['update_state']['active']:
                 st.session_state['collision_state']['active'] = False
                 st.session_state['update_state']['active'] = False

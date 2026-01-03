@@ -75,15 +75,10 @@ with tab1:
         df_logs['period_date'] = pd.to_datetime(df_logs['period_date'])
         df_logs['Donem'] = df_logs['period_date'].dt.strftime('%Y-%m')
         
-        # --- ON-THE-FLY HESAPLAMALAR ---
-        # 1. Kelime Sayısı
+        # --- HESAPLAMALAR ---
         df_logs['word_count'] = df_logs['text_content'].apply(lambda x: len(str(x).split()) if x else 0)
-        
-        # 2. Okunabilirlik Skoru
         df_logs['flesch_score'] = df_logs['text_content'].apply(lambda x: utils.calculate_flesch_reading_ease(str(x)))
-        
-        # 3. VERİTABANI DÜZELTME (Eğer eski skorlar varsa 100 ile çarpılmış gibi gösterelim)
-        # Not: Kayıt güncellenince veritabanı düzelir ama grafik anlık düzgün görünsün
+        # Eski kayıtları -100/+100 skalasına görsel olarak uyarla
         df_logs['score_abg_scaled'] = df_logs['score_abg'].apply(lambda x: x*100 if abs(x) <= 1 else x)
 
         min_d = df_logs['period_date'].min().date()
@@ -93,36 +88,36 @@ with tab1:
         merged = pd.merge(df_logs, df_market, on="Donem", how="left")
         merged = merged.sort_values("period_date")
         
-        # --- ANA GRAFİK (ŞAHİN/GÜVERCİN) ---
+        # Maksimum piyasa verisini bul (Eksen ayarı için)
+        market_max = 80 # Varsayılan
+        if 'Yıllık TÜFE' in merged.columns and 'PPK Faizi' in merged.columns:
+            market_max = max(merged['Yıllık TÜFE'].max(), merged['PPK Faizi'].max(), 80) + 10
+
+        # --- ANA GRAFİK ---
         fig = make_subplots(specs=[[{"secondary_y": True}]])
         
-        # Kelime Sayısı (Arka Plan Bar)
+        # 1. Kelime Sayısı (Arka Plan)
         fig.add_trace(go.Bar(
-            x=merged['period_date'], 
-            y=merged['word_count'], 
-            name="Metin Uzunluğu",
+            x=merged['period_date'], y=merged['word_count'], name="Metin Uzunluğu",
             marker=dict(color='gray'), opacity=0.15, yaxis="y3", hoverinfo="x+y+name"
         ))
 
-        # Skor Çizgisi (DÜZELTİLDİ: -100 / +100 Skalası)
+        # 2. Skor Çizgisi
         fig.add_trace(go.Scatter(
             x=merged['period_date'], y=merged['score_abg_scaled'], name="Şahin/Güvercin Skoru", 
             line=dict(color='black', width=3), marker=dict(size=8, color='black')
         ), secondary_y=False)
         
-        # Piyasa Verileri
+        # 3. Piyasa Verileri
         if 'Yıllık TÜFE' in merged.columns:
             fig.add_trace(go.Scatter(x=merged['period_date'], y=merged['Yıllık TÜFE'], name="Yıllık TÜFE (%)", line=dict(color='red', dash='dot')), secondary_y=True)
         if 'PPK Faizi' in merged.columns:
             fig.add_trace(go.Scatter(x=merged['period_date'], y=merged['PPK Faizi'], name="Faiz (%)", line=dict(color='orange', dash='dot')), secondary_y=True)
 
-        # Şekiller ve Etiketler (YENİ SKALAYA GÖRE)
+        # Şekiller
         layout_shapes = [
-            # Kırmızı Alan (0 ile 150 arası)
             dict(type="rect", xref="paper", yref="y", x0=0, x1=1, y0=0, y1=150, fillcolor="rgba(255, 0, 0, 0.08)", line_width=0, layer="below"),
-            # Mavi Alan (0 ile -150 arası)
             dict(type="rect", xref="paper", yref="y", x0=0, x1=1, y0=-150, y1=0, fillcolor="rgba(0, 0, 255, 0.08)", line_width=0, layer="below"),
-            # Sıfır Çizgisi
             dict(type="line", xref="paper", yref="y", x0=0, x1=1, y0=0, y1=0, line=dict(color="black", width=3), layer="below"),
         ]
         layout_annotations = [
@@ -135,40 +130,42 @@ with tab1:
             layout_annotations.append(dict(x=start_date, y=1.05, xref="x", yref="paper", text=f" <b>{name}</b>", showarrow=False, xanchor="left", font=dict(size=11, color="#555")))
 
         fig.update_layout(
-            title="Merkez Bankası Tonu, Kelime Hacmi ve Piyasa", hovermode="x unified", height=500,
+            title="Merkez Bankası Tonu, Kelime Hacmi ve Piyasa", 
+            hovermode="x unified", height=500,
             shapes=layout_shapes, annotations=layout_annotations,
-            # Sol Eksen: -110 ile +110 arası
+            showlegend=False, # LEGEND KALDIRILDI
+            # Sol Eksen: -110/+110
             yaxis=dict(title="Net Skor (-100 / +100)", range=[-110, 110], zeroline=False),
-            yaxis2=dict(title="Faiz & Enflasyon (%)", overlaying="y", side="right"),
+            # Sağ Eksen: Simetrik Aralık [-MAX, +MAX]
+            # Bu sayede 0% değeri tam ortaya (siyah çizgiye) denk gelir ve pozitif değerler yukarıda kalır.
+            yaxis2=dict(
+                title="Faiz & Enflasyon (%)", 
+                overlaying="y", 
+                side="right", 
+                range=[-market_max, market_max], # SİMETRİK ARALIK
+                showgrid=False
+            ),
             yaxis3=dict(title="Kelime", overlaying="y", side="right", showgrid=False, visible=False, range=[0, merged['word_count'].max() * 1.5])
         )
         st.plotly_chart(fig, use_container_width=True)
 
-        # --- YENİ GRAFİK: OKUNABİLİRLİK SKORU ---
-        st.subheader("📚 Metin Okunabilirlik Analizi (Flesch Reading Ease)")
-        st.caption("Skor 0-100 arasındadır. Düşük skor (0-30) metnin çok karmaşık/akademik olduğunu, Yüksek skor (60+) daha anlaşılır olduğunu gösterir.")
-        
+        # --- OKUNABİLİRLİK GRAFİĞİ (AYRI VE TEMİZ) ---
+        st.markdown("##### 📚 Metin Okunabilirlik Analizi (Flesch Score)")
         fig_flesch = go.Figure()
         fig_flesch.add_trace(go.Scatter(
-            x=merged['period_date'], 
-            y=merged['flesch_score'], 
-            mode='lines+markers',
-            name='Okunabilirlik',
-            line=dict(color='teal', width=2),
-            fill='tozeroy',
-            fillcolor='rgba(0, 128, 128, 0.1)'
+            x=merged['period_date'], y=merged['flesch_score'], 
+            mode='lines+markers', name='Okunabilirlik',
+            line=dict(color='teal', width=2), fill='tozeroy', fillcolor='rgba(0, 128, 128, 0.1)'
         ))
         
-        # Başkan çizgilerini buraya da ekleyelim
+        # Başkanları buraya da ekleyelim (Referans için)
         flesch_shapes = []
-        flesch_annotations = []
         for start_date, name in governors:
             flesch_shapes.append(dict(type="line", xref="x", yref="paper", x0=start_date, x1=start_date, y0=0, y1=1, line=dict(color="gray", width=1, dash="longdash")))
-            flesch_annotations.append(dict(x=start_date, y=1.05, xref="x", yref="paper", text=f" {name}", showarrow=False, xanchor="left", font=dict(size=10, color="#555")))
 
         fig_flesch.update_layout(
-            height=300, hovermode="x unified",
-            shapes=flesch_shapes, annotations=flesch_annotations,
+            height=250, hovermode="x unified", shapes=flesch_shapes,
+            margin=dict(l=20, r=20, t=20, b=20),
             yaxis=dict(title="Flesch Skoru (0-100)", range=[0, 100])
         )
         st.plotly_chart(fig_flesch, use_container_width=True)
@@ -204,7 +201,7 @@ with tab2:
             txt = st.text_area("Metin", value=val_text, height=200, placeholder="Metni buraya yapıştırın...")
         st.markdown("---")
         
-        # 1. ÇAKIŞMA DURUMU
+        # 1. ÇAKIŞMA
         if st.session_state['collision_state']['active']:
             col_alert, col_act = st.columns([2, 2])
             with col_alert:
@@ -218,7 +215,6 @@ with tab2:
                         if admin_pass == ADMIN_PWD:
                             p_txt = st.session_state['collision_state']['pending_text']
                             t_id = st.session_state['collision_state']['target_id']
-                            # UNPACKING
                             s_abg, h_cnt, d_cnt, hawks, doves, h_ctx, d_ctx, flesch = utils.run_full_analysis(p_txt)
                             utils.update_entry(t_id, selected_date, p_txt, source, s_abg, s_abg)
                             st.success("Başarıyla üzerine yazıldı!"); reset_form(); st.rerun()
@@ -227,7 +223,7 @@ with tab2:
                     if st.button("❌ İptal", use_container_width=True):
                         st.session_state['collision_state']['active'] = False; st.rerun()
 
-        # 2. GÜNCELLEME DURUMU
+        # 2. GÜNCELLEME
         elif st.session_state['update_state']['active']:
             col_alert, col_act = st.columns([2, 2])
             with col_alert:
@@ -247,7 +243,7 @@ with tab2:
                     if st.button("❌ İptal", use_container_width=True):
                         st.session_state['update_state']['active'] = False; st.rerun()
 
-        # 3. NORMAL DURUM
+        # 3. NORMAL
         else:
             col_b1, col_b2, col_b3 = st.columns([2, 1, 1])
             with col_b1:
@@ -259,10 +255,7 @@ with tab2:
                             mask = df_all['date_only'] == selected_date
                             if mask.any(): collision_record = df_all[mask].iloc[0]
                         
-                        is_self_update = current_id and (
-                            (collision_record is None) or 
-                            (collision_record is not None and int(collision_record['id']) == current_id)
-                        )
+                        is_self_update = current_id and ((collision_record is None) or (collision_record is not None and int(collision_record['id']) == current_id))
 
                         if is_self_update:
                             st.session_state['update_state'] = {'active': True, 'pending_text': txt}
@@ -291,20 +284,17 @@ with tab2:
         # CANLI ANALİZ
         if txt:
             s_live, h_cnt, d_cnt, h_list, d_list, h_ctx, d_ctx, flesch_live = utils.run_full_analysis(txt)
-            # Burada da %100 ile çarpmak lazım
             st.markdown("---")
             met1, met2, met3 = st.columns(3)
-            with met1: st.metric("Şahin (Hawkish)", f"{h_cnt} Kelime")
-            with met2: st.metric("Güvercin (Dovish)", f"{d_cnt} Kelime")
+            with met1: st.metric("Şahin", f"{h_cnt} Kelime")
+            with met2: st.metric("Güvercin", f"{d_cnt} Kelime")
             with met3: 
-                delta_color = "normal"
-                if flesch_live > 60: delta_color="normal"
-                elif flesch_live < 30: delta_color="inverse"
-                st.metric("Okunabilirlik (Flesch)", f"{flesch_live:.1f}", delta_color=delta_color)
-
+                d_col = "normal" if flesch_live > 60 else "inverse" if flesch_live < 30 else "off"
+                st.metric("Okunabilirlik", f"{flesch_live:.1f}", delta_color=d_col)
+            
             st.caption(f"**Net Skor:** {s_live:.2f} (Ölçek: -100 / +100)")
             
-            exp = st.expander("🔍 Kelime ve Cümle Detayları", expanded=True)
+            exp = st.expander("🔍 Detaylar", expanded=True)
             with exp:
                 k1, k2 = st.columns(2)
                 with k1:
@@ -328,9 +318,7 @@ with tab2:
     if not df_all.empty:
         df_show = df_all.copy()
         df_show['Dönem'] = df_show['period_date'].dt.strftime('%Y-%m')
-        # Tabloda gösterirken de eski skorları 100 ile çarpıp gösterelim
         df_show['Görsel Skor'] = df_show['score_abg'].apply(lambda x: x*100 if abs(x)<=1 else x)
-        
         event = st.dataframe(df_show[['id', 'Dönem', 'period_date', 'source', 'Görsel Skor']].sort_values('period_date', ascending=False), on_select="rerun", selection_mode="single-row", use_container_width=True, hide_index=True, key=st.session_state['table_key'])
         if len(event.selection.rows) > 0:
             sel_id = df_show.iloc[event.selection.rows[0]]['id']

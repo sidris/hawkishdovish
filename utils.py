@@ -9,7 +9,7 @@ import difflib
 from collections import Counter
 import numpy as np
 
-# --- EK KÜTÜPHANELER (Hata vermemesi için try-except) ---
+# --- EK KÜTÜPHANELER ---
 try:
     from sklearn.linear_model import LinearRegression
     from wordcloud import WordCloud, STOPWORDS
@@ -95,7 +95,6 @@ def find_context_sentences(text, found_phrases):
         matched_sentences = []
         for sent in sentences:
             if phrase in sent.lower():
-                # Vurgulama
                 highlighted_sent = re.sub(f"({re.escape(phrase)})", r"**\1**", sent, flags=re.IGNORECASE)
                 matched_sentences.append(highlighted_sent.strip())
         if matched_sentences:
@@ -162,7 +161,6 @@ def run_full_analysis(text):
 # --- DERİN ANALİZ ARAÇLARI ---
 
 def generate_diff_html(text1, text2):
-    """Diff analizi HTML üretir."""
     if not text1: text1 = ""
     if not text2: text2 = ""
     a = text1.split()
@@ -181,22 +179,25 @@ def generate_diff_html(text1, text2):
             html_output.append(f'<span style="background-color: #d4fcbc; color: #376e37; font-weight: bold;">+ {" ".join(b[b0:b1])}</span>')
     return " ".join(html_output)
 
-def get_top_terms_series(df, top_n=5):
-    """En çok geçen kelimeleri bulur ve zaman serisini döndürür."""
+def get_top_terms_series(df, top_n=5, custom_stops=None):
+    """En çok geçen kelimeleri bulur. Custom stop words desteği eklendi."""
     if df.empty: return pd.DataFrame(), []
     
-    # 1. Tüm metinleri birleştir ve say
     all_text = " ".join(df['text_content'].astype(str).tolist()).lower()
-    words = re.findall(r"\b[a-z]{4,}\b", all_text) # En az 4 harfli kelimeler
+    words = re.findall(r"\b[a-z]{4,}\b", all_text)
     
-    # Stopwords (Basit liste, WordCloud kütüphanesi yoksa diye)
     stops = set(["that", "with", "this", "from", "have", "which", "will", "been", "were", "market", "central", "bank", "committee", "monetary", "policy", "decision", "percent", "rates", "level"])
+    
+    # Kullanıcıdan gelen stop kelimeleri ekle
+    if custom_stops:
+        for s in custom_stops:
+            stops.add(s.lower().strip())
+    
     filtered_words = [w for w in words if w not in stops]
     
     common = Counter(filtered_words).most_common(top_n)
     top_terms = [t[0] for t in common]
     
-    # 2. Her dönem için say
     results = []
     for _, row in df.iterrows():
         txt = str(row['text_content']).lower()
@@ -207,16 +208,18 @@ def get_top_terms_series(df, top_n=5):
         
     return pd.DataFrame(results).sort_values('period_date'), top_terms
 
-def generate_wordcloud_img(text):
-    """WordCloud oluşturur ve matplotlib figure döner."""
+def generate_wordcloud_img(text, custom_stops=None):
+    """WordCloud oluşturur. Custom stop words desteği eklendi."""
     if not HAS_ML_DEPS or not text: return None
     
-    # Standart ekonomi stopwordleri ekle
     stopwords = set(STOPWORDS)
     stopwords.update(["central", "bank", "committee", "monetary", "policy", "percent", "decision", "rate", "board", "meeting"])
     
-    wc = WordCloud(width=800, height=400, background_color='white', stopwords=stopwords).generate(text)
+    if custom_stops:
+        for s in custom_stops:
+            stopwords.add(s.lower().strip())
     
+    wc = WordCloud(width=800, height=400, background_color='white', stopwords=stopwords).generate(text)
     fig, ax = plt.subplots(figsize=(10, 5))
     ax.imshow(wc, interpolation='bilinear')
     ax.axis('off')
@@ -224,48 +227,46 @@ def generate_wordcloud_img(text):
 
 def train_and_predict_rate(df_history, current_score):
     """
-    Text-as-Data Modeli:
-    Geçmiş (Skor -> Gelecek Ay Faiz Değişimi) verisiyle eğitir,
-    Mevcut skor için tahmin üretir.
+    Text-as-Data Modeli (GÜNCELLENDİ):
+    Artık tarihsel tahmin verilerini de (Predicted vs Actual) döndürür.
     """
-    if not HAS_ML_DEPS: return None, "Kütüphane eksik"
-    if df_history.empty or 'PPK Faizi' not in df_history.columns: return None, "Yetersiz Veri"
+    if not HAS_ML_DEPS: return None, None, "Kütüphane eksik"
+    if df_history.empty or 'PPK Faizi' not in df_history.columns: return None, None, "Yetersiz Veri"
     
-    # Veri Hazırlığı
     df = df_history.sort_values('period_date').copy()
     
-    # Faiz Değişimi (Gelecek ayki faiz - Bu ayki faiz)
-    # Varsayım: Metin bugünkü kararı açıklar ama etkisi/sinyali bir sonraki ay görünür.
-    # Shift(-1) ile bir sonraki satırın faizini alıp farkını buluyoruz.
+    # Varsayım: Metin skoru (t) -> Faiz Değişimi (t+1)
     df['Next_Rate'] = df['PPK Faizi'].shift(-1)
     df['Rate_Change'] = df['Next_Rate'] - df['PPK Faizi']
     
-    # Eksik verileri temizle
     train_data = df.dropna(subset=['score_abg_scaled', 'Rate_Change'])
     
-    if len(train_data) < 5: return None, "Model için en az 5 ay veri lazım."
+    if len(train_data) < 5: return None, None, "Model için en az 5 ay veri lazım."
     
-    # Model Eğitimi (Linear Regression)
-    X = train_data[['score_abg_scaled']] # Özellik: Metin Skoru
-    y = train_data['Rate_Change']        # Hedef: Faiz Değişimi (bps)
+    X = train_data[['score_abg_scaled']]
+    y = train_data['Rate_Change']
     
     model = LinearRegression()
     model.fit(X, y)
     
-    # Tahmin
+    # 1. Anlık Tahmin
     prediction = model.predict([[current_score]])[0]
     
-    # Korelasyon (R2 skoru yerine basit korelasyon daha anlaşılır olabilir)
+    # 2. Geçmiş Tahminleri (Grafik için)
+    train_data['Predicted_Change'] = model.predict(X)
+    
     corr = np.corrcoef(train_data['score_abg_scaled'], train_data['Rate_Change'])[0,1]
     
-    return {
+    stats = {
         'prediction': prediction,
         'correlation': corr,
         'sample_size': len(train_data),
         'coef': model.coef_[0]
-    }, None
+    }
+    
+    return stats, train_data[['period_date', 'Donem', 'Rate_Change', 'Predicted_Change']], None
 
-# --- DB İŞLEMLERİ ---
+# --- DB İŞLEMLERİ (Aynı kaldı) ---
 @st.cache_data(ttl=600)
 def fetch_market_data_adapter(start_date, end_date):
     if not EVDS_API_KEY: return pd.DataFrame(), "EVDS Anahtarı Eksik."

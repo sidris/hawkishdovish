@@ -5,7 +5,7 @@ import requests
 import io
 import datetime
 import re
-from collections import Counter, defaultdict
+from collections import Counter
 
 # --- AYARLAR ---
 try:
@@ -73,13 +73,10 @@ def calculate_flesch_reading_ease(text):
     if not text: return 0
     sentences = split_into_sentences(text)
     words = re.findall(r"[a-z']+", text.lower())
-    
     num_sentences = len(sentences)
     num_words = len(words)
     num_syllables = sum(count_syllables(w) for w in words)
-    
     if num_words == 0 or num_sentences == 0: return 0
-    
     score = 206.835 - 1.015 * (num_words / num_sentences) - 84.6 * (num_syllables / num_words)
     return round(score, 2)
 
@@ -98,7 +95,6 @@ def find_context_sentences(text, found_phrases):
 
 def run_full_analysis(text):
     if not text: return 0, 0, 0, [], [], {}, {}, 0
-
     clean_text = text.lower()
     tokens = re.findall(r"[a-z']+", clean_text)
     token_counts = Counter(tokens)
@@ -135,7 +131,7 @@ def run_full_analysis(text):
     dove_total = dove_ngram_count + dove_single_count
     total_signal = hawk_total + dove_total
 
-    # SKORU 100 İLE ÇARPARAK -100/+100 ARALIĞINA GETİRİYORUZ
+    # SKOR: -100 / +100
     if total_signal > 0:
         net_score = (float(hawk_total - dove_total) / float(total_signal)) * 100
     else:

@@ -8,7 +8,6 @@ import uuid
 
 st.set_page_config(page_title="Piyasa Analiz", layout="wide")
 
-# --- CSS İYİLEŞTİRMELERİ ---
 st.markdown("""
 <style>
     .block-container { padding-top: 1rem; padding-bottom: 5rem; }
@@ -85,6 +84,12 @@ with tab1:
         merged = merged.sort_values("period_date")
         if 'Yıllık TÜFE' in merged.columns: merged['Yıllık TÜFE'] = pd.to_numeric(merged['Yıllık TÜFE'], errors='coerce')
         if 'PPK Faizi' in merged.columns: merged['PPK Faizi'] = pd.to_numeric(merged['PPK Faizi'], errors='coerce')
+        
+        market_vals = [80]
+        if 'Yıllık TÜFE' in merged.columns: market_vals.append(merged['Yıllık TÜFE'].max())
+        if 'PPK Faizi' in merged.columns: market_vals.append(merged['PPK Faizi'].max())
+        market_vals = [v for v in market_vals if pd.notna(v)]
+        market_max = max(market_vals) + 10
 
         fig = make_subplots(specs=[[{"secondary_y": True}]])
         fig.add_trace(go.Bar(x=merged['period_date'], y=merged['word_count'], name="Metin Uzunluğu", marker=dict(color='gray'), opacity=0.10, yaxis="y3", hoverinfo="x+y+name"))
@@ -121,11 +126,10 @@ with tab1:
     else: st.info("Kayıt yok.")
 
 # ==============================================================================
-# TAB 2: VERİ GİRİŞİ (DETAYLAR GERİ GELDİ!)
+# TAB 2: VERİ GİRİŞİ
 # ==============================================================================
 with tab2:
     st.subheader("Veri İşlemleri")
-    # --- GERİ GELEN UYARI ---
     st.info("ℹ️ **BİLGİ:** Aşağıdaki geçmiş kayıtlar listesinden istediğiniz dönemi seçerek, hangi cümlelerin hesaplamaya alındığını görebilirsiniz.")
     
     with st.container():
@@ -146,7 +150,6 @@ with tab2:
                     val_text = st.session_state['form_data']['text']; txt = st.text_area("Metin", value=val_text, height=200, placeholder="Metni buraya yapıştırın...")
                 st.markdown("---")
                 
-                # ONAY BUTONLARI (GÜVENLİK)
                 if st.session_state['collision_state']['active']:
                     st.error("⚠️ Kayıt Çakışması"); admin_pass = st.text_input("Admin Şifresi", type="password", key="overwrite_pass")
                     if st.button("🚨 Üzerine Yaz", type="primary"):
@@ -187,7 +190,6 @@ with tab2:
                                 if del_pass == ADMIN_PWD: utils.delete_entry(current_id); st.success("Silindi!"); reset_form(); st.rerun()
                                 else: st.error("Hatalı!")
 
-                # --- GERİ GELEN DETAYLAR ---
                 if txt:
                     s_live, h_cnt, d_cnt, h_list, d_list, h_ctx, d_ctx, flesch_live = utils.run_full_analysis(txt)
                     st.markdown("---"); st.subheader("🔍 Analiz Detayları")
@@ -244,7 +246,7 @@ with tab3:
         else: st.error(f"Hata: {err}")
 
 # ==============================================================================
-# TAB 4: DERİN ANALİZ (DIFF & TREND)
+# TAB 4: DERİN ANALİZ (STOP WORDS EKLENDİ)
 # ==============================================================================
 with tab4:
     st.header("🔍 Derin Analiz ve Metin Madenciliği")
@@ -256,10 +258,15 @@ with tab4:
         
         # --- KELİME FREKANSI TRENDİ ---
         st.subheader("📊 En Çok Tekrar Eden Ekonomi Terimleri")
-        st.caption("Seçilen dönemdeki metinlerde en sık geçen ekonomi terimlerinin zaman içindeki değişimi.")
+        
+        # STOP WORD INPUT
+        stop_input = st.text_input("🚫 Grafikten Çıkarılacak Kelimeler (Virgülle ayırın)", placeholder="Örn: percent, decision, committee")
+        custom_stops = [s.strip() for s in stop_input.split(',')] if stop_input else []
         
         top_n = st.slider("Gösterilecek Kelime Sayısı", 3, 10, 5)
-        freq_df, top_terms = utils.get_top_terms_series(df_all, top_n)
+        
+        # Utils fonksiyonuna custom_stops gönderiyoruz
+        freq_df, top_terms = utils.get_top_terms_series(df_all, top_n, custom_stops)
         
         if not freq_df.empty:
             fig_freq = go.Figure()
@@ -272,7 +279,6 @@ with tab4:
         
         # --- DIFF ANALİZİ ---
         st.subheader("🔄 Metin Farkı (Diff) Analizi")
-        st.caption("İki farklı PPK metnini karşılaştırarak nelerin değiştiğini görün.")
         c_diff1, c_diff2 = st.columns(2)
         with c_diff1:
             sel_date1 = st.selectbox("Eski Metin (Referans):", df_all['Donem'].tolist(), index=min(1, len(df_all)-1))
@@ -290,15 +296,22 @@ with tab4:
     else: st.info("Yeterli veri yok.")
 
 # ==============================================================================
-# TAB 5: FAİZ TAHMİNİ (TEXT AS DATA)
+# TAB 5: FAİZ TAHMİNİ (AÇIKLAMA VE GRAFİK EKLENDİ)
 # ==============================================================================
 with tab5:
     st.header("🤖 Text-as-Data: Faiz Tahmini")
-    st.info("Bu modül, geçmiş metinlerin 'Şahinlik Skoru' ile bir sonraki aydaki 'Faiz Değişimi' arasındaki ilişkiyi öğrenerek (Lineer Regresyon), girilen metne göre faiz kararı tahmini yapar.")
     
-    # Veri Hazırla
-    if 'merged' in locals() and not merged.empty: # Tab 1'den gelen merged data
-        # Güncel metin girişi veya son kayıt
+    # MANTIK AÇIKLAMASI (YENİ)
+    with st.expander("ℹ️ Model Mantığı ve Metodoloji", expanded=True):
+        st.markdown("""
+        Bu modül, **"Metin Madenciliği ile Parasal Politika Tahmini" (Text-as-Data)** yaklaşımını kullanır.
+        
+        1.  **Veri Seti:** Geçmiş PPK metinlerinin "Şahinlik/Güvercinlik Skoru" ile bir sonraki toplantıdaki "Faiz Kararı" arasındaki ilişkiyi inceler.
+        2.  **Varsayım:** Merkez Bankası metinleri, gelecek kararların öncü göstergesidir (Forward Guidance). Şahin bir ton faiz artışına, Güvercin bir ton faiz indirimine işaret edebilir.
+        3.  **Algoritma:** Basit Doğrusal Regresyon (Linear Regression) kullanılarak, metin skorundaki 1 birimlik değişimin faiz oranında (baz puan) ne kadar değişim yarattığı modellenir.
+        """)
+
+    if 'merged' in locals() and not merged.empty:
         if st.session_state['form_data']['text']:
             target_text = st.session_state['form_data']['text']
             target_source = "Giriş Alanındaki Metin"
@@ -309,21 +322,18 @@ with tab5:
             target_text = None
             
         if target_text:
-            # Anlık Skorla
             s_live, _, _, _, _, _, _, _ = utils.run_full_analysis(target_text)
             
-            # Modeli Eğit ve Tahmin Et
-            result, error = utils.train_and_predict_rate(merged, s_live)
+            # Güncellenmiş fonksiyonu çağır (History df de dönüyor)
+            result, history_df, error = utils.train_and_predict_rate(merged, s_live)
             
             if result:
                 st.subheader(f"Analiz Kaynağı: {target_source}")
-                
                 col_pred1, col_pred2 = st.columns(2)
                 with col_pred1:
-                    change_bps = result['prediction'] * 100 # Baz puan
+                    change_bps = result['prediction'] * 100
                     direction = "ARTIRIM" if change_bps > 25 else "İNDİRİM" if change_bps < -25 else "SABİT"
                     color = "red" if direction == "ARTIRIM" else "blue" if direction == "İNDİRİM" else "gray"
-                    
                     st.markdown(f"### Tahmin: :{color}[{direction}]")
                     st.metric("Beklenen Değişim (Baz Puan)", f"{change_bps:.0f} bps")
                 
@@ -331,37 +341,53 @@ with tab5:
                     st.write("📊 **Model İstatistikleri**")
                     st.write(f"- Eğitim Verisi: {result['sample_size']} Toplantı")
                     st.write(f"- Korelasyon: {result['correlation']:.2f}")
-                    st.caption("*Not: Bu sadece istatistiksel bir modellemedir, yatırım tavsiyesi değildir.*")
+                
+                st.divider()
+                
+                # --- YENİ GRAFİK: TAHMİN VS GERÇEKLEŞEN ---
+                st.markdown("#### 📈 Model Performansı: Tahmin vs. Gerçekleşen")
+                if history_df is not None:
+                    fig_perf = go.Figure()
                     
-                # Regresyon Grafiği
-                fig_reg = go.Figure()
-                # Geçmiş veriler
-                fig_reg.add_trace(go.Scatter(
-                    x=merged['score_abg_scaled'], 
-                    y=merged['PPK Faizi'].shift(-1) - merged['PPK Faizi'],
-                    mode='markers', name='Geçmiş Kararlar'
-                ))
-                # Tahmin noktası
-                fig_reg.add_trace(go.Scatter(
-                    x=[s_live], y=[result['prediction']],
-                    mode='markers', marker=dict(color='red', size=15, symbol='star'),
-                    name='Şu Anki Tahmin'
-                ))
-                fig_reg.update_layout(title="Skor vs. Faiz Değişimi İlişkisi", xaxis_title="Metin Skoru", yaxis_title="Sonraki Ay Faiz Değişimi")
-                st.plotly_chart(fig_reg, use_container_width=True)
+                    # Gerçekleşen
+                    fig_perf.add_trace(go.Bar(
+                        x=history_df['period_date'], 
+                        y=history_df['Rate_Change']*100, 
+                        name='Gerçekleşen Değişim (bps)',
+                        marker_color='gray', opacity=0.6
+                    ))
+                    
+                    # Model Tahmini
+                    fig_perf.add_trace(go.Scatter(
+                        x=history_df['period_date'], 
+                        y=history_df['Predicted_Change']*100, 
+                        name='Model Tahmini (bps)',
+                        line=dict(color='red', width=2)
+                    ))
+                    
+                    fig_perf.update_layout(
+                        hovermode="x unified", 
+                        yaxis_title="Faiz Değişimi (Baz Puan)",
+                        legend=dict(orientation="h", y=1.1)
+                    )
+                    st.plotly_chart(fig_perf, use_container_width=True)
             else:
                 st.warning(f"Tahmin yapılamadı: {error}")
         else:
-            st.warning("Lütfen Veri Girişi sekmesinden bir metin girin veya geçmiş kayıt yükleyin.")
+            st.warning("Lütfen Veri Girişi sekmesinden bir metin girin.")
     else:
-        st.warning("Modeli eğitmek için Dashboard sekmesinin yüklenmesi ve yeterli piyasa verisi olması gerekir.")
+        st.warning("Yeterli veri yok.")
 
 # ==============================================================================
-# TAB 6: WORDCLOUD
+# TAB 6: WORDCLOUD (STOP WORDS EKLENDİ)
 # ==============================================================================
 with tab6:
     st.header("☁️ Kelime Bulutu (WordCloud)")
     if not df_all.empty:
+        # STOP WORD INPUT
+        stop_input_wc = st.text_input("🚫 Buluttan Çıkarılacak Kelimeler (Virgülle ayırın)", key="stop_wc", placeholder="Örn: bank, rate, inflation")
+        custom_stops_wc = [s.strip() for s in stop_input_wc.split(',')] if stop_input_wc else []
+        
         dates = df_all['Donem'].tolist()
         sel_cloud_date = st.selectbox("Dönem Seçin:", ["Tüm Zamanlar"] + dates)
         
@@ -371,7 +397,8 @@ with tab6:
             else:
                 text_cloud = df_all[df_all['Donem'] == sel_cloud_date].iloc[0]['text_content']
             
-            fig_wc = utils.generate_wordcloud_img(text_cloud)
+            # Custom stop words gönderiliyor
+            fig_wc = utils.generate_wordcloud_img(text_cloud, custom_stops_wc)
             if fig_wc:
                 st.pyplot(fig_wc)
             else:

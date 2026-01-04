@@ -179,7 +179,7 @@ def generate_diff_html(text1, text2):
             html_output.append(f'<span style="background-color: #d4fcbc; color: #376e37; font-weight: bold;">+ {" ".join(b[b0:b1])}</span>')
     return " ".join(html_output)
 
-def get_top_terms_series(df, top_n=5, custom_stops=None):
+def get_top_terms_series(df, top_n=7, custom_stops=None): # DEFAULT 7 OLARAK GÜNCELLENDİ
     if df.empty: return pd.DataFrame(), []
     
     all_text = " ".join(df['text_content'].astype(str).tolist()).lower()
@@ -220,27 +220,38 @@ def generate_wordcloud_img(text, custom_stops=None):
     return fig
 
 def train_and_predict_rate(df_history, current_score):
+    """
+    Modeli eğitir ve TÜM veri seti (son satır dahil) için tahmin üretir.
+    """
     if not HAS_ML_DEPS: return None, None, "Kütüphane eksik"
     if df_history.empty or 'PPK Faizi' not in df_history.columns: return None, None, "Yetersiz Veri"
     
     df = df_history.sort_values('period_date').copy()
     
-    # Next Rate logic: Sonraki ayın faizi - Şu anki faiz
+    # Hedef Değişken: Sonraki Ay - Şu An
     df['Next_Rate'] = df['PPK Faizi'].shift(-1)
     df['Rate_Change'] = df['Next_Rate'] - df['PPK Faizi']
     
+    # EĞİTİM için: Eksik olmayan verileri kullan
     train_data = df.dropna(subset=['score_abg_scaled', 'Rate_Change'])
     
     if len(train_data) < 5: return None, None, "Model için en az 5 ay veri lazım."
     
-    X = train_data[['score_abg_scaled']]
-    y = train_data['Rate_Change']
+    X_train = train_data[['score_abg_scaled']]
+    y_train = train_data['Rate_Change']
     
     model = LinearRegression()
-    model.fit(X, y)
+    model.fit(X_train, y_train)
     
+    # TAHMİN için: Skoru olan HER SATIR için tahmin üret (Rate_Change NaN olsa bile)
+    # Bu sayede son ay (2025-12 gibi) grafikte görünür.
+    full_X = df.dropna(subset=['score_abg_scaled'])[['score_abg_scaled']]
+    
+    # DataFrame üzerinde işlem yapabilmek için indeksleri eşleyelim
+    df.loc[full_X.index, 'Predicted_Change'] = model.predict(full_X)
+    
+    # Anlık tekil tahmin (Girdi kutusundaki metin için)
     prediction = model.predict([[current_score]])[0]
-    train_data['Predicted_Change'] = model.predict(X)
     
     corr = np.corrcoef(train_data['score_abg_scaled'], train_data['Rate_Change'])[0,1]
     
@@ -250,7 +261,11 @@ def train_and_predict_rate(df_history, current_score):
         'sample_size': len(train_data),
         'coef': model.coef_[0]
     }
-    return stats, train_data[['period_date', 'Donem', 'Rate_Change', 'Predicted_Change']], None
+    
+    # Grafik için gerekli sütunları dön (NaN içeren son satır dahil)
+    history_df = df[['period_date', 'Donem', 'Rate_Change', 'Predicted_Change']].copy()
+    
+    return stats, history_df, None
 
 # --- DB İŞLEMLERİ ---
 @st.cache_data(ttl=600)

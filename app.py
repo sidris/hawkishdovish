@@ -252,14 +252,14 @@ with tab3:
         if not df.empty:
             fig_m = go.Figure()
             if 'Yıllık TÜFE' in df.columns: fig_m.add_trace(go.Scatter(x=df['Donem'], y=df['Yıllık TÜFE'], name="Yıllık TÜFE", line=dict(color='red')))
-            if 'Aylık TÜFE' in df.columns: fig_m.add_trace(go.Scatter(x=df['Donem'], y=df['Aylık TÜFE'], name="Aylık TÜFE", line=dict(color='blue', dash='dot'))) # AYLIK TÜFE EKLENDİ
+            if 'Aylık TÜFE' in df.columns: fig_m.add_trace(go.Scatter(x=df['Donem'], y=df['Aylık TÜFE'], name="Aylık TÜFE", line=dict(color='blue', dash='dot')))
             if 'PPK Faizi' in df.columns: fig_m.add_trace(go.Scatter(x=df['Donem'], y=df['PPK Faizi'], name="Faiz", line=dict(color='orange')))
             st.plotly_chart(fig_m, use_container_width=True)
             st.dataframe(df, use_container_width=True)
         else: st.error(f"Hata: {err}")
 
 # ==============================================================================
-# TAB 4: DERİN ANALİZ (DÜZELTİLDİ: BAŞLIK VE KELİME)
+# TAB 4: DERİN ANALİZ
 # ==============================================================================
 with tab4:
     st.header("🔍 Derin Analiz ve Metin Madenciliği")
@@ -269,7 +269,7 @@ with tab4:
         df_all['Donem'] = df_all['period_date'].dt.strftime('%Y-%m')
         df_all = df_all.sort_values('period_date', ascending=False)
         
-        st.subheader("📊 En Çok Tekrar Eden Ekonomi Terimleri") # (Top 7) silindi
+        st.subheader("📊 En Çok Tekrar Eden Ekonomi Terimleri")
         
         st.text_input("🚫 Grafikten Çıkarılacak Kelimeler (Enter)", key="deep_stop_in", on_change=add_deep_stop)
         
@@ -282,7 +282,6 @@ with tab4:
                     st.rerun()
         st.divider()
         
-        # Sabit 7 kelime
         freq_df, top_terms = utils.get_top_terms_series(df_all, 7, st.session_state['stop_words_deep'])
         
         if not freq_df.empty:
@@ -308,7 +307,7 @@ with tab4:
     else: st.info("Yeterli veri yok.")
 
 # ==============================================================================
-# TAB 5: FAİZ TAHMİNİ (YENİ EKLENTİLER)
+# TAB 5: FAİZ TAHMİNİ (LOGIT ÇİZGİSİ EKLENDİ)
 # ==============================================================================
 with tab5:
     st.header("🤖 Text-as-Data: Faiz Tahmini")
@@ -318,8 +317,9 @@ with tab5:
         Bu modül, **"Metin Madenciliği ile Parasal Politika Tahmini" (Text-as-Data)** yaklaşımını kullanır.
         
         1.  **Veri Seti:** Geçmiş PPK metinlerinin "Şahinlik/Güvercinlik Skoru" ile bir sonraki toplantıdaki "Faiz Kararı" arasındaki ilişkiyi inceler.
-        2.  **Varsayım:** Merkez Bankası metinleri, gelecek kararların öncü göstergesidir (Forward Guidance). Şahin bir ton faiz artışına, Güvercin bir ton faiz indirimine işaret edebilir.
-        3.  **Algoritma:** Basit Doğrusal Regresyon (Linear Regression) kullanılarak, metin skorundaki 1 birimlik değişimin faiz oranında (baz puan) ne kadar değişim yarattığı modellenir.
+        2.  **Modeller:**
+            * **Lineer Regresyon (Kırmızı Çizgi):** Sürekli bir değişken olarak faiz değişimini modeller.
+            * **Logit Model (Yeşil Çizgi):** Faiz kararlarını "sınıflandırarak" (Örn: Sabit, 25bp artış, 50bp artış vb.) tahmin eder.
         """)
 
     if 'merged' in locals() and not merged.empty:
@@ -343,8 +343,12 @@ with tab5:
                     change_bps = result['prediction'] * 100
                     direction = "ARTIRIM" if change_bps > 25 else "İNDİRİM" if change_bps < -25 else "SABİT"
                     color = "red" if direction == "ARTIRIM" else "blue" if direction == "İNDİRİM" else "gray"
-                    st.markdown(f"### Tahmin: :{color}[{direction}]")
-                    st.metric("Beklenen Değişim (Baz Puan)", f"{change_bps:.0f} bps")
+                    st.markdown(f"### Tahmin (Linear): :{color}[{direction}]")
+                    st.metric("Beklenen Değişim", f"{change_bps:.0f} bps")
+                    
+                    # Logit Tahmin Gösterimi
+                    logit_bps = result['prediction_logit'] * 100
+                    st.caption(f"**Logit (Sınıflandırma) Tahmini:** {logit_bps:.0f} bps")
                 
                 with col_pred2:
                     st.write("📊 **Model İstatistikleri**")
@@ -354,17 +358,15 @@ with tab5:
                 st.divider()
                 st.markdown("#### 📈 Model Performansı: Tahmin vs. Gerçekleşen (BIS Verisi)")
                 
-                # --- DÖNEM FİLTRESİ ---
+                # Tarih Filtresi
                 min_hist = history_df['period_date'].min().date()
                 max_hist = history_df['period_date'].max().date()
                 c_d1, c_d2 = st.columns(2)
                 d_start = c_d1.date_input("Başlangıç Tarihi", datetime.date(2021, 1, 1), min_value=min_hist, max_value=max_hist)
                 d_end = c_d2.date_input("Bitiş Tarihi", max_hist, min_value=min_hist, max_value=max_hist)
                 
-                # Filtreleme
                 chart_df = history_df[(history_df['period_date'].dt.date >= d_start) & (history_df['period_date'].dt.date <= d_end)]
                 
-                # --- AÇIKLAMA BUTONU ---
                 with st.expander("❓ Neden Bazı Dönemlerde (Örn: 2023-07) Büyük Fark Var?"):
                     st.info("""
                     **Model Neden Yanılabilir?**
@@ -374,8 +376,6 @@ with tab5:
                     2023 ortasında Türkiye'de para politikasında radikal bir "Ortodokslaşma" süreci başladı.
                     * **Metin:** Metinler şahinleşti ama "Devasa" bir faiz artışını (örneğin tek seferde 500-600 baz puan) metinden tam olarak ölçmek zordur.
                     * **Aksiyon:** Politika yapıcılar, piyasa beklentilerini çıpalamak için metnin ima ettiğinden çok daha sert faiz artışları yaptılar.
-                    
-                    Bu tür **"Yapısal Kırılma" (Structural Break)** dönemlerinde, metin tabanlı modeller genellikle değişimin yönünü doğru bilir (Artış), ancak şiddetini (Miktarını) tahmin etmekte zorlanır.
                     """)
 
                 if not chart_df.empty:
@@ -389,9 +389,17 @@ with tab5:
                     fig_perf.add_trace(go.Scatter(
                         x=chart_df['period_date'], 
                         y=chart_df['Predicted_Change']*100, 
-                        name='Model Tahmini',
+                        name='Model Tahmini (Linear)',
                         line=dict(color='red', width=2)
                     ))
+                    # YENİ EKLENEN LOGIT ÇİZGİSİ
+                    fig_perf.add_trace(go.Scatter(
+                        x=chart_df['period_date'], 
+                        y=chart_df['Predicted_Change_Logit']*100, 
+                        name='Logit Tahmini (Ordered Proxy)',
+                        line=dict(color='green', width=2, dash='dot')
+                    ))
+                    
                     fig_perf.update_layout(hovermode="x unified", yaxis_title="Faiz Değişimi (Baz Puan)", legend=dict(orientation="h", y=1.1))
                     st.plotly_chart(fig_perf, use_container_width=True)
                 else:

@@ -5,8 +5,18 @@ import requests
 import io
 import datetime
 import re
-import difflib # Diff analizi için gerekli kütüphane
+import difflib
 from collections import Counter
+import numpy as np
+
+# --- EK KÜTÜPHANELER (Hata vermemesi için try-except) ---
+try:
+    from sklearn.linear_model import LinearRegression
+    from wordcloud import WordCloud, STOPWORDS
+    import matplotlib.pyplot as plt
+    HAS_ML_DEPS = True
+except ImportError:
+    HAS_ML_DEPS = False
 
 # --- AYARLAR ---
 try:
@@ -56,9 +66,6 @@ HAWKISH_SINGLE = {"tight","tightening","restrictive","elevated","high","overheat
 DOVISH_SINGLE = {"disinflation","decline","declining","fall","falling","decrease","decreasing","lower","low","subdued","contained","anchored","cooling","slow","slower","improvement","better","easing","relief"}
 
 # --- TEMEL FONKSİYONLAR ---
-def make_ngrams(tokens, n):
-    return [" ".join(tokens[i:i+n]) for i in range(len(tokens) - n + 1)]
-
 def split_into_sentences(text):
     return re.split(r'(?<=[.!?])\s+', text)
 
@@ -88,11 +95,15 @@ def find_context_sentences(text, found_phrases):
         matched_sentences = []
         for sent in sentences:
             if phrase in sent.lower():
+                # Vurgulama
                 highlighted_sent = re.sub(f"({re.escape(phrase)})", r"**\1**", sent, flags=re.IGNORECASE)
                 matched_sentences.append(highlighted_sent.strip())
         if matched_sentences:
             contexts[phrase] = matched_sentences
     return contexts
+
+def make_ngrams(tokens, n):
+    return [" ".join(tokens[i:i+n]) for i in range(len(tokens) - n + 1)]
 
 def run_full_analysis(text):
     if not text: return 0, 0, 0, [], [], {}, {}, 0
@@ -148,60 +159,111 @@ def run_full_analysis(text):
 
     return net_score, hawk_total, dove_total, hawk_list, dove_list, hawk_contexts, dove_contexts, flesch_score
 
-# --- YENİ EKLENEN: DIFF VE FREKANS ANALİZİ FONKSİYONLARI ---
+# --- DERİN ANALİZ ARAÇLARI ---
 
 def generate_diff_html(text1, text2):
-    """İki metin arasındaki farkı HTML olarak döndürür."""
+    """Diff analizi HTML üretir."""
     if not text1: text1 = ""
     if not text2: text2 = ""
-    
-    # Metinleri kelimelere böl
     a = text1.split()
     b = text2.split()
-    
-    # Difflib ile farkları bul
     matcher = difflib.SequenceMatcher(None, a, b)
     html_output = []
-    
     for opcode, a0, a1, b0, b1 in matcher.get_opcodes():
         if opcode == 'equal':
-            # Değişmeyen kısımlar
             html_output.append(" ".join(a[a0:a1]))
         elif opcode == 'insert':
-            # Eklenen kısımlar (Yeşil)
-            inserted = " ".join(b[b0:b1])
-            html_output.append(f'<span style="background-color: #d4fcbc; color: #376e37; font-weight: bold; padding: 2px 4px; border-radius: 4px;">+ {inserted}</span>')
+            html_output.append(f'<span style="background-color: #d4fcbc; color: #376e37; font-weight: bold;">+ {" ".join(b[b0:b1])}</span>')
         elif opcode == 'delete':
-            # Silinen kısımlar (Kırmızı ve üstü çizili)
-            deleted = " ".join(a[a0:a1])
-            html_output.append(f'<span style="background-color: #fcd4bc; color: #9c4444; text-decoration: line-through; padding: 2px 4px; border-radius: 4px;">- {deleted}</span>')
+            html_output.append(f'<span style="background-color: #fcd4bc; color: #9c4444; text-decoration: line-through;">- {" ".join(a[a0:a1])}</span>')
         elif opcode == 'replace':
-            # Değişen kısımlar (Önce silineni, sonra ekleneni göster)
-            deleted = " ".join(a[a0:a1])
-            inserted = " ".join(b[b0:b1])
-            html_output.append(f'<span style="background-color: #fcd4bc; color: #9c4444; text-decoration: line-through; padding: 2px 4px; border-radius: 4px;">- {deleted}</span>')
-            html_output.append(f'<span style="background-color: #d4fcbc; color: #376e37; font-weight: bold; padding: 2px 4px; border-radius: 4px;">+ {inserted}</span>')
-            
+            html_output.append(f'<span style="background-color: #fcd4bc; color: #9c4444; text-decoration: line-through;">- {" ".join(a[a0:a1])}</span>')
+            html_output.append(f'<span style="background-color: #d4fcbc; color: #376e37; font-weight: bold;">+ {" ".join(b[b0:b1])}</span>')
     return " ".join(html_output)
 
-def get_word_frequency_series(df, search_term):
-    """Verilen terimin tüm metinlerdeki geçiş sıklığını zaman serisi olarak döner."""
-    if df.empty or not search_term: return pd.DataFrame()
+def get_top_terms_series(df, top_n=5):
+    """En çok geçen kelimeleri bulur ve zaman serisini döndürür."""
+    if df.empty: return pd.DataFrame(), []
     
-    term = search_term.lower().strip()
-    # Regex ile tam veya kısmi eşleşme sayma
-    # Kelime sınırlarını (\b) kullanmıyoruz ki 'enflasyonist' içinde 'enflasyon'u da bulsun.
-    # Ancak basit count yerine regex daha sağlıklıdır.
+    # 1. Tüm metinleri birleştir ve say
+    all_text = " ".join(df['text_content'].astype(str).tolist()).lower()
+    words = re.findall(r"\b[a-z]{4,}\b", all_text) # En az 4 harfli kelimeler
     
+    # Stopwords (Basit liste, WordCloud kütüphanesi yoksa diye)
+    stops = set(["that", "with", "this", "from", "have", "which", "will", "been", "were", "market", "central", "bank", "committee", "monetary", "policy", "decision", "percent", "rates", "level"])
+    filtered_words = [w for w in words if w not in stops]
+    
+    common = Counter(filtered_words).most_common(top_n)
+    top_terms = [t[0] for t in common]
+    
+    # 2. Her dönem için say
     results = []
     for _, row in df.iterrows():
-        text = str(row['text_content']).lower()
-        # count occurrences
-        count = text.count(term)
-        results.append({'period_date': row['period_date'], 'count': count, 'Donem': row.get('Donem', '')})
+        txt = str(row['text_content']).lower()
+        entry = {'period_date': row['period_date'], 'Donem': row.get('Donem', '')}
+        for term in top_terms:
+            entry[term] = txt.count(term)
+        results.append(entry)
         
-    res_df = pd.DataFrame(results)
-    return res_df.sort_values('period_date')
+    return pd.DataFrame(results).sort_values('period_date'), top_terms
+
+def generate_wordcloud_img(text):
+    """WordCloud oluşturur ve matplotlib figure döner."""
+    if not HAS_ML_DEPS or not text: return None
+    
+    # Standart ekonomi stopwordleri ekle
+    stopwords = set(STOPWORDS)
+    stopwords.update(["central", "bank", "committee", "monetary", "policy", "percent", "decision", "rate", "board", "meeting"])
+    
+    wc = WordCloud(width=800, height=400, background_color='white', stopwords=stopwords).generate(text)
+    
+    fig, ax = plt.subplots(figsize=(10, 5))
+    ax.imshow(wc, interpolation='bilinear')
+    ax.axis('off')
+    return fig
+
+def train_and_predict_rate(df_history, current_score):
+    """
+    Text-as-Data Modeli:
+    Geçmiş (Skor -> Gelecek Ay Faiz Değişimi) verisiyle eğitir,
+    Mevcut skor için tahmin üretir.
+    """
+    if not HAS_ML_DEPS: return None, "Kütüphane eksik"
+    if df_history.empty or 'PPK Faizi' not in df_history.columns: return None, "Yetersiz Veri"
+    
+    # Veri Hazırlığı
+    df = df_history.sort_values('period_date').copy()
+    
+    # Faiz Değişimi (Gelecek ayki faiz - Bu ayki faiz)
+    # Varsayım: Metin bugünkü kararı açıklar ama etkisi/sinyali bir sonraki ay görünür.
+    # Shift(-1) ile bir sonraki satırın faizini alıp farkını buluyoruz.
+    df['Next_Rate'] = df['PPK Faizi'].shift(-1)
+    df['Rate_Change'] = df['Next_Rate'] - df['PPK Faizi']
+    
+    # Eksik verileri temizle
+    train_data = df.dropna(subset=['score_abg_scaled', 'Rate_Change'])
+    
+    if len(train_data) < 5: return None, "Model için en az 5 ay veri lazım."
+    
+    # Model Eğitimi (Linear Regression)
+    X = train_data[['score_abg_scaled']] # Özellik: Metin Skoru
+    y = train_data['Rate_Change']        # Hedef: Faiz Değişimi (bps)
+    
+    model = LinearRegression()
+    model.fit(X, y)
+    
+    # Tahmin
+    prediction = model.predict([[current_score]])[0]
+    
+    # Korelasyon (R2 skoru yerine basit korelasyon daha anlaşılır olabilir)
+    corr = np.corrcoef(train_data['score_abg_scaled'], train_data['Rate_Change'])[0,1]
+    
+    return {
+        'prediction': prediction,
+        'correlation': corr,
+        'sample_size': len(train_data),
+        'coef': model.coef_[0]
+    }, None
 
 # --- DB İŞLEMLERİ ---
 @st.cache_data(ttl=600)

@@ -3,4 +3,6 @@ pandas
 plotly
 supabase
 transformers
+scikit-learn
 torch
+wordcloud

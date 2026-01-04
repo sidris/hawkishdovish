@@ -68,37 +68,36 @@ DOVISH_SINGLE = {"disinflation","decline","declining","fall","falling","decrease
 # --- TEMEL FONKSİYONLAR ---
 
 def split_into_sentences(text):
-    # Standart cümle ayırıcı (nokta, ünlem, soru işareti)
     if not text: return []
+    # Noktalama işaretlerine göre cümleleri ayır
     return re.split(r'[.!?]+', text)
 
 def count_syllables(word):
     """
-    İngilizce Flesch standartlarına uygun hece sayacı.
-    Sessiz 'e'leri düşer, çift seslileri (diphthongs) tek sayar.
+    Standart Flesch hece sayma mantığı.
     """
     word = word.lower().strip(".:;?!")
     if not word: return 0
     if len(word) <= 3: return 1
     
-    # Kelime sonundaki sessiz e, es, ed gibi yapıları temizle
+    # Kelime sonundaki sessiz 'e', 'es', 'ed' gibi yapıları çıkar
     word = re.sub(r'(?:[^laeiouy]es|ed|[^laeiouy]e)$', '', word)
     word = re.sub(r'^y', '', word)
     
-    # Sesli harf gruplarını bul (İngilizce'de 'ai', 'ou' tek hece sayılır)
+    # Sesli harf gruplarını say (İngilizce'de diphthonglar tek hece sayılır)
     syllables = re.findall(r'[aeiouy]{1,2}', word)
     
     return len(syllables) if syllables else 1
 
 def calculate_flesch_reading_ease(text):
     """
-    Geliştirilmiş Flesch Reading Ease Hesaplaması
-    Score = 206.835 - 1.015 (Words/Sentences) - 84.6 (Syllables/Words)
+    Flesch Reading Ease Formülü (Görsele Birebir Uygun):
+    Score = 206.835 - 1.015 (Total Words / Total Sentences) - 84.6 (Total Syllables / Total Words)
     """
     if not text: return 0
     
     # 1. Cümleleri ve Kelimeleri Say
-    sentences = [s for s in split_into_sentences(text) if len(s.strip()) > 1]
+    sentences = [s for s in split_into_sentences(text) if len(s.strip()) > 0]
     words = re.findall(r"[a-z']+", text.lower())
     
     num_sentences = max(1, len(sentences))
@@ -107,13 +106,12 @@ def calculate_flesch_reading_ease(text):
     # 2. Toplam Hece Sayısı
     total_syllables = sum(count_syllables(w) for w in words)
     
-    # 3. Formül
-    avg_sentence_len = num_words / num_sentences
-    avg_syllables_word = total_syllables / num_words
+    # 3. Formül Uygulaması
+    # ASL = Average Sentence Length (Words per Sentence)
+    # ASW = Average Number of Syllables per Word
     
-    score = 206.835 - (1.015 * avg_sentence_len) - (84.6 * avg_syllables_word)
+    score = 206.835 - (1.015 * (num_words / num_sentences)) - (84.6 * (total_syllables / num_words))
     
-    # Sınırlandırma (0-100 arası olması beklenir ama formül dışına çıkabilir, biz ham değeri dönelim)
     return round(score, 2)
 
 def find_context_sentences(text, found_phrases):
@@ -208,6 +206,7 @@ def generate_diff_html(text1, text2):
     return " ".join(html_output)
 
 def get_top_terms_series(df, top_n=7, custom_stops=None):
+    """Varsayılan olarak Top 7 kelimeyi getirir."""
     if df.empty: return pd.DataFrame(), []
     
     all_text = " ".join(df['text_content'].astype(str).tolist()).lower()
@@ -253,7 +252,6 @@ def train_and_predict_rate(df_history, current_score):
     
     df = df_history.sort_values('period_date').copy()
     
-    # Next Rate logic
     df['Next_Rate'] = df['PPK Faizi'].shift(-1)
     df['Rate_Change'] = df['Next_Rate'] - df['PPK Faizi']
     
@@ -267,6 +265,7 @@ def train_and_predict_rate(df_history, current_score):
     model = LinearRegression()
     model.fit(X, y)
     
+    # 2025-12 gibi son satırlar dahil tüm tahminleri oluştur
     full_X = df.dropna(subset=['score_abg_scaled'])[['score_abg_scaled']]
     df.loc[full_X.index, 'Predicted_Change'] = model.predict(full_X)
     

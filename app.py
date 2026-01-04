@@ -13,11 +13,7 @@ st.markdown("""
     .block-container { padding-top: 1rem; padding-bottom: 5rem; }
     h1 { font-size: 1.8rem !important; }
     .stDataFrame { font-size: 0.8rem; }
-    /* Etiket Stili */
-    .stButton button {
-        border-radius: 20px;
-        font-size: 0.8rem;
-    }
+    .stButton button { border-radius: 20px; font-size: 0.8rem; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -48,6 +44,21 @@ if 'update_state' not in st.session_state: st.session_state['update_state'] = {'
 # Stopwords State
 if 'stop_words_deep' not in st.session_state: st.session_state['stop_words_deep'] = []
 if 'stop_words_cloud' not in st.session_state: st.session_state['stop_words_cloud'] = []
+
+# --- CALLBACK FONKSİYONLARI (SORUNU ÇÖZEN KISIM) ---
+def add_deep_stop():
+    """Derin Analiz sekmesi için kelime ekler ve kutuyu temizler"""
+    word = st.session_state.get("deep_stop_in", "").strip()
+    if word and word not in st.session_state['stop_words_deep']:
+        st.session_state['stop_words_deep'].append(word)
+    st.session_state["deep_stop_in"] = "" # Kutuyu temizle
+
+def add_cloud_stop():
+    """WordCloud sekmesi için kelime ekler ve kutuyu temizler"""
+    word = st.session_state.get("cloud_stop_in", "").strip()
+    if word and word not in st.session_state['stop_words_cloud']:
+        st.session_state['stop_words_cloud'].append(word)
+    st.session_state["cloud_stop_in"] = "" # Kutuyu temizle
 
 def reset_form():
     st.session_state['form_data'] = {'id': None, 'date': datetime.date.today(), 'source': "TCMB", 'text': ""}
@@ -262,17 +273,11 @@ with tab4:
         st.subheader("📊 En Çok Tekrar Eden Ekonomi Terimleri")
         
         # --- STOP WORD YÖNETİMİ ---
-        c_s1, c_s2 = st.columns([3, 1])
-        with c_s1:
-            new_stop = st.text_input("Çıkarılacak Kelime Ekle (Enter)", key="deep_stop_in")
-            if new_stop:
-                if new_stop not in st.session_state['stop_words_deep']:
-                    st.session_state['stop_words_deep'].append(new_stop)
-                st.rerun()
+        # on_change kullanarak anında ekleme ve temizleme yapıyoruz
+        st.text_input("🚫 Grafikten Çıkarılacak Kelimeler (Enter)", key="deep_stop_in", on_change=add_deep_stop)
         
-        # Etiketleri Göster (Kaldırmak için butonlar)
         st.write("Aktif Filtreler:")
-        cols = st.columns(8) # Yan yana sığdır
+        cols = st.columns(8)
         for i, word in enumerate(st.session_state['stop_words_deep']):
             if cols[i % 8].button(f"{word} ✖", key=f"del_deep_{word}"):
                 st.session_state['stop_words_deep'].remove(word)
@@ -384,13 +389,7 @@ with tab6:
     st.header("☁️ Kelime Bulutu (WordCloud)")
     if not df_all.empty:
         # --- STOP WORD YÖNETİMİ ---
-        c_s1, c_s2 = st.columns([3, 1])
-        with c_s1:
-            new_stop_wc = st.text_input("Çıkarılacak Kelime Ekle (Enter)", key="cloud_stop_in")
-            if new_stop_wc:
-                if new_stop_wc not in st.session_state['stop_words_cloud']:
-                    st.session_state['stop_words_cloud'].append(new_stop_wc)
-                st.rerun()
+        st.text_input("🚫 Buluttan Çıkarılacak Kelimeler (Enter)", key="cloud_stop_in", on_change=add_cloud_stop)
         
         st.write("Aktif Filtreler:")
         cols = st.columns(8)

@@ -11,7 +11,7 @@ import numpy as np
 
 # --- EK KÜTÜPHANELER ---
 try:
-    from sklearn.linear_model import LinearRegression
+    from sklearn.linear_model import LinearRegression, LogisticRegression
     from wordcloud import WordCloud, STOPWORDS
     import matplotlib.pyplot as plt
     HAS_ML_DEPS = True
@@ -69,49 +69,25 @@ DOVISH_SINGLE = {"disinflation","decline","declining","fall","falling","decrease
 
 def split_into_sentences(text):
     if not text: return []
-    # Noktalama işaretlerine göre cümleleri ayır
     return re.split(r'[.!?]+', text)
 
 def count_syllables(word):
-    """
-    Standart Flesch hece sayma mantığı.
-    """
     word = word.lower().strip(".:;?!")
     if not word: return 0
     if len(word) <= 3: return 1
-    
-    # Kelime sonundaki sessiz 'e', 'es', 'ed' gibi yapıları çıkar
     word = re.sub(r'(?:[^laeiouy]es|ed|[^laeiouy]e)$', '', word)
     word = re.sub(r'^y', '', word)
-    
-    # Sesli harf gruplarını say (İngilizce'de diphthonglar tek hece sayılır)
     syllables = re.findall(r'[aeiouy]{1,2}', word)
-    
     return len(syllables) if syllables else 1
 
 def calculate_flesch_reading_ease(text):
-    """
-    Flesch Reading Ease Formülü (Görsele Birebir Uygun):
-    Score = 206.835 - 1.015 (Total Words / Total Sentences) - 84.6 (Total Syllables / Total Words)
-    """
     if not text: return 0
-    
-    # 1. Cümleleri ve Kelimeleri Say
     sentences = [s for s in split_into_sentences(text) if len(s.strip()) > 0]
     words = re.findall(r"[a-z']+", text.lower())
-    
     num_sentences = max(1, len(sentences))
     num_words = max(1, len(words))
-    
-    # 2. Toplam Hece Sayısı
     total_syllables = sum(count_syllables(w) for w in words)
-    
-    # 3. Formül Uygulaması
-    # ASL = Average Sentence Length (Words per Sentence)
-    # ASW = Average Number of Syllables per Word
-    
     score = 206.835 - (1.015 * (num_words / num_sentences)) - (84.6 * (total_syllables / num_words))
-    
     return round(score, 2)
 
 def find_context_sentences(text, found_phrases):
@@ -206,7 +182,6 @@ def generate_diff_html(text1, text2):
     return " ".join(html_output)
 
 def get_top_terms_series(df, top_n=7, custom_stops=None):
-    """Varsayılan olarak Top 7 kelimeyi getirir."""
     if df.empty: return pd.DataFrame(), []
     
     all_text = " ".join(df['text_content'].astype(str).tolist()).lower()
@@ -262,23 +237,48 @@ def train_and_predict_rate(df_history, current_score):
     X = train_data[['score_abg_scaled']]
     y = train_data['Rate_Change']
     
+    # 1. MODEL: Linear Regression (Sürekli Değişken)
     model = LinearRegression()
     model.fit(X, y)
     
-    # 2025-12 gibi son satırlar dahil tüm tahminleri oluştur
+    # 2. MODEL: Logistic Regression (Sınıflandırma - Ordered Logit Simülasyonu)
+    # Değişimleri Baz Puan cinsinden tamsayıya çeviriyoruz (Örn: 0.5 -> 50)
+    y_bps = (y * 100).round(0).astype(int)
+    model_logit = LogisticRegression(solver='lbfgs', max_iter=1000, multi_class='auto')
+    try:
+        model_logit.fit(X, y_bps)
+        has_logit = True
+    except:
+        has_logit = False # Veri yetersizse veya tek sınıf varsa hata verebilir
+    
+    # Tahminler (Tüm Veri Seti İçin)
     full_X = df.dropna(subset=['score_abg_scaled'])[['score_abg_scaled']]
+    
+    # Linear Tahminleri
     df.loc[full_X.index, 'Predicted_Change'] = model.predict(full_X)
     
+    # Logit Tahminleri
+    if has_logit:
+        # Predict class (bps) -> convert to percentage float
+        df.loc[full_X.index, 'Predicted_Change_Logit'] = model_logit.predict(full_X) / 100.0
+    else:
+        df.loc[full_X.index, 'Predicted_Change_Logit'] = np.nan
+    
+    # Anlık Tahmin (Kullanıcı Girişi)
     prediction = model.predict([[current_score]])[0]
+    prediction_logit = model_logit.predict([[current_score]])[0] / 100.0 if has_logit else prediction
+    
     corr = np.corrcoef(train_data['score_abg_scaled'], train_data['Rate_Change'])[0,1]
     
     stats = {
         'prediction': prediction,
+        'prediction_logit': prediction_logit, # İkinci tahmin eklendi
         'correlation': corr,
         'sample_size': len(train_data),
         'coef': model.coef_[0]
     }
-    return stats, df[['period_date', 'Donem', 'Rate_Change', 'Predicted_Change']].copy(), None
+    
+    return stats, df[['period_date', 'Donem', 'Rate_Change', 'Predicted_Change', 'Predicted_Change_Logit']].copy(), None
 
 # --- DB İŞLEMLERİ ---
 @st.cache_data(ttl=600)

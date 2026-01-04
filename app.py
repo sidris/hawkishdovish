@@ -13,6 +13,11 @@ st.markdown("""
     .block-container { padding-top: 1rem; padding-bottom: 5rem; }
     h1 { font-size: 1.8rem !important; }
     .stDataFrame { font-size: 0.8rem; }
+    /* Etiket Stili */
+    .stButton button {
+        border-radius: 20px;
+        font-size: 0.8rem;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -34,11 +39,15 @@ if not st.session_state['logged_in']:
             else: st.error("Hatalı!")
     st.stop()
 
-# --- SESSION ---
+# --- SESSION & STATE ---
 if 'form_data' not in st.session_state: st.session_state['form_data'] = {'id': None, 'date': datetime.date.today().replace(day=1), 'source': "TCMB", 'text': ""}
 if 'table_key' not in st.session_state: st.session_state['table_key'] = str(uuid.uuid4())
 if 'collision_state' not in st.session_state: st.session_state['collision_state'] = {'active': False, 'target_id': None, 'pending_text': None, 'target_date': None}
 if 'update_state' not in st.session_state: st.session_state['update_state'] = {'active': False, 'pending_text': None}
+
+# Stopwords State
+if 'stop_words_deep' not in st.session_state: st.session_state['stop_words_deep'] = []
+if 'stop_words_cloud' not in st.session_state: st.session_state['stop_words_cloud'] = []
 
 def reset_form():
     st.session_state['form_data'] = {'id': None, 'date': datetime.date.today(), 'source': "TCMB", 'text': ""}
@@ -52,14 +61,8 @@ with c_head1: st.title("🦅 Şahin/Güvercin Paneli")
 with c_head2: 
     if st.button("Çıkış"): st.session_state['logged_in'] = False; st.rerun()
 
-# --- TABS ---
 tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
-    "📈 Dashboard", 
-    "📝 Veri Girişi", 
-    "📊 Veriler", 
-    "🔍 Derin Analiz",
-    "🤖 Faiz Tahmini",
-    "☁️ WordCloud"
+    "📈 Dashboard", "📝 Veri Girişi", "📊 Veriler", "🔍 Derin Analiz", "🤖 Faiz Tahmini", "☁️ WordCloud"
 ])
 
 # ==============================================================================
@@ -246,7 +249,7 @@ with tab3:
         else: st.error(f"Hata: {err}")
 
 # ==============================================================================
-# TAB 4: DERİN ANALİZ (STOP WORDS EKLENDİ)
+# TAB 4: DERİN ANALİZ (ETİKETLİ STOP WORDS)
 # ==============================================================================
 with tab4:
     st.header("🔍 Derin Analiz ve Metin Madenciliği")
@@ -256,17 +259,29 @@ with tab4:
         df_all['Donem'] = df_all['period_date'].dt.strftime('%Y-%m')
         df_all = df_all.sort_values('period_date', ascending=False)
         
-        # --- KELİME FREKANSI TRENDİ ---
         st.subheader("📊 En Çok Tekrar Eden Ekonomi Terimleri")
         
-        # STOP WORD INPUT
-        stop_input = st.text_input("🚫 Grafikten Çıkarılacak Kelimeler (Virgülle ayırın)", placeholder="Örn: percent, decision, committee")
-        custom_stops = [s.strip() for s in stop_input.split(',')] if stop_input else []
+        # --- STOP WORD YÖNETİMİ ---
+        c_s1, c_s2 = st.columns([3, 1])
+        with c_s1:
+            new_stop = st.text_input("Çıkarılacak Kelime Ekle (Enter)", key="deep_stop_in")
+            if new_stop:
+                if new_stop not in st.session_state['stop_words_deep']:
+                    st.session_state['stop_words_deep'].append(new_stop)
+                st.rerun()
         
-        top_n = st.slider("Gösterilecek Kelime Sayısı", 3, 10, 5)
-        
-        # Utils fonksiyonuna custom_stops gönderiyoruz
-        freq_df, top_terms = utils.get_top_terms_series(df_all, top_n, custom_stops)
+        # Etiketleri Göster (Kaldırmak için butonlar)
+        st.write("Aktif Filtreler:")
+        cols = st.columns(8) # Yan yana sığdır
+        for i, word in enumerate(st.session_state['stop_words_deep']):
+            if cols[i % 8].button(f"{word} ✖", key=f"del_deep_{word}"):
+                st.session_state['stop_words_deep'].remove(word)
+                st.rerun()
+        st.divider()
+        # --------------------------
+
+        top_n = st.slider("Kelime Sayısı", 3, 10, 5)
+        freq_df, top_terms = utils.get_top_terms_series(df_all, top_n, st.session_state['stop_words_deep'])
         
         if not freq_df.empty:
             fig_freq = go.Figure()
@@ -276,14 +291,10 @@ with tab4:
             st.plotly_chart(fig_freq, use_container_width=True)
         
         st.divider()
-        
-        # --- DIFF ANALİZİ ---
         st.subheader("🔄 Metin Farkı (Diff) Analizi")
         c_diff1, c_diff2 = st.columns(2)
-        with c_diff1:
-            sel_date1 = st.selectbox("Eski Metin (Referans):", df_all['Donem'].tolist(), index=min(1, len(df_all)-1))
-        with c_diff2:
-            sel_date2 = st.selectbox("Yeni Metin (Karşılaştırılan):", df_all['Donem'].tolist(), index=0)
+        with c_diff1: sel_date1 = st.selectbox("Eski Metin:", df_all['Donem'].tolist(), index=min(1, len(df_all)-1))
+        with c_diff2: sel_date2 = st.selectbox("Yeni Metin:", df_all['Donem'].tolist(), index=0)
             
         if st.button("Farkları Göster", type="primary"):
             if sel_date1 and sel_date2:
@@ -291,17 +302,15 @@ with tab4:
                 t2 = df_all[df_all['Donem'] == sel_date2].iloc[0]['text_content']
                 diff_html = utils.generate_diff_html(t1, t2)
                 st.markdown(f"**Kırmızı:** {sel_date1}'den silinenler | **Yeşil:** {sel_date2}'ye eklenenler")
-                with st.container(border=True, height=400):
-                    st.markdown(diff_html, unsafe_allow_html=True)
+                with st.container(border=True, height=400): st.markdown(diff_html, unsafe_allow_html=True)
     else: st.info("Yeterli veri yok.")
 
 # ==============================================================================
-# TAB 5: FAİZ TAHMİNİ (AÇIKLAMA VE GRAFİK EKLENDİ)
+# TAB 5: FAİZ TAHMİNİ (YENİ EKLENTİLER)
 # ==============================================================================
 with tab5:
     st.header("🤖 Text-as-Data: Faiz Tahmini")
     
-    # MANTIK AÇIKLAMASI (YENİ)
     with st.expander("ℹ️ Model Mantığı ve Metodoloji", expanded=True):
         st.markdown("""
         Bu modül, **"Metin Madenciliği ile Parasal Politika Tahmini" (Text-as-Data)** yaklaşımını kullanır.
@@ -323,8 +332,6 @@ with tab5:
             
         if target_text:
             s_live, _, _, _, _, _, _, _ = utils.run_full_analysis(target_text)
-            
-            # Güncellenmiş fonksiyonu çağır (History df de dönüyor)
             result, history_df, error = utils.train_and_predict_rate(merged, s_live)
             
             if result:
@@ -344,32 +351,24 @@ with tab5:
                 
                 st.divider()
                 
-                # --- YENİ GRAFİK: TAHMİN VS GERÇEKLEŞEN ---
-                st.markdown("#### 📈 Model Performansı: Tahmin vs. Gerçekleşen")
+                st.markdown("#### 📈 Model Performansı: Tahmin vs. Gerçekleşen (BIS Verisi)")
+                st.caption("Aşağıdaki grafik, modelin geçmişteki tahminleri ile BIS (Merkez Bankası) verilerinden elde edilen gerçek faiz değişimlerini karşılaştırır.")
+                
                 if history_df is not None:
                     fig_perf = go.Figure()
-                    
-                    # Gerçekleşen
                     fig_perf.add_trace(go.Bar(
                         x=history_df['period_date'], 
                         y=history_df['Rate_Change']*100, 
-                        name='Gerçekleşen Değişim (bps)',
+                        name='Gerçekleşen Değişim (BIS Verisi)',
                         marker_color='gray', opacity=0.6
                     ))
-                    
-                    # Model Tahmini
                     fig_perf.add_trace(go.Scatter(
                         x=history_df['period_date'], 
                         y=history_df['Predicted_Change']*100, 
-                        name='Model Tahmini (bps)',
+                        name='Model Tahmini',
                         line=dict(color='red', width=2)
                     ))
-                    
-                    fig_perf.update_layout(
-                        hovermode="x unified", 
-                        yaxis_title="Faiz Değişimi (Baz Puan)",
-                        legend=dict(orientation="h", y=1.1)
-                    )
+                    fig_perf.update_layout(hovermode="x unified", yaxis_title="Faiz Değişimi (Baz Puan)", legend=dict(orientation="h", y=1.1))
                     st.plotly_chart(fig_perf, use_container_width=True)
             else:
                 st.warning(f"Tahmin yapılamadı: {error}")
@@ -379,29 +378,38 @@ with tab5:
         st.warning("Yeterli veri yok.")
 
 # ==============================================================================
-# TAB 6: WORDCLOUD (STOP WORDS EKLENDİ)
+# TAB 6: WORDCLOUD (ETİKETLİ STOP WORDS)
 # ==============================================================================
 with tab6:
     st.header("☁️ Kelime Bulutu (WordCloud)")
     if not df_all.empty:
-        # STOP WORD INPUT
-        stop_input_wc = st.text_input("🚫 Buluttan Çıkarılacak Kelimeler (Virgülle ayırın)", key="stop_wc", placeholder="Örn: bank, rate, inflation")
-        custom_stops_wc = [s.strip() for s in stop_input_wc.split(',')] if stop_input_wc else []
+        # --- STOP WORD YÖNETİMİ ---
+        c_s1, c_s2 = st.columns([3, 1])
+        with c_s1:
+            new_stop_wc = st.text_input("Çıkarılacak Kelime Ekle (Enter)", key="cloud_stop_in")
+            if new_stop_wc:
+                if new_stop_wc not in st.session_state['stop_words_cloud']:
+                    st.session_state['stop_words_cloud'].append(new_stop_wc)
+                st.rerun()
         
+        st.write("Aktif Filtreler:")
+        cols = st.columns(8)
+        for i, word in enumerate(st.session_state['stop_words_cloud']):
+            if cols[i % 8].button(f"{word} ✖", key=f"del_cloud_{word}"):
+                st.session_state['stop_words_cloud'].remove(word)
+                st.rerun()
+        st.divider()
+        # --------------------------
+
         dates = df_all['Donem'].tolist()
         sel_cloud_date = st.selectbox("Dönem Seçin:", ["Tüm Zamanlar"] + dates)
         
         if st.button("Bulutu Oluştur", type="primary"):
-            if sel_cloud_date == "Tüm Zamanlar":
-                text_cloud = " ".join(df_all['text_content'].astype(str).tolist())
-            else:
-                text_cloud = df_all[df_all['Donem'] == sel_cloud_date].iloc[0]['text_content']
+            if sel_cloud_date == "Tüm Zamanlar": text_cloud = " ".join(df_all['text_content'].astype(str).tolist())
+            else: text_cloud = df_all[df_all['Donem'] == sel_cloud_date].iloc[0]['text_content']
             
-            # Custom stop words gönderiliyor
-            fig_wc = utils.generate_wordcloud_img(text_cloud, custom_stops_wc)
-            if fig_wc:
-                st.pyplot(fig_wc)
-            else:
-                st.error("WordCloud kütüphanesi eksik veya metin boş.")
+            fig_wc = utils.generate_wordcloud_img(text_cloud, st.session_state['stop_words_cloud'])
+            if fig_wc: st.pyplot(fig_wc)
+            else: st.error("Kütüphane eksik veya metin boş.")
     else:
         st.info("Veri yok.")

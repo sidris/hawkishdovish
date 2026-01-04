@@ -180,7 +180,6 @@ def generate_diff_html(text1, text2):
     return " ".join(html_output)
 
 def get_top_terms_series(df, top_n=5, custom_stops=None):
-    """En çok geçen kelimeleri bulur. Custom stop words desteği eklendi."""
     if df.empty: return pd.DataFrame(), []
     
     all_text = " ".join(df['text_content'].astype(str).tolist()).lower()
@@ -188,13 +187,11 @@ def get_top_terms_series(df, top_n=5, custom_stops=None):
     
     stops = set(["that", "with", "this", "from", "have", "which", "will", "been", "were", "market", "central", "bank", "committee", "monetary", "policy", "decision", "percent", "rates", "level"])
     
-    # Kullanıcıdan gelen stop kelimeleri ekle
     if custom_stops:
         for s in custom_stops:
             stops.add(s.lower().strip())
     
     filtered_words = [w for w in words if w not in stops]
-    
     common = Counter(filtered_words).most_common(top_n)
     top_terms = [t[0] for t in common]
     
@@ -209,12 +206,9 @@ def get_top_terms_series(df, top_n=5, custom_stops=None):
     return pd.DataFrame(results).sort_values('period_date'), top_terms
 
 def generate_wordcloud_img(text, custom_stops=None):
-    """WordCloud oluşturur. Custom stop words desteği eklendi."""
     if not HAS_ML_DEPS or not text: return None
-    
     stopwords = set(STOPWORDS)
     stopwords.update(["central", "bank", "committee", "monetary", "policy", "percent", "decision", "rate", "board", "meeting"])
-    
     if custom_stops:
         for s in custom_stops:
             stopwords.add(s.lower().strip())
@@ -226,16 +220,12 @@ def generate_wordcloud_img(text, custom_stops=None):
     return fig
 
 def train_and_predict_rate(df_history, current_score):
-    """
-    Text-as-Data Modeli (GÜNCELLENDİ):
-    Artık tarihsel tahmin verilerini de (Predicted vs Actual) döndürür.
-    """
     if not HAS_ML_DEPS: return None, None, "Kütüphane eksik"
     if df_history.empty or 'PPK Faizi' not in df_history.columns: return None, None, "Yetersiz Veri"
     
     df = df_history.sort_values('period_date').copy()
     
-    # Varsayım: Metin skoru (t) -> Faiz Değişimi (t+1)
+    # Next Rate logic: Sonraki ayın faizi - Şu anki faiz
     df['Next_Rate'] = df['PPK Faizi'].shift(-1)
     df['Rate_Change'] = df['Next_Rate'] - df['PPK Faizi']
     
@@ -249,10 +239,7 @@ def train_and_predict_rate(df_history, current_score):
     model = LinearRegression()
     model.fit(X, y)
     
-    # 1. Anlık Tahmin
     prediction = model.predict([[current_score]])[0]
-    
-    # 2. Geçmiş Tahminleri (Grafik için)
     train_data['Predicted_Change'] = model.predict(X)
     
     corr = np.corrcoef(train_data['score_abg_scaled'], train_data['Rate_Change'])[0,1]
@@ -263,10 +250,9 @@ def train_and_predict_rate(df_history, current_score):
         'sample_size': len(train_data),
         'coef': model.coef_[0]
     }
-    
     return stats, train_data[['period_date', 'Donem', 'Rate_Change', 'Predicted_Change']], None
 
-# --- DB İŞLEMLERİ (Aynı kaldı) ---
+# --- DB İŞLEMLERİ ---
 @st.cache_data(ttl=600)
 def fetch_market_data_adapter(start_date, end_date):
     if not EVDS_API_KEY: return pd.DataFrame(), "EVDS Anahtarı Eksik."

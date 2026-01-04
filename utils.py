@@ -72,7 +72,6 @@ def split_into_sentences(text):
     return re.split(r'[.!?]+', text)
 
 def count_syllables(word):
-    """Standart Flesch hece sayma mantığı."""
     word = word.lower().strip(".:;?!")
     if not word: return 0
     if len(word) <= 3: return 1
@@ -83,7 +82,7 @@ def count_syllables(word):
 
 def calculate_flesch_reading_ease(text):
     """
-    Score = 206.835 - 1.015 (ASL) - 84.6 (ASW)
+    Flesch Formülü: 206.835 - 1.015(ASL) - 84.6(ASW)
     """
     if not text: return 0
     sentences = [s for s in split_into_sentences(text) if len(s.strip()) > 0]
@@ -91,7 +90,6 @@ def calculate_flesch_reading_ease(text):
     
     num_sentences = max(1, len(sentences))
     num_words = max(1, len(words))
-    
     total_syllables = sum(count_syllables(w) for w in words)
     
     score = 206.835 - (1.015 * (num_words / num_sentences)) - (84.6 * (total_syllables / num_words))
@@ -232,7 +230,11 @@ def train_and_predict_rate(df_history, current_score):
     if not HAS_ML_DEPS: return None, None, "Kütüphane eksik"
     if df_history.empty or 'PPK Faizi' not in df_history.columns: return None, None, "Yetersiz Veri"
     
+    # DÜZELTME: Veri setini tekilleştir (Aynı ay için tek kayıt olsun ki shift(-1) doğru çalışsın)
+    # Her ay için en son kaydı alıyoruz.
     df = df_history.sort_values('period_date').copy()
+    df = df.drop_duplicates(subset=['Donem'], keep='last').copy()
+    
     df['Next_Rate'] = df['PPK Faizi'].shift(-1)
     df['Rate_Change'] = df['Next_Rate'] - df['PPK Faizi']
     
@@ -247,21 +249,16 @@ def train_and_predict_rate(df_history, current_score):
     model = LinearRegression()
     model.fit(X, y)
     
-    # 2. Logit Model (Hata Düzeltme: Basitleştirilmiş başlatma)
-    # Tamsayı baz puana çevirip sınıfları öğrenmesini sağlıyoruz
+    # 2. Logit Model (Kararlı hale getirmek için random_state eklendi)
     y_bps = (y * 100).round(0).astype(int)
-    
     try:
-        # En sade ve uyumlu parametreler
-        model_logit = LogisticRegression(max_iter=1000)
+        model_logit = LogisticRegression(max_iter=1000, random_state=42)
         model_logit.fit(X, y_bps)
         has_logit = True
     except:
         has_logit = False
     
     full_X = df.dropna(subset=['score_abg_scaled'])[['score_abg_scaled']]
-    
-    # Tahminleri uygula
     df.loc[full_X.index, 'Predicted_Change'] = model.predict(full_X)
     
     if has_logit:
@@ -271,7 +268,6 @@ def train_and_predict_rate(df_history, current_score):
     
     prediction = model.predict([[current_score]])[0]
     
-    # Logit tahmini (varsa)
     prediction_logit = prediction
     if has_logit:
         prediction_logit = model_logit.predict([[current_score]])[0] / 100.0

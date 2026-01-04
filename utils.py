@@ -5,6 +5,7 @@ import requests
 import io
 import datetime
 import re
+import difflib # Diff analizi için gerekli kütüphane
 from collections import Counter
 
 # --- AYARLAR ---
@@ -54,7 +55,7 @@ DOVISH_ADJECTIVES = {
 HAWKISH_SINGLE = {"tight","tightening","restrictive","elevated","high","overheating","pressures","pressure","risk","risks","upside","vigilant","decisive"}
 DOVISH_SINGLE = {"disinflation","decline","declining","fall","falling","decrease","decreasing","lower","low","subdued","contained","anchored","cooling","slow","slower","improvement","better","easing","relief"}
 
-# --- FONKSİYONLAR ---
+# --- TEMEL FONKSİYONLAR ---
 def make_ngrams(tokens, n):
     return [" ".join(tokens[i:i+n]) for i in range(len(tokens) - n + 1)]
 
@@ -131,7 +132,6 @@ def run_full_analysis(text):
     dove_total = dove_ngram_count + dove_single_count
     total_signal = hawk_total + dove_total
 
-    # SKOR: -100 / +100
     if total_signal > 0:
         net_score = (float(hawk_total - dove_total) / float(total_signal)) * 100
     else:
@@ -148,6 +148,62 @@ def run_full_analysis(text):
 
     return net_score, hawk_total, dove_total, hawk_list, dove_list, hawk_contexts, dove_contexts, flesch_score
 
+# --- YENİ EKLENEN: DIFF VE FREKANS ANALİZİ FONKSİYONLARI ---
+
+def generate_diff_html(text1, text2):
+    """İki metin arasındaki farkı HTML olarak döndürür."""
+    if not text1: text1 = ""
+    if not text2: text2 = ""
+    
+    # Metinleri kelimelere böl
+    a = text1.split()
+    b = text2.split()
+    
+    # Difflib ile farkları bul
+    matcher = difflib.SequenceMatcher(None, a, b)
+    html_output = []
+    
+    for opcode, a0, a1, b0, b1 in matcher.get_opcodes():
+        if opcode == 'equal':
+            # Değişmeyen kısımlar
+            html_output.append(" ".join(a[a0:a1]))
+        elif opcode == 'insert':
+            # Eklenen kısımlar (Yeşil)
+            inserted = " ".join(b[b0:b1])
+            html_output.append(f'<span style="background-color: #d4fcbc; color: #376e37; font-weight: bold; padding: 2px 4px; border-radius: 4px;">+ {inserted}</span>')
+        elif opcode == 'delete':
+            # Silinen kısımlar (Kırmızı ve üstü çizili)
+            deleted = " ".join(a[a0:a1])
+            html_output.append(f'<span style="background-color: #fcd4bc; color: #9c4444; text-decoration: line-through; padding: 2px 4px; border-radius: 4px;">- {deleted}</span>')
+        elif opcode == 'replace':
+            # Değişen kısımlar (Önce silineni, sonra ekleneni göster)
+            deleted = " ".join(a[a0:a1])
+            inserted = " ".join(b[b0:b1])
+            html_output.append(f'<span style="background-color: #fcd4bc; color: #9c4444; text-decoration: line-through; padding: 2px 4px; border-radius: 4px;">- {deleted}</span>')
+            html_output.append(f'<span style="background-color: #d4fcbc; color: #376e37; font-weight: bold; padding: 2px 4px; border-radius: 4px;">+ {inserted}</span>')
+            
+    return " ".join(html_output)
+
+def get_word_frequency_series(df, search_term):
+    """Verilen terimin tüm metinlerdeki geçiş sıklığını zaman serisi olarak döner."""
+    if df.empty or not search_term: return pd.DataFrame()
+    
+    term = search_term.lower().strip()
+    # Regex ile tam veya kısmi eşleşme sayma
+    # Kelime sınırlarını (\b) kullanmıyoruz ki 'enflasyonist' içinde 'enflasyon'u da bulsun.
+    # Ancak basit count yerine regex daha sağlıklıdır.
+    
+    results = []
+    for _, row in df.iterrows():
+        text = str(row['text_content']).lower()
+        # count occurrences
+        count = text.count(term)
+        results.append({'period_date': row['period_date'], 'count': count, 'Donem': row.get('Donem', '')})
+        
+    res_df = pd.DataFrame(results)
+    return res_df.sort_values('period_date')
+
+# --- DB İŞLEMLERİ ---
 @st.cache_data(ttl=600)
 def fetch_market_data_adapter(start_date, end_date):
     if not EVDS_API_KEY: return pd.DataFrame(), "EVDS Anahtarı Eksik."

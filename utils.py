@@ -66,30 +66,53 @@ HAWKISH_SINGLE = {"tight","tightening","restrictive","elevated","high","overheat
 DOVISH_SINGLE = {"disinflation","decline","declining","fall","falling","decrease","decreasing","lower","low","subdued","contained","anchored","cooling","slow","slower","improvement","better","easing","relief"}
 
 # --- TEMEL FONKSİYONLAR ---
+
 def split_into_sentences(text):
-    return re.split(r'(?<=[.!?])\s+', text)
+    # JS: text.match(/[^\.!\?]+[\.!\?]+/g) mantığı
+    return re.findall(r'[^\.!\?]+[\.!\?]+', text)
 
 def count_syllables(word):
+    """
+    Kullanıcının sağladığı JS mantığına göre hece sayar.
+    word.match(/[aeıioöuü]/g)
+    """
     word = word.lower()
-    if len(word) <= 3: return 1
-    word = re.sub(r'(?:[^laeiouy]es|ed|[^laeiouy]e)$', '', word)
-    word = re.sub(r'^y', '', word)
-    syllables = len(re.findall(r'[aeiouy]{1,2}', word))
-    return max(1, syllables)
+    # Türkçe karakterleri de içeren sesli harf regex'i
+    syllables = re.findall(r'[aeıioöuü]', word)
+    return len(syllables) if syllables else 1
 
 def calculate_flesch_reading_ease(text):
+    """
+    JS algoritmasına uygun Flesch hesaplama.
+    """
     if not text: return 0
+    
+    # 1. Cümleleri bul (JS mantığıyla)
     sentences = split_into_sentences(text)
-    words = re.findall(r"[a-z']+", text.lower())
-    num_sentences = len(sentences)
+    # Eğer regex ile hiç cümle bulunamazsa metni tek cümle say
+    num_sentences = len(sentences) if sentences else 1
+    
+    # 2. Kelimeleri bul (JS: split(/\s+/))
+    # split boş string döndürebilir, onları filtreliyoruz
+    words = [w for w in re.split(r'\s+', text) if w]
     num_words = len(words)
+    
+    if num_words == 0: return 0
+    
+    # 3. Heceleri say
     num_syllables = sum(count_syllables(w) for w in words)
-    if num_words == 0 or num_sentences == 0: return 0
+    
+    # 4. Formül
+    # Score = 206.835 - 1.015 * (ASL) - 84.6 * (ASW)
     score = 206.835 - 1.015 * (num_words / num_sentences) - 84.6 * (num_syllables / num_words)
+    
     return round(score, 2)
 
 def find_context_sentences(text, found_phrases):
     sentences = split_into_sentences(text)
+    # Eğer split_into_sentences boş dönerse (noktalama yoksa), tüm metni tek cümle al
+    if not sentences: sentences = [text]
+    
     contexts = {}
     for phrase in found_phrases:
         matched_sentences = []
@@ -110,6 +133,7 @@ def run_full_analysis(text):
     tokens = re.findall(r"[a-z']+", clean_text)
     token_counts = Counter(tokens)
     
+    # Flesch Güncellendi
     flesch_score = calculate_flesch_reading_ease(text)
     
     bigrams = make_ngrams(tokens, 2)
@@ -179,7 +203,7 @@ def generate_diff_html(text1, text2):
             html_output.append(f'<span style="background-color: #d4fcbc; color: #376e37; font-weight: bold;">+ {" ".join(b[b0:b1])}</span>')
     return " ".join(html_output)
 
-def get_top_terms_series(df, top_n=7, custom_stops=None): # DEFAULT 7 OLARAK GÜNCELLENDİ
+def get_top_terms_series(df, top_n=7, custom_stops=None):
     if df.empty: return pd.DataFrame(), []
     
     all_text = " ".join(df['text_content'].astype(str).tolist()).lower()
@@ -220,39 +244,27 @@ def generate_wordcloud_img(text, custom_stops=None):
     return fig
 
 def train_and_predict_rate(df_history, current_score):
-    """
-    Modeli eğitir ve TÜM veri seti (son satır dahil) için tahmin üretir.
-    """
     if not HAS_ML_DEPS: return None, None, "Kütüphane eksik"
     if df_history.empty or 'PPK Faizi' not in df_history.columns: return None, None, "Yetersiz Veri"
     
     df = df_history.sort_values('period_date').copy()
-    
-    # Hedef Değişken: Sonraki Ay - Şu An
     df['Next_Rate'] = df['PPK Faizi'].shift(-1)
     df['Rate_Change'] = df['Next_Rate'] - df['PPK Faizi']
     
-    # EĞİTİM için: Eksik olmayan verileri kullan
     train_data = df.dropna(subset=['score_abg_scaled', 'Rate_Change'])
     
     if len(train_data) < 5: return None, None, "Model için en az 5 ay veri lazım."
     
-    X_train = train_data[['score_abg_scaled']]
-    y_train = train_data['Rate_Change']
+    X = train_data[['score_abg_scaled']]
+    y = train_data['Rate_Change']
     
     model = LinearRegression()
-    model.fit(X_train, y_train)
+    model.fit(X, y)
     
-    # TAHMİN için: Skoru olan HER SATIR için tahmin üret (Rate_Change NaN olsa bile)
-    # Bu sayede son ay (2025-12 gibi) grafikte görünür.
     full_X = df.dropna(subset=['score_abg_scaled'])[['score_abg_scaled']]
-    
-    # DataFrame üzerinde işlem yapabilmek için indeksleri eşleyelim
     df.loc[full_X.index, 'Predicted_Change'] = model.predict(full_X)
     
-    # Anlık tekil tahmin (Girdi kutusundaki metin için)
     prediction = model.predict([[current_score]])[0]
-    
     corr = np.corrcoef(train_data['score_abg_scaled'], train_data['Rate_Change'])[0,1]
     
     stats = {
@@ -261,11 +273,7 @@ def train_and_predict_rate(df_history, current_score):
         'sample_size': len(train_data),
         'coef': model.coef_[0]
     }
-    
-    # Grafik için gerekli sütunları dön (NaN içeren son satır dahil)
-    history_df = df[['period_date', 'Donem', 'Rate_Change', 'Predicted_Change']].copy()
-    
-    return stats, history_df, None
+    return stats, df[['period_date', 'Donem', 'Rate_Change', 'Predicted_Change']].copy(), None
 
 # --- DB İŞLEMLERİ ---
 @st.cache_data(ttl=600)

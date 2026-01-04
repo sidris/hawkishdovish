@@ -68,51 +68,56 @@ DOVISH_SINGLE = {"disinflation","decline","declining","fall","falling","decrease
 # --- TEMEL FONKSİYONLAR ---
 
 def split_into_sentences(text):
-    # JS: text.match(/[^\.!\?]+[\.!\?]+/g) mantığı
-    return re.findall(r'[^\.!\?]+[\.!\?]+', text)
+    # Standart cümle ayırıcı (nokta, ünlem, soru işareti)
+    if not text: return []
+    return re.split(r'[.!?]+', text)
 
 def count_syllables(word):
     """
-    Kullanıcının sağladığı JS mantığına göre hece sayar.
-    word.match(/[aeıioöuü]/g)
+    İngilizce Flesch standartlarına uygun hece sayacı.
+    Sessiz 'e'leri düşer, çift seslileri (diphthongs) tek sayar.
     """
-    word = word.lower()
-    # Türkçe karakterleri de içeren sesli harf regex'i
-    syllables = re.findall(r'[aeıioöuü]', word)
+    word = word.lower().strip(".:;?!")
+    if not word: return 0
+    if len(word) <= 3: return 1
+    
+    # Kelime sonundaki sessiz e, es, ed gibi yapıları temizle
+    word = re.sub(r'(?:[^laeiouy]es|ed|[^laeiouy]e)$', '', word)
+    word = re.sub(r'^y', '', word)
+    
+    # Sesli harf gruplarını bul (İngilizce'de 'ai', 'ou' tek hece sayılır)
+    syllables = re.findall(r'[aeiouy]{1,2}', word)
+    
     return len(syllables) if syllables else 1
 
 def calculate_flesch_reading_ease(text):
     """
-    JS algoritmasına uygun Flesch hesaplama.
+    Geliştirilmiş Flesch Reading Ease Hesaplaması
+    Score = 206.835 - 1.015 (Words/Sentences) - 84.6 (Syllables/Words)
     """
     if not text: return 0
     
-    # 1. Cümleleri bul (JS mantığıyla)
-    sentences = split_into_sentences(text)
-    # Eğer regex ile hiç cümle bulunamazsa metni tek cümle say
-    num_sentences = len(sentences) if sentences else 1
+    # 1. Cümleleri ve Kelimeleri Say
+    sentences = [s for s in split_into_sentences(text) if len(s.strip()) > 1]
+    words = re.findall(r"[a-z']+", text.lower())
     
-    # 2. Kelimeleri bul (JS: split(/\s+/))
-    # split boş string döndürebilir, onları filtreliyoruz
-    words = [w for w in re.split(r'\s+', text) if w]
-    num_words = len(words)
+    num_sentences = max(1, len(sentences))
+    num_words = max(1, len(words))
     
-    if num_words == 0: return 0
+    # 2. Toplam Hece Sayısı
+    total_syllables = sum(count_syllables(w) for w in words)
     
-    # 3. Heceleri say
-    num_syllables = sum(count_syllables(w) for w in words)
+    # 3. Formül
+    avg_sentence_len = num_words / num_sentences
+    avg_syllables_word = total_syllables / num_words
     
-    # 4. Formül
-    # Score = 206.835 - 1.015 * (ASL) - 84.6 * (ASW)
-    score = 206.835 - 1.015 * (num_words / num_sentences) - 84.6 * (num_syllables / num_words)
+    score = 206.835 - (1.015 * avg_sentence_len) - (84.6 * avg_syllables_word)
     
+    # Sınırlandırma (0-100 arası olması beklenir ama formül dışına çıkabilir, biz ham değeri dönelim)
     return round(score, 2)
 
 def find_context_sentences(text, found_phrases):
     sentences = split_into_sentences(text)
-    # Eğer split_into_sentences boş dönerse (noktalama yoksa), tüm metni tek cümle al
-    if not sentences: sentences = [text]
-    
     contexts = {}
     for phrase in found_phrases:
         matched_sentences = []
@@ -133,7 +138,6 @@ def run_full_analysis(text):
     tokens = re.findall(r"[a-z']+", clean_text)
     token_counts = Counter(tokens)
     
-    # Flesch Güncellendi
     flesch_score = calculate_flesch_reading_ease(text)
     
     bigrams = make_ngrams(tokens, 2)
@@ -248,6 +252,8 @@ def train_and_predict_rate(df_history, current_score):
     if df_history.empty or 'PPK Faizi' not in df_history.columns: return None, None, "Yetersiz Veri"
     
     df = df_history.sort_values('period_date').copy()
+    
+    # Next Rate logic
     df['Next_Rate'] = df['PPK Faizi'].shift(-1)
     df['Rate_Change'] = df['Next_Rate'] - df['PPK Faizi']
     

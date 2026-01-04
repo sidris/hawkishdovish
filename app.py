@@ -45,20 +45,18 @@ if 'update_state' not in st.session_state: st.session_state['update_state'] = {'
 if 'stop_words_deep' not in st.session_state: st.session_state['stop_words_deep'] = []
 if 'stop_words_cloud' not in st.session_state: st.session_state['stop_words_cloud'] = []
 
-# --- CALLBACK FONKSİYONLARI (SORUNU ÇÖZEN KISIM) ---
+# --- CALLBACKS ---
 def add_deep_stop():
-    """Derin Analiz sekmesi için kelime ekler ve kutuyu temizler"""
     word = st.session_state.get("deep_stop_in", "").strip()
     if word and word not in st.session_state['stop_words_deep']:
         st.session_state['stop_words_deep'].append(word)
-    st.session_state["deep_stop_in"] = "" # Kutuyu temizle
+    st.session_state["deep_stop_in"] = ""
 
 def add_cloud_stop():
-    """WordCloud sekmesi için kelime ekler ve kutuyu temizler"""
     word = st.session_state.get("cloud_stop_in", "").strip()
     if word and word not in st.session_state['stop_words_cloud']:
         st.session_state['stop_words_cloud'].append(word)
-    st.session_state["cloud_stop_in"] = "" # Kutuyu temizle
+    st.session_state["cloud_stop_in"] = ""
 
 def reset_form():
     st.session_state['form_data'] = {'id': None, 'date': datetime.date.today(), 'source': "TCMB", 'text': ""}
@@ -260,7 +258,7 @@ with tab3:
         else: st.error(f"Hata: {err}")
 
 # ==============================================================================
-# TAB 4: DERİN ANALİZ (ETİKETLİ STOP WORDS)
+# TAB 4: DERİN ANALİZ (DÜZELTİLDİ: SABİT 7 KELİME)
 # ==============================================================================
 with tab4:
     st.header("🔍 Derin Analiz ve Metin Madenciliği")
@@ -270,23 +268,22 @@ with tab4:
         df_all['Donem'] = df_all['period_date'].dt.strftime('%Y-%m')
         df_all = df_all.sort_values('period_date', ascending=False)
         
-        st.subheader("📊 En Çok Tekrar Eden Ekonomi Terimleri")
+        st.subheader("📊 En Çok Tekrar Eden Ekonomi Terimleri (Top 7)")
         
         # --- STOP WORD YÖNETİMİ ---
-        # on_change kullanarak anında ekleme ve temizleme yapıyoruz
         st.text_input("🚫 Grafikten Çıkarılacak Kelimeler (Enter)", key="deep_stop_in", on_change=add_deep_stop)
         
-        st.write("Aktif Filtreler:")
-        cols = st.columns(8)
-        for i, word in enumerate(st.session_state['stop_words_deep']):
-            if cols[i % 8].button(f"{word} ✖", key=f"del_deep_{word}"):
-                st.session_state['stop_words_deep'].remove(word)
-                st.rerun()
+        if st.session_state['stop_words_deep']:
+            st.write("Filtreler:")
+            cols = st.columns(8)
+            for i, word in enumerate(st.session_state['stop_words_deep']):
+                if cols[i % 8].button(f"{word} ✖", key=f"del_deep_{word}"):
+                    st.session_state['stop_words_deep'].remove(word)
+                    st.rerun()
         st.divider()
-        # --------------------------
-
-        top_n = st.slider("Kelime Sayısı", 3, 10, 5)
-        freq_df, top_terms = utils.get_top_terms_series(df_all, top_n, st.session_state['stop_words_deep'])
+        
+        # Slider kaldırıldı, sabit 7 kelime
+        freq_df, top_terms = utils.get_top_terms_series(df_all, 7, st.session_state['stop_words_deep'])
         
         if not freq_df.empty:
             fig_freq = go.Figure()
@@ -311,7 +308,7 @@ with tab4:
     else: st.info("Yeterli veri yok.")
 
 # ==============================================================================
-# TAB 5: FAİZ TAHMİNİ (YENİ EKLENTİLER)
+# TAB 5: FAİZ TAHMİNİ (DÖNEM FİLTRESİ VE AÇIKLAMA EKLENDİ)
 # ==============================================================================
 with tab5:
     st.header("🤖 Text-as-Data: Faiz Tahmini")
@@ -321,8 +318,7 @@ with tab5:
         Bu modül, **"Metin Madenciliği ile Parasal Politika Tahmini" (Text-as-Data)** yaklaşımını kullanır.
         
         1.  **Veri Seti:** Geçmiş PPK metinlerinin "Şahinlik/Güvercinlik Skoru" ile bir sonraki toplantıdaki "Faiz Kararı" arasındaki ilişkiyi inceler.
-        2.  **Varsayım:** Merkez Bankası metinleri, gelecek kararların öncü göstergesidir (Forward Guidance). Şahin bir ton faiz artışına, Güvercin bir ton faiz indirimine işaret edebilir.
-        3.  **Algoritma:** Basit Doğrusal Regresyon (Linear Regression) kullanılarak, metin skorundaki 1 birimlik değişimin faiz oranında (baz puan) ne kadar değişim yarattığı modellenir.
+        2.  **Algoritma:** Basit Doğrusal Regresyon (Linear Regression) kullanılarak, metin skorundaki değişimin faiz üzerindeki etkisi modellenir.
         """)
 
     if 'merged' in locals() and not merged.empty:
@@ -355,26 +351,50 @@ with tab5:
                     st.write(f"- Korelasyon: {result['correlation']:.2f}")
                 
                 st.divider()
-                
                 st.markdown("#### 📈 Model Performansı: Tahmin vs. Gerçekleşen (BIS Verisi)")
-                st.caption("Aşağıdaki grafik, modelin geçmişteki tahminleri ile BIS (Merkez Bankası) verilerinden elde edilen gerçek faiz değişimlerini karşılaştırır.")
                 
-                if history_df is not None:
+                # --- DÖNEM FİLTRESİ ---
+                min_hist = history_df['period_date'].min().date()
+                max_hist = history_df['period_date'].max().date()
+                c_d1, c_d2 = st.columns(2)
+                d_start = c_d1.date_input("Başlangıç Tarihi", datetime.date(2021, 1, 1), min_value=min_hist, max_value=max_hist)
+                d_end = c_d2.date_input("Bitiş Tarihi", max_hist, min_value=min_hist, max_value=max_hist)
+                
+                # Filtreleme
+                chart_df = history_df[(history_df['period_date'].dt.date >= d_start) & (history_df['period_date'].dt.date <= d_end)]
+                
+                # --- AÇIKLAMA BUTONU ---
+                with st.expander("❓ Neden Bazı Dönemlerde (Örn: 2023-07) Büyük Fark Var?"):
+                    st.info("""
+                    **Model Neden Yanılabilir?**
+                    Bu model "Doğrusal Regresyon" kullanır, yani geçmişteki ortalama ilişkiye bakar. Ancak ekonomi her zaman doğrusal ilerlemez.
+                    
+                    **2023-07 Örneği (Rejim Değişikliği):**
+                    2023 ortasında Türkiye'de para politikasında radikal bir "Ortodokslaşma" süreci başladı.
+                    * **Metin:** Metinler şahinleşti ama "Devasa" bir faiz artışını (örneğin tek seferde 500-600 baz puan) metinden tam olarak ölçmek zordur.
+                    * **Aksiyon:** Politika yapıcılar, piyasa beklentilerini çıpalamak için metnin ima ettiğinden çok daha sert faiz artışları yaptılar.
+                    
+                    Bu tür **"Yapısal Kırılma" (Structural Break)** dönemlerinde, metin tabanlı modeller genellikle değişimin yönünü doğru bilir (Artış), ancak şiddetini (Miktarını) tahmin etmekte zorlanır.
+                    """)
+
+                if not chart_df.empty:
                     fig_perf = go.Figure()
                     fig_perf.add_trace(go.Bar(
-                        x=history_df['period_date'], 
-                        y=history_df['Rate_Change']*100, 
-                        name='Gerçekleşen Değişim (BIS Verisi)',
+                        x=chart_df['period_date'], 
+                        y=chart_df['Rate_Change']*100, 
+                        name='Gerçekleşen Değişim (BIS)',
                         marker_color='gray', opacity=0.6
                     ))
                     fig_perf.add_trace(go.Scatter(
-                        x=history_df['period_date'], 
-                        y=history_df['Predicted_Change']*100, 
+                        x=chart_df['period_date'], 
+                        y=chart_df['Predicted_Change']*100, 
                         name='Model Tahmini',
                         line=dict(color='red', width=2)
                     ))
                     fig_perf.update_layout(hovermode="x unified", yaxis_title="Faiz Değişimi (Baz Puan)", legend=dict(orientation="h", y=1.1))
                     st.plotly_chart(fig_perf, use_container_width=True)
+                else:
+                    st.warning("Seçilen tarih aralığında veri yok.")
             else:
                 st.warning(f"Tahmin yapılamadı: {error}")
         else:
@@ -383,22 +403,21 @@ with tab5:
         st.warning("Yeterli veri yok.")
 
 # ==============================================================================
-# TAB 6: WORDCLOUD (ETİKETLİ STOP WORDS)
+# TAB 6: WORDCLOUD
 # ==============================================================================
 with tab6:
     st.header("☁️ Kelime Bulutu (WordCloud)")
     if not df_all.empty:
-        # --- STOP WORD YÖNETİMİ ---
         st.text_input("🚫 Buluttan Çıkarılacak Kelimeler (Enter)", key="cloud_stop_in", on_change=add_cloud_stop)
         
-        st.write("Aktif Filtreler:")
-        cols = st.columns(8)
-        for i, word in enumerate(st.session_state['stop_words_cloud']):
-            if cols[i % 8].button(f"{word} ✖", key=f"del_cloud_{word}"):
-                st.session_state['stop_words_cloud'].remove(word)
-                st.rerun()
+        if st.session_state['stop_words_cloud']:
+            st.write("Filtreler:")
+            cols = st.columns(8)
+            for i, word in enumerate(st.session_state['stop_words_cloud']):
+                if cols[i % 8].button(f"{word} ✖", key=f"del_cloud_{word}"):
+                    st.session_state['stop_words_cloud'].remove(word)
+                    st.rerun()
         st.divider()
-        # --------------------------
 
         dates = df_all['Donem'].tolist()
         sel_cloud_date = st.selectbox("Dönem Seçin:", ["Tüm Zamanlar"] + dates)

@@ -251,14 +251,15 @@ with tab3:
         df, err = utils.fetch_market_data_adapter(d1, d2)
         if not df.empty:
             fig_m = go.Figure()
-            if 'Yıllık TÜFE' in df.columns: fig_m.add_trace(go.Scatter(x=df['Donem'], y=df['Yıllık TÜFE'], name="TÜFE", line=dict(color='red')))
+            if 'Yıllık TÜFE' in df.columns: fig_m.add_trace(go.Scatter(x=df['Donem'], y=df['Yıllık TÜFE'], name="Yıllık TÜFE", line=dict(color='red')))
+            if 'Aylık TÜFE' in df.columns: fig_m.add_trace(go.Scatter(x=df['Donem'], y=df['Aylık TÜFE'], name="Aylık TÜFE", line=dict(color='blue', dash='dot'))) # AYLIK TÜFE EKLENDİ
             if 'PPK Faizi' in df.columns: fig_m.add_trace(go.Scatter(x=df['Donem'], y=df['PPK Faizi'], name="Faiz", line=dict(color='orange')))
             st.plotly_chart(fig_m, use_container_width=True)
             st.dataframe(df, use_container_width=True)
         else: st.error(f"Hata: {err}")
 
 # ==============================================================================
-# TAB 4: DERİN ANALİZ (DÜZELTİLDİ: SABİT 7 KELİME)
+# TAB 4: DERİN ANALİZ (DÜZELTİLDİ: BAŞLIK VE KELİME)
 # ==============================================================================
 with tab4:
     st.header("🔍 Derin Analiz ve Metin Madenciliği")
@@ -268,9 +269,8 @@ with tab4:
         df_all['Donem'] = df_all['period_date'].dt.strftime('%Y-%m')
         df_all = df_all.sort_values('period_date', ascending=False)
         
-        st.subheader("📊 En Çok Tekrar Eden Ekonomi Terimleri (Top 7)")
+        st.subheader("📊 En Çok Tekrar Eden Ekonomi Terimleri") # (Top 7) silindi
         
-        # --- STOP WORD YÖNETİMİ ---
         st.text_input("🚫 Grafikten Çıkarılacak Kelimeler (Enter)", key="deep_stop_in", on_change=add_deep_stop)
         
         if st.session_state['stop_words_deep']:
@@ -282,7 +282,7 @@ with tab4:
                     st.rerun()
         st.divider()
         
-        # Slider kaldırıldı, sabit 7 kelime
+        # Sabit 7 kelime
         freq_df, top_terms = utils.get_top_terms_series(df_all, 7, st.session_state['stop_words_deep'])
         
         if not freq_df.empty:
@@ -308,7 +308,7 @@ with tab4:
     else: st.info("Yeterli veri yok.")
 
 # ==============================================================================
-# TAB 5: FAİZ TAHMİNİ (DÖNEM FİLTRESİ VE AÇIKLAMA EKLENDİ)
+# TAB 5: FAİZ TAHMİNİ (YENİ EKLENTİLER)
 # ==============================================================================
 with tab5:
     st.header("🤖 Text-as-Data: Faiz Tahmini")
@@ -318,7 +318,8 @@ with tab5:
         Bu modül, **"Metin Madenciliği ile Parasal Politika Tahmini" (Text-as-Data)** yaklaşımını kullanır.
         
         1.  **Veri Seti:** Geçmiş PPK metinlerinin "Şahinlik/Güvercinlik Skoru" ile bir sonraki toplantıdaki "Faiz Kararı" arasındaki ilişkiyi inceler.
-        2.  **Algoritma:** Basit Doğrusal Regresyon (Linear Regression) kullanılarak, metin skorundaki değişimin faiz üzerindeki etkisi modellenir.
+        2.  **Varsayım:** Merkez Bankası metinleri, gelecek kararların öncü göstergesidir (Forward Guidance). Şahin bir ton faiz artışına, Güvercin bir ton faiz indirimine işaret edebilir.
+        3.  **Algoritma:** Basit Doğrusal Regresyon (Linear Regression) kullanılarak, metin skorundaki 1 birimlik değişimin faiz oranında (baz puan) ne kadar değişim yarattığı modellenir.
         """)
 
     if 'merged' in locals() and not merged.empty:

@@ -85,24 +85,42 @@ with tab1:
         df_logs['flesch_score'] = df_logs['text_content'].apply(lambda x: utils.calculate_flesch_reading_ease(str(x)))
         df_logs['score_abg_scaled'] = df_logs['score_abg'].apply(lambda x: x*100 if abs(x) <= 1 else x)
 
+        # --- YENİ EKLENEN: ABG 2019 HESAPLAMASI VE DÖNÜŞÜMÜ ---
+        # ABG 2019 (0-2 arası) değerini -100 ile +100 arasına çekiyoruz
+        abg_df = utils.calculate_abg_scores(df_logs)
+        # Formül: (Index - 1.0) * 100
+        # 1.0 (Nötr) -> 0
+        # 2.0 (Şahin) -> +100
+        # 0.0 (Güvercin) -> -100
+        abg_df['abg_dashboard_val'] = (abg_df['abg_index'] - 1.0) * 100
+        
         min_d = df_logs['period_date'].min().date()
         max_d = datetime.date.today()
         df_market, err = utils.fetch_market_data_adapter(min_d, max_d)
         
         merged = pd.merge(df_logs, df_market, on="Donem", how="left")
+        
+        # ABG Skorlarını ana tabloya ekle
+        merged = pd.merge(merged, abg_df[['period_date', 'abg_dashboard_val']], on='period_date', how='left')
+        
         merged = merged.sort_values("period_date")
         if 'Yıllık TÜFE' in merged.columns: merged['Yıllık TÜFE'] = pd.to_numeric(merged['Yıllık TÜFE'], errors='coerce')
         if 'PPK Faizi' in merged.columns: merged['PPK Faizi'] = pd.to_numeric(merged['PPK Faizi'], errors='coerce')
         
-        market_vals = [80]
-        if 'Yıllık TÜFE' in merged.columns: market_vals.append(merged['Yıllık TÜFE'].max())
-        if 'PPK Faizi' in merged.columns: market_vals.append(merged['PPK Faizi'].max())
-        market_vals = [v for v in market_vals if pd.notna(v)]
-        market_max = max(market_vals) + 10
-
         fig = make_subplots(specs=[[{"secondary_y": True}]])
         fig.add_trace(go.Bar(x=merged['period_date'], y=merged['word_count'], name="Metin Uzunluğu", marker=dict(color='gray'), opacity=0.10, yaxis="y3", hoverinfo="x+y+name"))
-        fig.add_trace(go.Scatter(x=merged['period_date'], y=merged['score_abg_scaled'], name="Şahin/Güvercin Skoru", line=dict(color='black', width=3), marker=dict(size=8, color='black'), yaxis="y"))
+        
+        # Mevcut Şahin/Güvercin Skoru
+        fig.add_trace(go.Scatter(x=merged['period_date'], y=merged['score_abg_scaled'], name="Şahin/Güvercin Skoru (Klasik)", line=dict(color='black', width=2, dash='dot'), marker=dict(size=6, color='black'), yaxis="y"))
+        
+        # --- YENİ EKLENEN: ABG 2019 ÇİZGİSİ ---
+        fig.add_trace(go.Scatter(
+            x=merged['period_date'], 
+            y=merged['abg_dashboard_val'], 
+            name="ABG 2019", 
+            line=dict(color='navy', width=4), # Lacivert ve kalın
+            yaxis="y"
+        ))
         
         if 'Yıllık TÜFE' in merged.columns: fig.add_trace(go.Scatter(x=merged['period_date'], y=merged['Yıllık TÜFE'], name="Yıllık TÜFE (%)", line=dict(color='red', dash='dot'), yaxis="y"))
         if 'PPK Faizi' in merged.columns: fig.add_trace(go.Scatter(x=merged['period_date'], y=merged['PPK Faizi'], name="Faiz (%)", line=dict(color='orange', dash='dot'), yaxis="y"))
@@ -389,18 +407,18 @@ with tab6:
     else: st.info("Veri yok.")
 
 # ==============================================================================
-# TAB 7: ABF ANALİZİ (KEYERROR DÜZELTİLDİ)
+# TAB 7: ABF ANALİZİ (DÜZELTİLDİ: KEYERROR VE FİLTRELEME)
 # ==============================================================================
 with tab7:
     st.header("📜 Apel, Blix ve Grimaldi (2019) Analizi")
     st.info("Bu yöntem, kelimeleri 'enflasyon', 'büyüme', 'istihdam' gibi kategorilere ayırarak, yanlarındaki sıfatlara göre 'Şahin' veya 'Güvercin' olarak puanlar.")
     
-    # 1. VERİ ÇEKME VE HAZIRLIK (KEYERROR ÇÖZÜMÜ)
-    df_abg_source = utils.fetch_all_data() # Yeni bir isimle çekiyoruz
+    # 1. VERİ ÇEKME VE HAZIRLIK
+    df_abg_source = utils.fetch_all_data()
     
     if not df_abg_source.empty:
-        # Sütunları burada garantili oluşturuyoruz
-        df_abg_source = df_abg_source.copy() # Copy uyarısını önle
+        # Sütunları garantili oluşturuyoruz (KeyError Çözümü)
+        df_abg_source = df_abg_source.copy()
         df_abg_source['period_date'] = pd.to_datetime(df_abg_source['period_date'])
         df_abg_source['Donem'] = df_abg_source['period_date'].dt.strftime('%Y-%m')
         

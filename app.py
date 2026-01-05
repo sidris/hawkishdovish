@@ -41,11 +41,9 @@ if 'table_key' not in st.session_state: st.session_state['table_key'] = str(uuid
 if 'collision_state' not in st.session_state: st.session_state['collision_state'] = {'active': False, 'target_id': None, 'pending_text': None, 'target_date': None}
 if 'update_state' not in st.session_state: st.session_state['update_state'] = {'active': False, 'pending_text': None}
 
-# Stopwords State
 if 'stop_words_deep' not in st.session_state: st.session_state['stop_words_deep'] = []
 if 'stop_words_cloud' not in st.session_state: st.session_state['stop_words_cloud'] = []
 
-# --- CALLBACKS ---
 def add_deep_stop():
     word = st.session_state.get("deep_stop_in", "").strip()
     if word and word not in st.session_state['stop_words_deep']:
@@ -64,13 +62,11 @@ def reset_form():
     st.session_state['update_state'] = {'active': False, 'pending_text': None}
     st.session_state['table_key'] = str(uuid.uuid4())
 
-# --- HEADER ---
 c_head1, c_head2 = st.columns([6, 1])
 with c_head1: st.title("🦅 Şahin/Güvercin Paneli")
 with c_head2: 
     if st.button("Çıkış"): st.session_state['logged_in'] = False; st.rerun()
 
-# 7 SEKME OLDU
 tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
     "📈 Dashboard", "📝 Veri Girişi", "📊 Veriler", "🔍 Derin Analiz", "🤖 Faiz Tahmini", "☁️ WordCloud", "📜 ABF (2019)"
 ])
@@ -211,7 +207,6 @@ with tab2:
                     with c2: st.metric("Güvercin", f"{d_cnt}")
                     with c3: st.metric("Flesch", f"{flesch_live:.1f}")
                     st.caption(f"**Net Skor:** {s_live:.2f}")
-                    
                     with st.expander("📄 Tespit Edilen Cümleler", expanded=True):
                         k1, k2 = st.columns(2)
                         with k1:
@@ -271,7 +266,6 @@ with tab4:
         df_all = df_all.sort_values('period_date', ascending=False)
         
         st.subheader("📊 En Çok Tekrar Eden Ekonomi Terimleri")
-        
         st.text_input("🚫 Grafikten Çıkarılacak Kelimeler (Enter)", key="deep_stop_in", on_change=add_deep_stop)
         
         if st.session_state['stop_words_deep']:
@@ -284,7 +278,6 @@ with tab4:
         st.divider()
         
         freq_df, top_terms = utils.get_top_terms_series(df_all, 7, st.session_state['stop_words_deep'])
-        
         if not freq_df.empty:
             fig_freq = go.Figure()
             for term in top_terms:
@@ -312,11 +305,9 @@ with tab4:
 # ==============================================================================
 with tab5:
     st.header("🤖 Text-as-Data: Faiz Tahmini")
-    
     with st.expander("ℹ️ Model Mantığı ve Metodoloji", expanded=True):
         st.markdown("""
         Bu modül, **"Metin Madenciliği ile Parasal Politika Tahmini" (Text-as-Data)** yaklaşımını kullanır.
-        
         1.  **Veri Seti:** Geçmiş PPK metinlerinin "Şahinlik/Güvercinlik Skoru" ile bir sonraki toplantıdaki "Faiz Kararı" arasındaki ilişkiyi inceler.
         2.  **Modeller:**
             * **Lineer Regresyon (Kırmızı Çizgi):** Sürekli bir değişken olarak faiz değişimini modeller.
@@ -325,13 +316,10 @@ with tab5:
 
     if 'merged' in locals() and not merged.empty:
         if st.session_state['form_data']['text']:
-            target_text = st.session_state['form_data']['text']
-            target_source = "Giriş Alanındaki Metin"
+            target_text = st.session_state['form_data']['text']; target_source = "Giriş Alanındaki Metin"
         elif not df_all.empty:
-            target_text = df_all.iloc[0]['text_content']
-            target_source = f"Son Kayıt ({df_all.iloc[0]['Donem']})"
-        else:
-            target_text = None
+            target_text = df_all.iloc[0]['text_content']; target_source = f"Son Kayıt ({df_all.iloc[0]['Donem']})"
+        else: target_text = None
             
         if target_text:
             s_live, _, _, _, _, _, _, _ = utils.run_full_analysis(target_text)
@@ -346,68 +334,34 @@ with tab5:
                     color = "red" if direction == "ARTIRIM" else "blue" if direction == "İNDİRİM" else "gray"
                     st.markdown(f"### Tahmin (Linear): :{color}[{direction}]")
                     st.metric("Beklenen Değişim", f"{change_bps:.0f} bps")
-                    
                     logit_bps = result['prediction_logit'] * 100
                     st.caption(f"**Logit (Sınıflandırma) Tahmini:** {logit_bps:.0f} bps")
-                
                 with col_pred2:
                     st.write("📊 **Model İstatistikleri**")
                     st.write(f"- Eğitim Verisi: {result['sample_size']} Toplantı")
                     st.write(f"- Korelasyon: {result['correlation']:.2f}")
                 
-                st.divider()
-                st.markdown("#### 📈 Model Performansı: Tahmin vs. Gerçekleşen (BIS Verisi)")
-                
-                min_hist = history_df['period_date'].min().date()
-                max_hist = history_df['period_date'].max().date()
+                st.divider(); st.markdown("#### 📈 Model Performansı: Tahmin vs. Gerçekleşen (BIS Verisi)")
+                min_hist = history_df['period_date'].min().date(); max_hist = history_df['period_date'].max().date()
                 c_d1, c_d2 = st.columns(2)
                 d_start = c_d1.date_input("Başlangıç Tarihi", datetime.date(2021, 1, 1), min_value=min_hist, max_value=max_hist)
                 d_end = c_d2.date_input("Bitiş Tarihi", max_hist, min_value=min_hist, max_value=max_hist)
-                
                 chart_df = history_df[(history_df['period_date'].dt.date >= d_start) & (history_df['period_date'].dt.date <= d_end)]
                 
                 with st.expander("❓ Neden Bazı Dönemlerde (Örn: 2023-07) Büyük Fark Var?"):
-                    st.info("""
-                    **Model Neden Yanılabilir?**
-                    Bu model "Doğrusal Regresyon" kullanır, yani geçmişteki ortalama ilişkiye bakar. Ancak ekonomi her zaman doğrusal ilerlemez.
-                    
-                    **2023-07 Örneği (Rejim Değişikliği):**
-                    2023 ortasında Türkiye'de para politikasında radikal bir "Ortodokslaşma" süreci başladı.
-                    * **Metin:** Metinler şahinleşti ama "Devasa" bir faiz artışını (örneğin tek seferde 500-600 baz puan) metinden tam olarak ölçmek zordur.
-                    * **Aksiyon:** Politika yapıcılar, piyasa beklentilerini çıpalamak için metnin ima ettiğinden çok daha sert faiz artışları yaptılar.
-                    """)
+                    st.info("Bu model Doğrusal Regresyon kullanır. Ekonomi her zaman doğrusal ilerlemez. Özellikle 2023-07 gibi rejim değişikliklerinde model yönü bilse de şiddeti tahmin edemeyebilir.")
 
                 if not chart_df.empty:
                     fig_perf = go.Figure()
-                    fig_perf.add_trace(go.Bar(
-                        x=chart_df['period_date'], 
-                        y=chart_df['Rate_Change']*100, 
-                        name='Gerçekleşen Değişim (BIS)',
-                        marker_color='gray', opacity=0.6
-                    ))
-                    fig_perf.add_trace(go.Scatter(
-                        x=chart_df['period_date'], 
-                        y=chart_df['Predicted_Change']*100, 
-                        name='Model Tahmini (Linear)',
-                        line=dict(color='red', width=2)
-                    ))
-                    fig_perf.add_trace(go.Scatter(
-                        x=chart_df['period_date'], 
-                        y=chart_df['Predicted_Change_Logit']*100, 
-                        name='Logit Tahmini (Ordered Proxy)',
-                        line=dict(color='green', width=2, dash='dot')
-                    ))
-                    
+                    fig_perf.add_trace(go.Bar(x=chart_df['period_date'], y=chart_df['Rate_Change']*100, name='Gerçekleşen Değişim (BIS)', marker_color='gray', opacity=0.6))
+                    fig_perf.add_trace(go.Scatter(x=chart_df['period_date'], y=chart_df['Predicted_Change']*100, name='Model Tahmini (Linear)', line=dict(color='red', width=2)))
+                    fig_perf.add_trace(go.Scatter(x=chart_df['period_date'], y=chart_df['Predicted_Change_Logit']*100, name='Logit Tahmini (Ordered Proxy)', line=dict(color='green', width=2, dash='dot')))
                     fig_perf.update_layout(hovermode="x unified", yaxis_title="Faiz Değişimi (Baz Puan)", legend=dict(orientation="h", y=1.1))
                     st.plotly_chart(fig_perf, use_container_width=True)
-                else:
-                    st.warning("Seçilen tarih aralığında veri yok.")
-            else:
-                st.warning(f"Tahmin yapılamadı: {error}")
-        else:
-            st.warning("Lütfen Veri Girişi sekmesinden bir metin girin.")
-    else:
-        st.warning("Yeterli veri yok.")
+                else: st.warning("Seçilen tarih aralığında veri yok.")
+            else: st.warning(f"Tahmin yapılamadı: {error}")
+        else: st.warning("Lütfen Veri Girişi sekmesinden bir metin girin.")
+    else: st.warning("Yeterli veri yok.")
 
 # ==============================================================================
 # TAB 6: WORDCLOUD
@@ -416,7 +370,6 @@ with tab6:
     st.header("☁️ Kelime Bulutu (WordCloud)")
     if not df_all.empty:
         st.text_input("🚫 Buluttan Çıkarılacak Kelimeler (Enter)", key="cloud_stop_in", on_change=add_cloud_stop)
-        
         if st.session_state['stop_words_cloud']:
             st.write("Filtreler:")
             cols = st.columns(8)
@@ -425,22 +378,18 @@ with tab6:
                     st.session_state['stop_words_cloud'].remove(word)
                     st.rerun()
         st.divider()
-
         dates = df_all['Donem'].tolist()
         sel_cloud_date = st.selectbox("Dönem Seçin:", ["Tüm Zamanlar"] + dates)
-        
         if st.button("Bulutu Oluştur", type="primary"):
             if sel_cloud_date == "Tüm Zamanlar": text_cloud = " ".join(df_all['text_content'].astype(str).tolist())
             else: text_cloud = df_all[df_all['Donem'] == sel_cloud_date].iloc[0]['text_content']
-            
             fig_wc = utils.generate_wordcloud_img(text_cloud, st.session_state['stop_words_cloud'])
             if fig_wc: st.pyplot(fig_wc)
             else: st.error("Kütüphane eksik veya metin boş.")
-    else:
-        st.info("Veri yok.")
+    else: st.info("Veri yok.")
 
 # ==============================================================================
-# TAB 7: ABF ANALİZİ (YENİ)
+# TAB 7: ABF ANALİZİ (GÜNCELLENDİ: DETAYLI GÖSTERİM)
 # ==============================================================================
 with tab7:
     st.header("📜 Apel, Blix ve Grimaldi (2019) Analizi")
@@ -448,40 +397,19 @@ with tab7:
     
     df_all = utils.fetch_all_data()
     if not df_all.empty:
-        # Tüm veriye ABG analizini uygula
         abg_df = utils.calculate_abg_scores(df_all)
-        
-        # 1. Grafiği Çiz
         fig_abg = go.Figure()
-        fig_abg.add_trace(go.Scatter(
-            x=abg_df['period_date'],
-            y=abg_df['abg_index'],
-            name="ABF Net Hawkishness",
-            line=dict(color='purple', width=3),
-            marker=dict(size=8)
-        ))
-        
-        # Referans çizgisi (Nötr = 1.0)
+        fig_abg.add_trace(go.Scatter(x=abg_df['period_date'], y=abg_df['abg_index'], name="ABF Net Hawkishness", line=dict(color='purple', width=3), marker=dict(size=8)))
         fig_abg.add_shape(type="line", x0=abg_df['period_date'].min(), x1=abg_df['period_date'].max(), y0=1, y1=1, line=dict(color="gray", dash="dash"))
-        
-        fig_abg.update_layout(
-            title="ABF (2019) Endeksi Zaman Serisi (Nötr=1.0)",
-            yaxis_title="Hawkishness Index (0 - 2)",
-            hovermode="x unified"
-        )
+        fig_abg.update_layout(title="ABF (2019) Endeksi Zaman Serisi (Nötr=1.0)", yaxis_title="Hawkishness Index (0 - 2)", hovermode="x unified")
         st.plotly_chart(fig_abg, use_container_width=True)
-        
         st.divider()
         
-        # 2. Detaylı İnceleme
         st.subheader("🔍 Dönem Bazlı Detaylar")
         sel_abg_period = st.selectbox("İncelenecek Dönem:", abg_df['Donem'].tolist())
         
         if sel_abg_period:
-            # Seçilen metni bul
             text_abg = df_all[df_all['Donem'] == sel_abg_period].iloc[0]['text_content']
-            
-            # Anlık analiz yap (Detayları almak için)
             analyzer = utils.ABGAnalyzer()
             res = analyzer.analyze(text_abg)
             
@@ -490,16 +418,20 @@ with tab7:
             c2.metric("Şahin Eşleşme", res['hawk_count'])
             c3.metric("Güvercin Eşleşme", res['dove_count'])
             
-            with st.expander("📝 Eşleşen İfadeler (Kanıtlar)", expanded=True):
+            # YENİ DETAYLI GÖSTERİM ALANI
+            with st.expander("📝 Detaylı Eşleşme Tablosu (Cümle Bağlamı)", expanded=True):
                 if res['match_details']:
-                    for match in res['match_details']:
-                        # Renklendirme
-                        if "HAWK" in match:
-                            st.markdown(f":red[{match}]")
-                        else:
-                            st.markdown(f":blue[{match}]")
+                    # Tablo formatında gösterim için veriyi düzenle
+                    detail_data = []
+                    for m in res['match_details']:
+                        detail_data.append({
+                            "Tip": "🦅 ŞAHİN" if m['type'] == "HAWK" else "🕊️ GÜVERCİN",
+                            "Eşleşen Terim": m['term'],
+                            "Cümle": m['sentence']
+                        })
+                    st.dataframe(pd.DataFrame(detail_data), use_container_width=True, hide_index=True)
                 else:
-                    st.write("Eşleşme bulunamadı.")
+                    st.info("Bu metinde herhangi bir ABF sözlük eşleşmesi bulunamadı.")
             
             with st.expander("Metin Önizleme"):
                 st.write(text_abg)

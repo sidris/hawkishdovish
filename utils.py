@@ -8,6 +8,8 @@ import re
 import difflib
 from collections import Counter
 import numpy as np
+from dataclasses import dataclass
+from typing import List, Dict, Tuple, Any, Optional
 
 # --- 1. EK KÜTÜPHANELER ---
 try:
@@ -120,7 +122,7 @@ def fetch_market_data_adapter(start_date, end_date):
     return master_df.sort_values("SortDate"), None
 
 # =============================================================================
-# 4. METİN ANALİZİ (ESKİ SİSTEM)
+# 4. METİN ANALİZİ (ESKİ SİSTEM - Dashboard ve İlk Hesaplamalar İçin)
 # =============================================================================
 
 NOUNS = {
@@ -229,7 +231,7 @@ def run_full_analysis(text):
     dove_contexts = find_context_sentences(text, all_dove_matches.keys())
     return net_score, hawk_total, dove_total, hawk_list, dove_list, hawk_contexts, dove_contexts, flesch_score
 
-# --- DERİN ANALİZ ARAÇLARI ---
+# --- DERİN ANALİZ FONKSİYONLARI ---
 
 def generate_diff_html(text1, text2):
     if not text1: text1 = ""
@@ -309,124 +311,315 @@ def train_and_predict_rate(df_history, current_score):
     return stats, df[['period_date', 'Donem', 'Rate_Change', 'Predicted_Change', 'Predicted_Change_Logit']].copy(), None
 
 # =============================================================================
-# 5. ABG ANALYZER SINIFI (APEL, BLIX, GRIMALDI - 2019)
+# 5. ABG (APEL, BLIX, GRIMALDI - 2019) ANALYZER [GÜNCELLENMİŞ VERSİYON]
 # =============================================================================
 
-class ABGAnalyzer:
-    def __init__(self):
-        # NOT: Kelimelere '*' (wildcard) eklendi!
-        self.inflation_dict = {
-            "terms": ["consumer prices", "consumer price", "cpi", "inflation", "inflation pressure", "inflationary pressure", "price", "prices"],
-            "hawkish_modifiers": ["accelerat*", "boost*", "elevat*", "escalat*", "high*", "increas*", "jump*", "pickup", "ris*", "ros*", "run-up", "runup", "strong*", "surg*", "up", "mount*", "intensif*", "stok*", "sustain*"],
-            "dovish_modifiers": ["decelerat*", "declin*", "decreas*", "down", "drop*", "fall*", "fell", "low*", "muted", "reduc*", "slow*", "stable", "subdued", "weak*", "contained", "abat*", "dampen*", "dimin*", "eas*", "moderat*", "reced*", "temper*"]
-        }
-        self.growth_dict = {
-            "terms": ["consumer spending", "economic activity", "economic growth", "resource utilization", "gdp", "output", "demand", "production"],
-            "hawkish_modifiers": ["accelerat*", "edg* up", "expan*", "increas*", "pick* up", "pickup", "soft*", "strength*", "strong*", "buoyant", "high*", "ris*", "ros*", "step* up", "tight*", "upside"],
-            "dovish_modifiers": ["contract*", "decelerat*", "decreas*", "drop*", "retrench*", "slow*", "slugg*", "soft*", "subdued", "weak*", "curtail*", "declin*", "downside", "fall*", "fell", "low*", "loose"]
-        }
-        self.employment_dict = {
-            "terms": ["employment", "job", "jobs", "labor market", "labour market"],
-            "hawkish_modifiers": ["expand*", "gain*", "improv*", "increas*", "pick* up", "pickup", "rais*", "ris*", "ros*", "strength*", "turn* up", "strain*", "tight*"],
-            "dovish_modifiers": ["slow*", "declin*", "reduc*", "weak*", "deteriorat*", "shrink*", "shrank", "fall*", "fell", "drop*", "contract*", "sluggish", "eased", "easing", "loos*", "soft*"]
-        }
-        self.unemployment_dict = {
-            "terms": ["unemployment"],
-            "hawkish_modifiers": ["declin*", "fall*", "fell", "low*", "reduc*"],
-            "dovish_modifiers": ["sluggish", "eas*", "loos*", "elevat*", "high*", "increas*", "ris*", "ros*"]
-        }
-        self.dictionaries = [self.inflation_dict, self.growth_dict, self.employment_dict, self.unemployment_dict]
+@dataclass(frozen=True)
+class ModPattern:
+    # modifier örn: "edg* up" => [r"^edg[a-z-]*$", r"^up$"]
+    token_regexes: Tuple[re.Pattern, ...]
 
-    def split_sentences(self, text):
-        return re.split(r'[.!?]+', text) # Basit ve etkili cümle bölme
+@dataclass(frozen=True)
+class TermEntry:
+    # term örn: "inflation pressure" => ("inflation","pressure")
+    term_tokens: Tuple[str, ...]
+    hawk_mods: Tuple[ModPattern, ...]
+    dove_mods: Tuple[ModPattern, ...]
 
-    def analyze(self, text):
-        raw_sentences = self.split_sentences(text)
-        hawk_count = 0; dove_count = 0; matches = [] 
-        
-        for original_sentence in raw_sentences:
-            if not original_sentence.strip(): continue
-            
-            # Punctuation temizliği: Sadece kelimeler ve boşluklar kalsın
-            clean_sent = re.sub(r'[^\w\s]', '', original_sentence).lower()
-            tokens = clean_sent.split()
-            found_in_sentence = False
-            
-            for vocab in self.dictionaries:
-                terms = vocab["terms"]
-                h_mods = vocab["hawkish_modifiers"]
-                d_mods = vocab["dovish_modifiers"]
+class ABG2019Analyzer:
+    """
+    ABG (Apel, Blix Grimaldi, Hull 2019) Appendix Table 4-6 sözlüğünü bire bir uygular.
+    - Term/modifier aynı cümlede, term etrafında +/-7 kelime penceresinde sayılır.
+    - Term substring çakışmaları tek instance sayılır (uzun terim öncelikli).
+    - '*' stem wildcard: aynı kökten başlayan kelimeler.
+    """
 
-                for i, word in enumerate(tokens):
-                    matched_term = None; term_index = -1
-                    
-                    # Term Match Check
-                    for term in terms:
-                        term_parts = term.split()
-                        if len(term_parts) == 1 and word == term_parts[0]:
-                            matched_term = term; term_index = i
-                        elif len(term_parts) > 1:
-                            if tokens[i:i+len(term_parts)] == term_parts:
-                                matched_term = term; term_index = i
-                    
-                    if matched_term:
-                        start = max(0, term_index - 7)
-                        end = min(len(tokens), term_index + 7 + 1)
-                        window = tokens[start:end]
+    def __init__(self, window_size: int = 7):
+        self.window_size = window_size
+        self.entries: List[TermEntry] = self._build_dictionary_from_appendix()
 
-                        for mod in h_mods:
-                            # "low*" -> "\blow\w*\b"
-                            pattern = r"\b" + mod.replace("*", "\w*") + r"\b"
-                            for w in window:
-                                if re.match(pattern, w):
-                                    hawk_count += 1
-                                    matches.append({"type": "HAWK", "term": f"{matched_term} + {w}", "sentence": original_sentence.strip()})
-                                    found_in_sentence = True
-                                    break 
-                            if found_in_sentence: break
-                        
-                        if found_in_sentence: break 
+    # ----------------------------
+    # Tokenization / sentence split
+    # ----------------------------
+    def split_sentences(self, text: str) -> List[str]:
+        # Basit cümle bölme (ABG cümle içi koşul dediği için yeterli pratik yaklaşım)
+        return re.split(r'[.!?]+', text)
 
-                        for mod in d_mods:
-                            pattern = r"\b" + mod.replace("*", "\w*") + r"\b"
-                            for w in window:
-                                if re.match(pattern, w):
-                                    dove_count += 1
-                                    matches.append({"type": "DOVE", "term": f"{matched_term} + {w}", "sentence": original_sentence.strip()})
-                                    found_in_sentence = True
-                                    break
-                            if found_in_sentence: break
-                    
-                    if found_in_sentence: break
-                if found_in_sentence: break
+    def tokenize(self, sentence: str) -> List[str]:
+        # Hyphen'ı koru: "run-up" gibi modifierlar için
+        s = sentence.lower()
+        return re.findall(r"[a-z]+(?:-[a-z]+)*", s)
 
-        total = hawk_count + dove_count
-        net_hawkishness = ((hawk_count - dove_count) / total) + 1 if total > 0 else 1.0
+    # ----------------------------
+    # Dictionary (Appendix Table 4-6)
+    # ----------------------------
+    def _compile_token_wildcard(self, token: str) -> re.Pattern:
+        # token örn "high*" => ^high[a-z-]*$
+        # token örn "fell"  => ^fell$
+        # Not: ABG '*' "same stem" diyor.
+        token = token.strip().lower()
+        if "*" in token:
+            base = re.escape(token.replace("*", ""))
+            return re.compile(rf"^{base}[a-z-]*$")
+        else:
+            return re.compile(rf"^{re.escape(token)}$")
+
+    def _compile_modifier(self, modifier: str) -> List[ModPattern]:
+        """
+        modifier string’i ModPattern listesine çevirir.
+        - "run-up/runup" => iki alternatif pattern
+        - "edg* up" => iki tokenlı pattern
+        - "drop" vs "drop*" vs "down*" vs "high*" vs ...
+        """
+        modifier = modifier.strip().lower()
+        if not modifier:
+            return []
+
+        # run-up/runup gibi alternatifler
+        alts = modifier.split("/")
+        out: List[ModPattern] = []
+        for alt in alts:
+            alt = alt.strip()
+            if not alt:
+                continue
+            parts = alt.split()  # "edg* up" => ["edg*","up"]
+            token_regexes = tuple(self._compile_token_wildcard(p) for p in parts)
+            out.append(ModPattern(token_regexes=token_regexes))
+        return out
+
+    def _entry(self, term: str, hawk_mods: List[str], dove_mods: List[str]) -> TermEntry:
+        term_tokens = tuple(term.lower().split())
+        h_patterns: List[ModPattern] = []
+        d_patterns: List[ModPattern] = []
+        for m in hawk_mods:
+            h_patterns.extend(self._compile_modifier(m))
+        for m in dove_mods:
+            d_patterns.extend(self._compile_modifier(m))
+        return TermEntry(
+            term_tokens=term_tokens,
+            hawk_mods=tuple(h_patterns),
+            dove_mods=tuple(d_patterns),
+        )
+
+    def _build_dictionary_from_appendix(self) -> List[TermEntry]:
+        # Appendix Table 4 (Inflation)
+        inflation_consumer_prices_hawk = [
+            "accelerat*", "boost*", "elevat*", "escalat*", "high*", "increas*", "jump*",
+            "pickup", "rise*", "rose", "rising", "run-up/runup", "strong*", "surg*", "up*"
+        ]
+        inflation_consumer_prices_dove = [
+            "decelerat*", "declin*", "decreas*", "down*", "drop*", "fall*", "fell", "low*",
+            "muted", "reduc*", "slow*", "stable", "subdued", "weak*", "contained"
+        ]
+
+        inflation_infl_pressure_hawk = [
+            "accelerat*", "boost*", "build*", "elevat*", "emerg*", "great*", "height*",
+            "high*", "increas*", "intensif*", "mount*", "pickup", "rise", "rose", "rising",
+            "stok*", "strong*", "sustain*"
+        ]
+        inflation_infl_pressure_dove = [
+            "abat*", "contain*", "dampen*", "decelerat*", "declin*", "decreas*", "dimin*",
+            "eas*", "fall*", "fell", "low*", "moderat*", "reced*", "reduc*", "subdued",
+            "temper*"
+        ]
+
+        # Appendix Table 5 (Economic Activity)
+        econ_cons_spend_hawk = [
+            "accelerat*", "edg* up", "expan*", "increas*", "pick* up", "pickup",
+            "soft*", "strength*", "strong*", "weak*"
+        ]
+        econ_cons_spend_dove = [
+            "contract*", "decelerat*", "decreas*", "drop*", "retrench*", "slow*",
+            "slugg*", "soft*", "subdued"
+        ]
+
+        econ_activity_hawk = ["accelerat*"]
+        econ_activity_dove = ["contract*"]
+
+        econ_growth_hawk = [
+            "buoyant", "edg* up", "expan*", "increas*", "high*", "pick* up", "pickup",
+            "rise*", "rose", "rising", "step* up", "strength*", "strong*", "upside"
+        ]
+        econ_growth_dove = [
+            "curtail*", "decelerat*", "declin*", "decreas*", "downside", "drop", "fall*",
+            "fell", "low*", "moderat*", "slow*", "slugg*", "weak*"
+        ]
+
+        resource_util_hawk = ["high*", "increas*", "rise", "rising", "rose", "tight*"]
+        resource_util_dove = ["declin*", "fall*", "fell", "loose*", "low*"]
+
+        # Appendix Table 6 (Employment + Labor Market + Unemployment)
+        employment_hawk = [
+            "expand*", "gain*", "improv*", "increas*", "pick* up", "pickup", "rais*",
+            "rise*", "rising", "rose", "strength*", "turn* up"
+        ]
+        employment_dove = [
+            "slow*", "declin*", "reduc*", "weak*", "deteriorat*", "shrink*", "shrank",
+            "fall*", "fell", "drop*", "contract*", "sluggish"
+        ]
+
+        labor_market_hawk = ["strain*", "tight*"]
+        labor_market_dove = ["eased", "easing", "loos*", "soft*", "weak*"]
+
+        unemployment_hawk = ["declin*", "fall*", "fell", "low*", "reduc*"]
+        unemployment_dove = ["elevat*", "high", "increas*", "ris*", "rose*"]
+
+        return [
+            # Inflation
+            self._entry("consumer prices", inflation_consumer_prices_hawk, inflation_consumer_prices_dove),
+            self._entry("inflation",       inflation_consumer_prices_hawk, inflation_consumer_prices_dove),
+            self._entry("inflation pressure", inflation_infl_pressure_hawk, inflation_infl_pressure_dove),
+
+            # Economic activity
+            self._entry("consumer spending", econ_cons_spend_hawk, econ_cons_spend_dove),
+            self._entry("economic activity", econ_activity_hawk, econ_activity_dove),
+            self._entry("economic growth",   econ_growth_hawk, econ_growth_dove),
+            self._entry("resource utilization", resource_util_hawk, resource_util_dove),
+
+            # Employment
+            self._entry("employment", employment_hawk, employment_dove),
+            self._entry("labor market", labor_market_hawk, labor_market_dove),
+            self._entry("unemployment", unemployment_hawk, unemployment_dove),
+        ]
+
+    # ----------------------------
+    # Matching logic (ABG rules)
+    # ----------------------------
+    def _find_term_spans(self, tokens: List[str]) -> List[Tuple[int, int, TermEntry]]:
+        """
+        Tüm term eşleşmelerini bulur (span: [start, end) ).
+        Sonra substring çakışmasını önlemek için: en uzun termleri önce seçip overlap etmeyenleri bırakır.
+        """
+        raw: List[Tuple[int, int, TermEntry]] = []
+        n = len(tokens)
+
+        for entry in self.entries:
+            t = entry.term_tokens
+            L = len(t)
+            if L == 0:
+                continue
+            for i in range(0, n - L + 1):
+                if tuple(tokens[i:i+L]) == t:
+                    raw.append((i, i+L, entry))
+
+        # Uzun terimler önce (substring çakışmalarını tek saymak için)
+        raw.sort(key=lambda x: (-(x[1]-x[0]), x[0]))
+
+        chosen: List[Tuple[int, int, TermEntry]] = []
+        occupied = [False] * n
+        for s, e, entry in raw:
+            if any(occupied[k] for k in range(s, e)):
+                continue
+            chosen.append((s, e, entry))
+            for k in range(s, e):
+                occupied[k] = True
+
+        # start sırasına koy
+        chosen.sort(key=lambda x: x[0])
+        return chosen
+
+    def _match_modifier_at(self, tokens: List[str], pos: int, pat: ModPattern) -> bool:
+        L = len(pat.token_regexes)
+        if pos + L > len(tokens):
+            return False
+        for j in range(L):
+            if not pat.token_regexes[j].match(tokens[pos+j]):
+                return False
+        return True
+
+    def analyze(self, text: str) -> Dict[str, Any]:
+        sentences = self.split_sentences(text)
+        hawk = 0
+        dove = 0
+        details: List[Dict[str, Any]] = []
+
+        for sent in sentences:
+            sent = sent.strip()
+            if not sent:
+                continue
+
+            tokens = self.tokenize(sent)
+            if not tokens:
+                continue
+
+            # Term spans (substring çakışmaları tek say)
+            term_spans = self._find_term_spans(tokens)
+
+            for (ts, te, entry) in term_spans:
+                # ±7-word window around the term span
+                w_start = max(0, ts - self.window_size)
+                w_end = min(len(tokens), te + self.window_size)
+
+                # Hawk modifiers
+                for pat in entry.hawk_mods:
+                    L = len(pat.token_regexes)
+                    for p in range(w_start, w_end - L + 1):
+                        if self._match_modifier_at(tokens, p, pat):
+                            hawk += 1
+                            mod_str = " ".join(tokens[p:p+L])
+                            details.append({
+                                "type": "HAWK",
+                                "term": " ".join(entry.term_tokens),
+                                "modifier": mod_str,
+                                "sentence": sent
+                            })
+
+                # Dove modifiers
+                for pat in entry.dove_mods:
+                    L = len(pat.token_regexes)
+                    for p in range(w_start, w_end - L + 1):
+                        if self._match_modifier_at(tokens, p, pat):
+                            dove += 1
+                            mod_str = " ".join(tokens[p:p+L])
+                            details.append({
+                                "type": "DOVE",
+                                "term": " ".join(entry.term_tokens),
+                                "modifier": mod_str,
+                                "sentence": sent
+                            })
+
+        total = hawk + dove
+        net = 1.0 + ((hawk - dove) / total) if total > 0 else 1.0  # ABG eq (1)
 
         return {
-            "net_hawkishness": net_hawkishness,
-            "hawk_count": hawk_count,
-            "dove_count": dove_count,
+            "net_hawkishness": net,
+            "hawk_count": hawk,
+            "dove_count": dove,
             "total_matches": total,
-            "match_details": matches
+            "match_details": details
         }
 
-def calculate_abg_scores(df):
-    if df.empty: return pd.DataFrame()
-    analyzer = ABGAnalyzer(); results = []
+# ABG Wrapper Fonksiyonu (Eski API'ye uyumluluk için)
+class ABGAnalyzer:
+    def __init__(self):
+        self.engine = ABG2019Analyzer(window_size=7)
+    
+    def analyze(self, text):
+        return self.engine.analyze(text)
+
+def calculate_abg_scores(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None or df.empty:
+        return pd.DataFrame()
+
+    analyzer = ABG2019Analyzer(window_size=7)
+    rows = []
+
     for _, row in df.iterrows():
-        res = analyzer.analyze(str(row['text_content']))
-        donem_val = row.get('Donem')
-        if not donem_val and 'period_date' in row:
-            try: donem_val = pd.to_datetime(row['period_date']).strftime('%Y-%m')
-            except: donem_val = ''
-            
-        results.append({
-            'period_date': row['period_date'],
-            'Donem': donem_val,
-            'abg_index': res['net_hawkishness'],
-            'abg_hawk': res['hawk_count'],
-            'abg_dove': res['dove_count']
+        res = analyzer.analyze(str(row.get("text_content", "")))
+
+        donem_val = row.get("Donem")
+        if (donem_val is None or donem_val == "") and ("period_date" in row):
+            try:
+                donem_val = pd.to_datetime(row["period_date"]).strftime("%Y-%m")
+            except Exception:
+                donem_val = ""
+
+        rows.append({
+            "period_date": row.get("period_date"),
+            "Donem": donem_val,
+            "abg_index": res["net_hawkishness"],
+            "abg_hawk": res["hawk_count"],
+            "abg_dove": res["dove_count"],
         })
-    # DÜZELTME: En yeniden eskiye (Descending)
-    return pd.DataFrame(results).sort_values('period_date', ascending=False)
+
+    return pd.DataFrame(rows).sort_values("period_date", ascending=False)

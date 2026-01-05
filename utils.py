@@ -340,104 +340,60 @@ class ABGAnalyzer:
         self.dictionaries = [self.inflation_dict, self.growth_dict, self.employment_dict, self.unemployment_dict]
 
     def split_sentences(self, text):
-        # Regex ile cümleleri böl (Nokta, soru işareti, ünlem)
-        return re.split(r'(?<!\w\.\w.)(?<![A-Z][a-z]\.)(?<=[.!?])\s', text)
+        return re.split(r'(?<!\w\.\w.)(?<![A-Z][a-z]\.)(?<=\.|\?)\s', text)
 
     def analyze(self, text):
-        # 1. Metni ham cümlelere böl (Gösterim için)
         raw_sentences = self.split_sentences(text)
-        
-        hawk_count = 0
-        dove_count = 0
-        
-        # Detaylı eşleşme listesi: {type, term, modifier, sentence}
-        match_details = []
-
+        hawk_count = 0; dove_count = 0; matches = [] 
         for original_sentence in raw_sentences:
-            # Analiz için temizlenmiş tokenlar
             clean_sent = re.sub(r'[^\w\s]', '', original_sentence).lower()
             tokens = clean_sent.split()
-            
-            # Cümle bazlı kontrol
             found_in_sentence = False
-            
             for vocab in self.dictionaries:
-                terms = vocab["terms"]
-                h_mods = vocab["hawkish_modifiers"]
-                d_mods = vocab["dovish_modifiers"]
-
+                terms = vocab["terms"]; h_mods = vocab["hawkish_modifiers"]; d_mods = vocab["dovish_modifiers"]
                 for i, word in enumerate(tokens):
-                    matched_term = None
-                    term_index = -1
-                    
-                    # Term Match
+                    matched_term = None; term_index = -1
                     for term in terms:
                         term_parts = term.split()
-                        if len(term_parts) == 1 and word == term_parts[0]:
-                            matched_term = term; term_index = i
+                        if len(term_parts) == 1 and word == term_parts[0]: matched_term = term; term_index = i
                         elif len(term_parts) > 1:
-                            if tokens[i:i+len(term_parts)] == term_parts:
-                                matched_term = term; term_index = i
-                    
+                            if tokens[i:i+len(term_parts)] == term_parts: matched_term = term; term_index = i
                     if matched_term:
-                        # Window Check
-                        start = max(0, term_index - 7)
-                        end = min(len(tokens), term_index + 7 + 1)
+                        start = max(0, term_index - 7); end = min(len(tokens), term_index + 7 + 1)
                         window = tokens[start:end]
-
-                        # Modifier Check
                         for mod in h_mods:
                             pattern = r"\b" + mod.replace("*", "\w*") + r"\b"
                             for w in window:
                                 if re.match(pattern, w):
-                                    hawk_count += 1
-                                    match_details.append({
-                                        "type": "HAWK",
-                                        "term": f"{matched_term} + {w}",
-                                        "sentence": original_sentence.strip()
-                                    })
-                                    found_in_sentence = True
-                                    break
+                                    hawk_count += 1; matches.append({"type": "HAWK", "term": f"{matched_term} + {w}", "sentence": original_sentence.strip()}); found_in_sentence = True; break 
                             if found_in_sentence: break
-                        
-                        if found_in_sentence: break # Bir cümlede tek yön (öncelik şahin)
-
+                        if found_in_sentence: break 
                         for mod in d_mods:
                             pattern = r"\b" + mod.replace("*", "\w*") + r"\b"
                             for w in window:
                                 if re.match(pattern, w):
-                                    dove_count += 1
-                                    match_details.append({
-                                        "type": "DOVE",
-                                        "term": f"{matched_term} + {w}",
-                                        "sentence": original_sentence.strip()
-                                    })
-                                    found_in_sentence = True
-                                    break
+                                    dove_count += 1; matches.append({"type": "DOVE", "term": f"{matched_term} + {w}", "sentence": original_sentence.strip()}); found_in_sentence = True; break
                             if found_in_sentence: break
-                    
                     if found_in_sentence: break
                 if found_in_sentence: break
-
         total = hawk_count + dove_count
         net_hawkishness = ((hawk_count - dove_count) / total) + 1 if total > 0 else 1.0
-
-        return {
-            "net_hawkishness": net_hawkishness,
-            "hawk_count": hawk_count,
-            "dove_count": dove_count,
-            "match_details": match_details
-        }
+        return {"net_hawkishness": net_hawkishness, "hawk_count": hawk_count, "dove_count": dove_count, "total_matches": total, "match_details": matches}
 
 def calculate_abg_scores(df):
     if df.empty: return pd.DataFrame()
-    analyzer = ABGAnalyzer()
-    results = []
+    analyzer = ABGAnalyzer(); results = []
     for _, row in df.iterrows():
         res = analyzer.analyze(str(row['text_content']))
+        # DÜZELTME: Donem sütunu yoksa oluştur
+        donem_val = row.get('Donem')
+        if not donem_val and 'period_date' in row:
+            try: donem_val = pd.to_datetime(row['period_date']).strftime('%Y-%m')
+            except: donem_val = ''
+            
         results.append({
             'period_date': row['period_date'],
-            'Donem': row.get('Donem', ''),
+            'Donem': donem_val,
             'abg_index': res['net_hawkishness'],
             'abg_hawk': res['hawk_count'],
             'abg_dove': res['dove_count']

@@ -122,7 +122,7 @@ def fetch_market_data_adapter(start_date, end_date):
     return master_df.sort_values("SortDate"), None
 
 # =============================================================================
-# 4. METİN ANALİZİ (GÜNCELLENMİŞ FLESCH ALGORİTMASI)
+# 4. METİN ANALİZİ (JS REFERANSLI FLESCH ALGORİTMASI)
 # =============================================================================
 
 NOUNS = {
@@ -153,69 +153,71 @@ def split_into_sentences(text):
     if not text: return []
     return re.split(r'[.!?]+', text)
 
-def count_syllables(word):
+def count_syllables_en(word):
     """
-    JS Kodu Referanslı Hece Sayma:
-    - 3 harf ve altı => 1 hece
-    - Sonundaki sessiz 'e' ve 'y' temizlenir (JS Regex: /(?:[^laeiouy]|ed|[^laeiouy]e)$/i)
-    - Baştaki 'y' temizlenir
-    - [aeiouy]{1,2} grupları sayılır
+    JS Logic:
+    - If length <= 3 -> return 1
+    - Remove silent 'e' or 'ed' or 'es' endings (non-vowel + e/ed/es)
+    - Remove starting 'y'
+    - Count [aeiouy]{1,2} groups
     """
     word = word.lower()
+    if len(word) <= 3:
+        return 1
     
-    # 3 harf veya daha kısaysa genelde 1 hecelidir
-    if len(word) <= 3: return 1
-
-    # Sessiz 'e'leri ve 'ed' gibi bitişleri temizle (JS mantığı)
-    # JS: word.replace(/(?:[^laeiouy]|ed|[^laeiouy]e)$/i, '')
-    word = re.sub(r'(?:[^laeiouy]|ed|[^laeiouy]e)$', '', word)
+    # Python regex equivalent of JS: word.replace(/(?:[^laeiouy]|ed|[^laeiouy]e)$/i, '')
+    # [^laeiouy] means non-vowel.
+    word = re.sub(r'(?:[^laeiouy]|ed|[^laeiouy]e)$', '', word, flags=re.IGNORECASE)
     
-    # Baştaki 'y'yi temizle
-    # JS: word.replace(/^y/i, '')
-    word = re.sub(r'^y', '', word)
-
-    # Sesli harf gruplarını say (diphthongs tek sayılır)
+    # Python equivalent of JS: word.replace(/^y/i, '')
+    word = re.sub(r'^y', '', word, flags=re.IGNORECASE)
+    
     # JS: word.match(/[aeiouy]{1,2}/g)
-    syllables = re.findall(r'[aeiouy]{1,2}', word)
-
+    syllables = re.findall(r'[aeiouy]{1,2}', word, flags=re.IGNORECASE)
+    
     return len(syllables) if syllables else 1
 
 def calculate_flesch_reading_ease(text):
     """
-    JS Kodu Referanslı Flesch Hesaplama:
-    1. Satırları böl, bullet point'leri temizle.
-    2. Ondalık sayıları temizle.
-    3. Cümle ve Kelime sayısını bul.
-    4. Hece sayısını topla.
-    5. Formül: 206.835 - (1.015 * ASL) - (84.6 * ASW)
+    JS Logic Implementation:
+    1. ASL (Average Sentence Length) is calculated on CLEANED text (no bullets, no decimals).
+    2. ASW (Average Syllables per Word) is calculated on RAW text.
     """
     if not text: return 0
     
-    # 1. Metin Temizleme (JS: getAverageSentenceLengthEn içindeki mantık)
-    # Satırları ayır ve bullet point'leri temizle
-    lines = [line for line in text.split('\n') if not re.match(r'^\s*[-•]\s*', line)]
-    filtered_text = ' '.join(lines)
+    # --- 1. ASL Calculation (Uses CLEANED text) ---
+    # JS: getEnglishTextStats -> filters bullets
+    lines = text.split('\n')
+    # JS Regex: /^\s*[-•]\s*/
+    filtered_lines = [ln for ln in lines if not re.match(r'^\s*[-•]\s*', ln)]
+    filtered_text = ' '.join(filtered_lines)
     
-    # Ondalık sayıları temizle (10.5 gibi ifadeler cümle sonu sanılmasın)
+    # JS Regex: /\d+\.\d+/g (Remove decimals)
     cleaned_text = re.sub(r'\d+\.\d+', '', filtered_text)
     
-    # 2. Cümle Sayısı (JS: match(/[^\.!\?]+[\.!\?]+/g))
+    # Count sentences (JS: match(/[^\.!\?]+[\.!\?]+/g))
     sentences = re.findall(r'[^\.!\?]+[\.!\?]+', cleaned_text)
-    sentence_count = len(sentences) if sentences else 1 # 0'a bölünmeyi önle
+    sentence_count = len(sentences) if sentences else 1
     
-    # 3. Kelime Sayısı ve Hece Toplamı
-    words = [w for w in re.split(r'\s+', cleaned_text) if w]
-    total_words = len(words)
+    # Count words in cleaned text
+    words_cleaned = [w for w in re.split(r'\s+', cleaned_text) if w]
+    total_words_cleaned = len(words_cleaned)
     
-    if total_words == 0: return 0
+    # Calculate ASL
+    average_sentence_length = total_words_cleaned / sentence_count if sentence_count > 0 else 0
     
-    total_syllables = sum(count_syllables(w) for w in words)
+    # --- 2. ASW Calculation (Uses RAW text) ---
+    # JS: getAverageSyllablesPerWordEn -> uses raw text split by whitespace
+    words_raw = [w for w in re.split(r'\s+', text) if w]
+    total_words_raw = len(words_raw)
     
-    # 4. Ortalamalar
-    average_sentence_length = total_words / sentence_count
-    average_syllables_per_word = total_syllables / total_words
+    if total_words_raw == 0: return 0
     
-    # 5. Formül
+    total_syllables_raw = sum(count_syllables_en(w) for w in words_raw)
+    average_syllables_per_word = total_syllables_raw / total_words_raw
+    
+    # --- 3. Final Formula ---
+    # Score = 206.835 - (1.015 * ASL) - (84.6 * ASW)
     score = 206.835 - (1.015 * average_sentence_length) - (84.6 * average_syllables_per_word)
     
     return round(score, 2)
@@ -242,7 +244,7 @@ def run_full_analysis(text):
     tokens = re.findall(r"[a-z']+", clean_text)
     token_counts = Counter(tokens)
     
-    # Flesch hesaplaması artık yeni JS mantığıyla yapılıyor
+    # Güncellenmiş Flesch Fonksiyonu
     flesch_score = calculate_flesch_reading_ease(text)
     
     bigrams = make_ngrams(tokens, 2)

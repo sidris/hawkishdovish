@@ -207,6 +207,7 @@ with tab2:
                     with c2: st.metric("Güvercin", f"{d_cnt}")
                     with c3: st.metric("Flesch", f"{flesch_live:.1f}")
                     st.caption(f"**Net Skor:** {s_live:.2f}")
+                    
                     with st.expander("📄 Tespit Edilen Cümleler", expanded=True):
                         k1, k2 = st.columns(2)
                         with k1:
@@ -389,7 +390,7 @@ with tab6:
     else: st.info("Veri yok.")
 
 # ==============================================================================
-# TAB 7: ABF ANALİZİ (GÜNCELLENDİ: DETAYLI GÖSTERİM)
+# TAB 7: ABF ANALİZİ (DÜZELTİLDİ: LİSTE ARTIK GÖRÜNÜYOR)
 # ==============================================================================
 with tab7:
     st.header("📜 Apel, Blix ve Grimaldi (2019) Analizi")
@@ -397,7 +398,12 @@ with tab7:
     
     df_all = utils.fetch_all_data()
     if not df_all.empty:
+        # ÖNEMLİ DÜZELTME: Period Date ve Donem sütunları burada tekrar oluşturuldu
+        df_all['period_date'] = pd.to_datetime(df_all['period_date'])
+        df_all['Donem'] = df_all['period_date'].dt.strftime('%Y-%m')
+        
         abg_df = utils.calculate_abg_scores(df_all)
+        
         fig_abg = go.Figure()
         fig_abg.add_trace(go.Scatter(x=abg_df['period_date'], y=abg_df['abg_index'], name="ABF Net Hawkishness", line=dict(color='purple', width=3), marker=dict(size=8)))
         fig_abg.add_shape(type="line", x0=abg_df['period_date'].min(), x1=abg_df['period_date'].max(), y0=1, y1=1, line=dict(color="gray", dash="dash"))
@@ -406,6 +412,7 @@ with tab7:
         st.divider()
         
         st.subheader("🔍 Dönem Bazlı Detaylar")
+        # Artık bu liste dolu gelecek
         sel_abg_period = st.selectbox("İncelenecek Dönem:", abg_df['Donem'].tolist())
         
         if sel_abg_period:
@@ -418,22 +425,12 @@ with tab7:
             c2.metric("Şahin Eşleşme", res['hawk_count'])
             c3.metric("Güvercin Eşleşme", res['dove_count'])
             
-            # YENİ DETAYLI GÖSTERİM ALANI
             with st.expander("📝 Detaylı Eşleşme Tablosu (Cümle Bağlamı)", expanded=True):
                 if res['match_details']:
-                    # Tablo formatında gösterim için veriyi düzenle
                     detail_data = []
                     for m in res['match_details']:
-                        detail_data.append({
-                            "Tip": "🦅 ŞAHİN" if m['type'] == "HAWK" else "🕊️ GÜVERCİN",
-                            "Eşleşen Terim": m['term'],
-                            "Cümle": m['sentence']
-                        })
+                        detail_data.append({"Tip": "🦅 ŞAHİN" if m['type'] == "HAWK" else "🕊️ GÜVERCİN", "Eşleşen Terim": m['term'], "Cümle": m['sentence']})
                     st.dataframe(pd.DataFrame(detail_data), use_container_width=True, hide_index=True)
-                else:
-                    st.info("Bu metinde herhangi bir ABF sözlük eşleşmesi bulunamadı.")
-            
-            with st.expander("Metin Önizleme"):
-                st.write(text_abg)
-    else:
-        st.info("Analiz için veri yok.")
+                else: st.info("Bu metinde herhangi bir ABF sözlük eşleşmesi bulunamadı.")
+            with st.expander("Metin Önizleme"): st.write(text_abg)
+    else: st.info("Analiz için veri yok.")

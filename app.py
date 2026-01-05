@@ -389,8 +389,10 @@ with tab6:
             else: st.error("Kütüphane eksik veya metin boş.")
     else: st.info("Veri yok.")
 
+# ... (Üst kısımlar aynı) ...
+
 # ==============================================================================
-# TAB 7: ABF ANALİZİ (DÜZELTİLDİ: LİSTE ARTIK GÖRÜNÜYOR)
+# TAB 7: ABF ANALİZİ (GÜNCELLENDİ)
 # ==============================================================================
 with tab7:
     st.header("📜 Apel, Blix ve Grimaldi (2019) Analizi")
@@ -398,10 +400,7 @@ with tab7:
     
     df_all = utils.fetch_all_data()
     if not df_all.empty:
-        # ÖNEMLİ DÜZELTME: Period Date ve Donem sütunları burada tekrar oluşturuldu
-        df_all['period_date'] = pd.to_datetime(df_all['period_date'])
-        df_all['Donem'] = df_all['period_date'].dt.strftime('%Y-%m')
-        
+        # Utils içinde period_date'e göre descending (azalan) sıralama yapıldı
         abg_df = utils.calculate_abg_scores(df_all)
         
         fig_abg = go.Figure()
@@ -412,7 +411,7 @@ with tab7:
         st.divider()
         
         st.subheader("🔍 Dönem Bazlı Detaylar")
-        # Artık bu liste dolu gelecek
+        # Liste artık en yeniden en eskiye doğru gelecek
         sel_abg_period = st.selectbox("İncelenecek Dönem:", abg_df['Donem'].tolist())
         
         if sel_abg_period:

@@ -120,7 +120,7 @@ def fetch_market_data_adapter(start_date, end_date):
     return master_df.sort_values("SortDate"), None
 
 # =============================================================================
-# 4. METİN ANALİZİ VE SÖZLÜKLER (ESKİ SİSTEM)
+# 4. METİN ANALİZİ (ESKİ SİSTEM)
 # =============================================================================
 
 NOUNS = {
@@ -152,7 +152,6 @@ def split_into_sentences(text):
     return re.split(r'[.!?]+', text)
 
 def count_syllables(word):
-    """Standart Flesch hece sayma mantığı."""
     word = word.lower().strip(".:;?!")
     if not word: return 0
     if len(word) <= 3: return 1
@@ -285,188 +284,126 @@ def generate_wordcloud_img(text, custom_stops=None):
 def train_and_predict_rate(df_history, current_score):
     if not HAS_ML_DEPS: return None, None, "Kütüphane eksik"
     if df_history.empty or 'PPK Faizi' not in df_history.columns: return None, None, "Yetersiz Veri"
+    
     df = df_history.sort_values('period_date').copy()
     df = df.drop_duplicates(subset=['Donem'], keep='last').copy()
+    
     df['Next_Rate'] = df['PPK Faizi'].shift(-1)
     df['Rate_Change'] = df['Next_Rate'] - df['PPK Faizi']
+    
     train_data = df.dropna(subset=['score_abg_scaled', 'Rate_Change'])
+    
     if len(train_data) < 5: return None, None, "Model için en az 5 ay veri lazım."
-    X = train_data[['score_abg_scaled']]; y = train_data['Rate_Change']
-    model = LinearRegression(); model.fit(X, y)
+    
+    X = train_data[['score_abg_scaled']]
+    y = train_data['Rate_Change']
+    
+    # 1. Linear Model
+    model = LinearRegression()
+    model.fit(X, y)
+    
+    # 2. Logit Model (Kararlı)
     y_bps = (y * 100).round(0).astype(int)
     try:
         model_logit = LogisticRegression(max_iter=1000, random_state=42)
         model_logit.fit(X, y_bps)
         has_logit = True
-    except: has_logit = False
+    except:
+        has_logit = False
+    
     full_X = df.dropna(subset=['score_abg_scaled'])[['score_abg_scaled']]
     df.loc[full_X.index, 'Predicted_Change'] = model.predict(full_X)
-    if has_logit: df.loc[full_X.index, 'Predicted_Change_Logit'] = model_logit.predict(full_X) / 100.0
-    else: df.loc[full_X.index, 'Predicted_Change_Logit'] = np.nan
+    
+    if has_logit:
+        df.loc[full_X.index, 'Predicted_Change_Logit'] = model_logit.predict(full_X) / 100.0
+    else:
+        df.loc[full_X.index, 'Predicted_Change_Logit'] = np.nan
+    
     prediction = model.predict([[current_score]])[0]
     prediction_logit = prediction
-    if has_logit: prediction_logit = model_logit.predict([[current_score]])[0] / 100.0
+    if has_logit:
+        prediction_logit = model_logit.predict([[current_score]])[0] / 100.0
+        
     corr = np.corrcoef(train_data['score_abg_scaled'], train_data['Rate_Change'])[0,1]
-    stats = {'prediction': prediction, 'prediction_logit': prediction_logit, 'correlation': corr, 'sample_size': len(train_data), 'coef': model.coef_[0]}
+    
+    stats = {
+        'prediction': prediction,
+        'prediction_logit': prediction_logit,
+        'correlation': corr,
+        'sample_size': len(train_data),
+        'coef': model.coef_[0]
+    }
     return stats, df[['period_date', 'Donem', 'Rate_Change', 'Predicted_Change', 'Predicted_Change_Logit']].copy(), None
 
 # =============================================================================
-# 5. ABG ANALYZER CLASS (APEL, BLIX, GRIMALDI - 2019)
+# 5. ABG ANALYZER SINIFI (APEL, BLIX, GRIMALDI - 2019)
 # =============================================================================
 
 class ABGAnalyzer:
     def __init__(self):
-        # TABLE 4: INFLATION
+        # DÜZELTME: Kelimelere '*' (wildcard) eklendi!
         self.inflation_dict = {
-            "terms": [
-                "consumer prices", "inflation", "inflation pressure"
-            ],
-            "hawkish_modifiers": [
-                "accelerat", "boost", "elevated", "escalat", "high", "increas", 
-                "jump", "pickup", "rise", "rose", "rising", "run-up", "runup", 
-                "strong", "surg", "up", "build", "emerg", "great", "height", 
-                "intensif", "mount", "stok", "sustain"
-            ],
-            "dovish_modifiers": [
-                "decelerat", "declin", "decreas", "down", "drop", "fall", 
-                "fell", "low", "muted", "reduc", "slow", "stable", "subdued", 
-                "weak", "contained", "abat", "contain", "dampen", "dimin", 
-                "eas", "moderat", "reced", "temper"
-            ]
+            "terms": ["consumer prices", "consumer price", "cpi", "inflation", "inflation pressure", "inflationary pressure", "price", "prices"],
+            "hawkish_modifiers": ["accelerat*", "boost*", "elevat*", "escalat*", "high*", "increas*", "jump*", "pickup", "ris*", "ros*", "run-up", "runup", "strong*", "surg*", "up", "mount*", "intensif*", "stok*", "sustain*"],
+            "dovish_modifiers": ["decelerat*", "declin*", "decreas*", "down", "drop*", "fall*", "fell", "low*", "muted", "reduc*", "slow*", "stable", "subdued", "weak*", "contained", "abat*", "dampen*", "dimin*", "eas*", "moderat*", "reced*", "temper*"]
         }
-
-        # TABLE 5: ECONOMIC ACTIVITY
         self.growth_dict = {
-            "terms": [
-                "consumer spending", "economic activity", "economic growth", 
-                "resource utilization"
-            ],
-            "hawkish_modifiers": [
-                "accelerat", "edg* up", "expan", "increas", "pick* up", 
-                "pickup", "soft", "strength", "strong", "weak",
-                "buoyant", "high", "rise", "rose", "rising", "step* up", 
-                "upside", "tight"
-            ],
-            "dovish_modifiers": [
-                "contract", "decelerat", "decreas", "drop", "retrench", 
-                "slow", "slugg", "soft", "subdued", "weak", "curtail", 
-                "declin", "downside", "fall", "fell", "low", "moderat", 
-                "loose"
-            ]
+            "terms": ["consumer spending", "economic activity", "economic growth", "resource utilization", "gdp", "output", "demand", "production"],
+            "hawkish_modifiers": ["accelerat*", "edg* up", "expan*", "increas*", "pick* up", "pickup", "soft*", "strength*", "strong*", "buoyant", "high*", "ris*", "ros*", "step* up", "tight*"],
+            "dovish_modifiers": ["contract*", "decelerat*", "decreas*", "drop*", "retrench*", "slow*", "slugg*", "soft*", "subdued", "weak*", "curtail*", "declin*", "downside", "fall*", "fell", "low*", "loose"]
         }
-
-        # TABLE 6: EMPLOYMENT
         self.employment_dict = {
-            "terms": ["employment", "labor market"],
-            "hawkish_modifiers": [
-                "expand", "gain", "improv", "increas", "pick* up", "pickup", 
-                "rais", "rise", "rising", "rose", "strength", "turn* up", 
-                "strain", "tight"
-            ],
-            "dovish_modifiers": [
-                "slow", "declin", "reduc", "weak", "deteriorat", "shrink", 
-                "shrank", "fall", "fell", "drop", "contract", "sluggish", 
-                "eased", "easing", "loos", "soft"
-            ]
+            "terms": ["employment", "job", "jobs", "labor market", "labour market"],
+            "hawkish_modifiers": ["expand*", "gain*", "improv*", "increas*", "pick* up", "pickup", "rais*", "ris*", "ros*", "strength*", "turn* up", "strain*", "tight*"],
+            "dovish_modifiers": ["slow*", "declin*", "reduc*", "weak*", "deteriorat*", "shrink*", "shrank", "fall*", "fell", "drop*", "contract*", "soft*"]
         }
-
-        # Group B: Unemployment
         self.unemployment_dict = {
             "terms": ["unemployment"],
-            "hawkish_modifiers": [
-                "declin", "fall", "fell", "low", "reduc"
-            ],
-            "dovish_modifiers": [
-                "elevat", "high", "increas", "ris", "rose"
-            ]
+            "hawkish_modifiers": ["declin*", "fall*", "fell", "low*", "reduc*"],
+            "dovish_modifiers": ["sluggish", "eas*", "loos*", "elevat*", "high*", "increas*", "ris*", "ros*"]
         }
-        
-        self.dictionaries = [
-            self.inflation_dict, 
-            self.growth_dict, 
-            self.employment_dict, 
-            self.unemployment_dict
-        ]
+        self.dictionaries = [self.inflation_dict, self.growth_dict, self.employment_dict, self.unemployment_dict]
 
     def split_sentences(self, text):
         return re.split(r'(?<!\w\.\w.)(?<![A-Z][a-z]\.)(?<=\.|\?)\s', text)
 
     def analyze(self, text):
         raw_sentences = self.split_sentences(text)
-        hawk_count = 0
-        dove_count = 0
-        match_details = []
-
+        hawk_count = 0; dove_count = 0; matches = [] 
         for original_sentence in raw_sentences:
             clean_sent = re.sub(r'[^\w\s]', '', original_sentence).lower()
             tokens = clean_sent.split()
             found_in_sentence = False
-            
             for vocab in self.dictionaries:
-                terms = vocab["terms"]
-                h_mods = vocab["hawkish_modifiers"]
-                d_mods = vocab["dovish_modifiers"]
-
+                terms = vocab["terms"]; h_mods = vocab["hawkish_modifiers"]; d_mods = vocab["dovish_modifiers"]
                 for i, word in enumerate(tokens):
-                    matched_term = None
-                    term_index = -1
-                    
+                    matched_term = None; term_index = -1
                     for term in terms:
                         term_parts = term.split()
-                        if len(term_parts) == 1 and word == term_parts[0]:
-                            matched_term = term; term_index = i
+                        if len(term_parts) == 1 and word == term_parts[0]: matched_term = term; term_index = i
                         elif len(term_parts) > 1:
-                            if tokens[i:i+len(term_parts)] == term_parts:
-                                matched_term = term; term_index = i
-                    
+                            if tokens[i:i+len(term_parts)] == term_parts: matched_term = term; term_index = i
                     if matched_term:
-                        start = max(0, term_index - 7)
-                        end = min(len(tokens), term_index + 7 + 1)
+                        start = max(0, term_index - 7); end = min(len(tokens), term_index + 7 + 1)
                         window = tokens[start:end]
-
                         for mod in h_mods:
                             pattern = r"\b" + mod.replace("*", "\w*") + r"\b"
                             for w in window:
                                 if re.match(pattern, w):
-                                    hawk_count += 1
-                                    match_details.append({
-                                        "type": "HAWK",
-                                        "term": f"{matched_term} + {w}",
-                                        "sentence": original_sentence.strip()
-                                    })
-                                    found_in_sentence = True
-                                    break 
+                                    hawk_count += 1; matches.append({"type": "HAWK", "term": f"{matched_term} + {w}", "sentence": original_sentence.strip()}); found_in_sentence = True; break 
                             if found_in_sentence: break
-                        
-                        if found_in_sentence: break
-
+                        if found_in_sentence: break 
                         for mod in d_mods:
                             pattern = r"\b" + mod.replace("*", "\w*") + r"\b"
                             for w in window:
                                 if re.match(pattern, w):
-                                    dove_count += 1
-                                    match_details.append({
-                                        "type": "DOVE",
-                                        "term": f"{matched_term} + {w}",
-                                        "sentence": original_sentence.strip()
-                                    })
-                                    found_in_sentence = True
-                                    break
+                                    dove_count += 1; matches.append({"type": "DOVE", "term": f"{matched_term} + {w}", "sentence": original_sentence.strip()}); found_in_sentence = True; break
                             if found_in_sentence: break
-                    
                     if found_in_sentence: break
                 if found_in_sentence: break
-
         total = hawk_count + dove_count
         net_hawkishness = ((hawk_count - dove_count) / total) + 1 if total > 0 else 1.0
-
-        return {
-            "net_hawkishness": net_hawkishness,
-            "hawk_count": hawk_count,
-            "dove_count": dove_count,
-            "total_matches": total,
-            "match_details": match_details
-        }
+        return {"net_hawkishness": net_hawkishness, "hawk_count": hawk_count, "dove_count": dove_count, "total_matches": total, "match_details": matches}
 
 def calculate_abg_scores(df):
     if df.empty: return pd.DataFrame()
@@ -485,4 +422,5 @@ def calculate_abg_scores(df):
             'abg_hawk': res['hawk_count'],
             'abg_dove': res['dove_count']
         })
-    return pd.DataFrame(results).sort_values('period_date')
+    # DÜZELTME: En yeniden en eskiye sırala (Descending)
+    return pd.DataFrame(results).sort_values('period_date', ascending=False)

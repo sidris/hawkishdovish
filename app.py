@@ -70,8 +70,9 @@ with c_head1: st.title("🦅 Şahin/Güvercin Paneli")
 with c_head2: 
     if st.button("Çıkış"): st.session_state['logged_in'] = False; st.rerun()
 
-tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
-    "📈 Dashboard", "📝 Veri Girişi", "📊 Veriler", "🔍 Derin Analiz", "🤖 Faiz Tahmini", "☁️ WordCloud"
+# 7 SEKME OLDU
+tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
+    "📈 Dashboard", "📝 Veri Girişi", "📊 Veriler", "🔍 Derin Analiz", "🤖 Faiz Tahmini", "☁️ WordCloud", "📜 ABF (2019)"
 ])
 
 # ==============================================================================
@@ -307,7 +308,7 @@ with tab4:
     else: st.info("Yeterli veri yok.")
 
 # ==============================================================================
-# TAB 5: FAİZ TAHMİNİ (LOGIT ÇİZGİSİ EKLENDİ)
+# TAB 5: FAİZ TAHMİNİ
 # ==============================================================================
 with tab5:
     st.header("🤖 Text-as-Data: Faiz Tahmini")
@@ -346,7 +347,6 @@ with tab5:
                     st.markdown(f"### Tahmin (Linear): :{color}[{direction}]")
                     st.metric("Beklenen Değişim", f"{change_bps:.0f} bps")
                     
-                    # Logit Tahmin Gösterimi
                     logit_bps = result['prediction_logit'] * 100
                     st.caption(f"**Logit (Sınıflandırma) Tahmini:** {logit_bps:.0f} bps")
                 
@@ -358,7 +358,6 @@ with tab5:
                 st.divider()
                 st.markdown("#### 📈 Model Performansı: Tahmin vs. Gerçekleşen (BIS Verisi)")
                 
-                # Tarih Filtresi
                 min_hist = history_df['period_date'].min().date()
                 max_hist = history_df['period_date'].max().date()
                 c_d1, c_d2 = st.columns(2)
@@ -392,7 +391,6 @@ with tab5:
                         name='Model Tahmini (Linear)',
                         line=dict(color='red', width=2)
                     ))
-                    # YENİ EKLENEN LOGIT ÇİZGİSİ
                     fig_perf.add_trace(go.Scatter(
                         x=chart_df['period_date'], 
                         y=chart_df['Predicted_Change_Logit']*100, 
@@ -440,3 +438,70 @@ with tab6:
             else: st.error("Kütüphane eksik veya metin boş.")
     else:
         st.info("Veri yok.")
+
+# ==============================================================================
+# TAB 7: ABF ANALİZİ (YENİ)
+# ==============================================================================
+with tab7:
+    st.header("📜 Apel, Blix ve Grimaldi (2019) Analizi")
+    st.info("Bu yöntem, kelimeleri 'enflasyon', 'büyüme', 'istihdam' gibi kategorilere ayırarak, yanlarındaki sıfatlara göre 'Şahin' veya 'Güvercin' olarak puanlar.")
+    
+    df_all = utils.fetch_all_data()
+    if not df_all.empty:
+        # Tüm veriye ABG analizini uygula
+        abg_df = utils.calculate_abg_scores(df_all)
+        
+        # 1. Grafiği Çiz
+        fig_abg = go.Figure()
+        fig_abg.add_trace(go.Scatter(
+            x=abg_df['period_date'],
+            y=abg_df['abg_index'],
+            name="ABF Net Hawkishness",
+            line=dict(color='purple', width=3),
+            marker=dict(size=8)
+        ))
+        
+        # Referans çizgisi (Nötr = 1.0)
+        fig_abg.add_shape(type="line", x0=abg_df['period_date'].min(), x1=abg_df['period_date'].max(), y0=1, y1=1, line=dict(color="gray", dash="dash"))
+        
+        fig_abg.update_layout(
+            title="ABF (2019) Endeksi Zaman Serisi (Nötr=1.0)",
+            yaxis_title="Hawkishness Index (0 - 2)",
+            hovermode="x unified"
+        )
+        st.plotly_chart(fig_abg, use_container_width=True)
+        
+        st.divider()
+        
+        # 2. Detaylı İnceleme
+        st.subheader("🔍 Dönem Bazlı Detaylar")
+        sel_abg_period = st.selectbox("İncelenecek Dönem:", abg_df['Donem'].tolist())
+        
+        if sel_abg_period:
+            # Seçilen metni bul
+            text_abg = df_all[df_all['Donem'] == sel_abg_period].iloc[0]['text_content']
+            
+            # Anlık analiz yap (Detayları almak için)
+            analyzer = utils.ABGAnalyzer()
+            res = analyzer.analyze(text_abg)
+            
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Net Endeks", f"{res['net_hawkishness']:.2f}")
+            c2.metric("Şahin Eşleşme", res['hawk_count'])
+            c3.metric("Güvercin Eşleşme", res['dove_count'])
+            
+            with st.expander("📝 Eşleşen İfadeler (Kanıtlar)", expanded=True):
+                if res['match_details']:
+                    for match in res['match_details']:
+                        # Renklendirme
+                        if "HAWK" in match:
+                            st.markdown(f":red[{match}]")
+                        else:
+                            st.markdown(f":blue[{match}]")
+                else:
+                    st.write("Eşleşme bulunamadı.")
+            
+            with st.expander("Metin Önizleme"):
+                st.write(text_abg)
+    else:
+        st.info("Analiz için veri yok.")

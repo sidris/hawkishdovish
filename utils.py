@@ -41,15 +41,13 @@ EVDS_BASE = "https://evds2.tcmb.gov.tr/service/evds"
 EVDS_TUFE_SERIES = "TP.FG.J0"
 
 # =============================================================================
-# 3. VERİTABANI VE PİYASA VERİSİ FONKSİYONLARI (ÖNCELİKLİ)
+# 3. VERİTABANI VE PİYASA VERİSİ
 # =============================================================================
 
 def fetch_all_data():
-    """Tüm kayıtları veritabanından çeker."""
     if not supabase: return pd.DataFrame()
     try:
         res = supabase.table("market_logs").select("*").order("period_date", desc=True).execute()
-        # Versiyon uyumluluğu için güvenli veri çekme
         data = getattr(res, 'data', []) if res else []
         return pd.DataFrame(data)
     except Exception as e:
@@ -122,7 +120,7 @@ def fetch_market_data_adapter(start_date, end_date):
     return master_df.sort_values("SortDate"), None
 
 # =============================================================================
-# 4. METİN ANALİZİ VE SÖZLÜKLER
+# 4. METİN ANALİZİ (ESKİ SİSTEM)
 # =============================================================================
 
 # --- SÖZLÜKLER ---
@@ -213,34 +211,25 @@ def run_full_analysis(text):
 
     used_hawkish_ngrams = {p: phrase_count(p) for p in hawkish_phrases if phrase_count(p) > 0}
     used_dovish_ngrams  = {p: phrase_count(p) for p in dovish_phrases  if phrase_count(p) > 0}
-    
     hawk_ngram_count = sum(used_hawkish_ngrams.values())
     dove_ngram_count = sum(used_dovish_ngrams.values())
-
     used_hawkish_single = {w: token_counts[w] for w in HAWKISH_SINGLE if token_counts[w] > 0}
     used_dovish_single  = {w: token_counts[w] for w in DOVISH_SINGLE  if token_counts[w] > 0}
-
     hawk_single_count = sum(used_hawkish_single.values())
     dove_single_count = sum(used_dovish_single.values())
-
     hawk_total = hawk_ngram_count + hawk_single_count
     dove_total = dove_ngram_count + dove_single_count
     total_signal = hawk_total + dove_total
-
     if total_signal > 0:
         net_score = (float(hawk_total - dove_total) / float(total_signal)) * 100
     else:
         net_score = 0.0
-
     all_hawk_matches = {**used_hawkish_ngrams, **used_hawkish_single}
     all_dove_matches = {**used_dovish_ngrams, **used_dovish_single}
-
     hawk_list = [f"{k} ({v})" for k, v in sorted(all_hawk_matches.items(), key=lambda x: -x[1])]
     dove_list = [f"{k} ({v})" for k, v in sorted(all_dove_matches.items(), key=lambda x: -x[1])]
-
     hawk_contexts = find_context_sentences(text, all_hawk_matches.keys())
     dove_contexts = find_context_sentences(text, all_dove_matches.keys())
-
     return net_score, hawk_total, dove_total, hawk_list, dove_list, hawk_contexts, dove_contexts, flesch_score
 
 # --- DERİN ANALİZ ARAÇLARI ---
@@ -266,20 +255,14 @@ def generate_diff_html(text1, text2):
 
 def get_top_terms_series(df, top_n=7, custom_stops=None):
     if df.empty: return pd.DataFrame(), []
-    
     all_text = " ".join(df['text_content'].astype(str).tolist()).lower()
     words = re.findall(r"\b[a-z]{4,}\b", all_text)
-    
     stops = set(["that", "with", "this", "from", "have", "which", "will", "been", "were", "market", "central", "bank", "committee", "monetary", "policy", "decision", "percent", "rates", "level"])
-    
     if custom_stops:
-        for s in custom_stops:
-            stops.add(s.lower().strip())
-    
+        for s in custom_stops: stops.add(s.lower().strip())
     filtered_words = [w for w in words if w not in stops]
     common = Counter(filtered_words).most_common(top_n)
     top_terms = [t[0] for t in common]
-    
     results = []
     for _, row in df.iterrows():
         txt = str(row['text_content']).lower()
@@ -287,7 +270,6 @@ def get_top_terms_series(df, top_n=7, custom_stops=None):
         for term in top_terms:
             entry[term] = txt.count(term)
         results.append(entry)
-        
     return pd.DataFrame(results).sort_values('period_date'), top_terms
 
 def generate_wordcloud_img(text, custom_stops=None):
@@ -295,68 +277,38 @@ def generate_wordcloud_img(text, custom_stops=None):
     stopwords = set(STOPWORDS)
     stopwords.update(["central", "bank", "committee", "monetary", "policy", "percent", "decision", "rate", "board", "meeting"])
     if custom_stops:
-        for s in custom_stops:
-            stopwords.add(s.lower().strip())
-    
+        for s in custom_stops: stopwords.add(s.lower().strip())
     wc = WordCloud(width=800, height=400, background_color='white', stopwords=stopwords).generate(text)
     fig, ax = plt.subplots(figsize=(10, 5))
-    ax.imshow(wc, interpolation='bilinear')
-    ax.axis('off')
+    ax.imshow(wc, interpolation='bilinear'); ax.axis('off')
     return fig
 
 def train_and_predict_rate(df_history, current_score):
     if not HAS_ML_DEPS: return None, None, "Kütüphane eksik"
     if df_history.empty or 'PPK Faizi' not in df_history.columns: return None, None, "Yetersiz Veri"
-    
     df = df_history.sort_values('period_date').copy()
     df = df.drop_duplicates(subset=['Donem'], keep='last').copy()
-    
     df['Next_Rate'] = df['PPK Faizi'].shift(-1)
     df['Rate_Change'] = df['Next_Rate'] - df['PPK Faizi']
-    
     train_data = df.dropna(subset=['score_abg_scaled', 'Rate_Change'])
-    
     if len(train_data) < 5: return None, None, "Model için en az 5 ay veri lazım."
-    
-    X = train_data[['score_abg_scaled']]
-    y = train_data['Rate_Change']
-    
-    # 1. Linear Model
-    model = LinearRegression()
-    model.fit(X, y)
-    
-    # 2. Logit Model (Kararlı)
+    X = train_data[['score_abg_scaled']]; y = train_data['Rate_Change']
+    model = LinearRegression(); model.fit(X, y)
     y_bps = (y * 100).round(0).astype(int)
     try:
         model_logit = LogisticRegression(max_iter=1000, random_state=42)
         model_logit.fit(X, y_bps)
         has_logit = True
-    except:
-        has_logit = False
-    
+    except: has_logit = False
     full_X = df.dropna(subset=['score_abg_scaled'])[['score_abg_scaled']]
     df.loc[full_X.index, 'Predicted_Change'] = model.predict(full_X)
-    
-    if has_logit:
-        df.loc[full_X.index, 'Predicted_Change_Logit'] = model_logit.predict(full_X) / 100.0
-    else:
-        df.loc[full_X.index, 'Predicted_Change_Logit'] = np.nan
-    
+    if has_logit: df.loc[full_X.index, 'Predicted_Change_Logit'] = model_logit.predict(full_X) / 100.0
+    else: df.loc[full_X.index, 'Predicted_Change_Logit'] = np.nan
     prediction = model.predict([[current_score]])[0]
-    
     prediction_logit = prediction
-    if has_logit:
-        prediction_logit = model_logit.predict([[current_score]])[0] / 100.0
-        
+    if has_logit: prediction_logit = model_logit.predict([[current_score]])[0] / 100.0
     corr = np.corrcoef(train_data['score_abg_scaled'], train_data['Rate_Change'])[0,1]
-    
-    stats = {
-        'prediction': prediction,
-        'prediction_logit': prediction_logit,
-        'correlation': corr,
-        'sample_size': len(train_data),
-        'coef': model.coef_[0]
-    }
+    stats = {'prediction': prediction, 'prediction_logit': prediction_logit, 'correlation': corr, 'sample_size': len(train_data), 'coef': model.coef_[0]}
     return stats, df[['period_date', 'Donem', 'Rate_Change', 'Predicted_Change', 'Predicted_Change_Logit']].copy(), None
 
 # =============================================================================
@@ -387,51 +339,107 @@ class ABGAnalyzer:
         }
         self.dictionaries = [self.inflation_dict, self.growth_dict, self.employment_dict, self.unemployment_dict]
 
-    def clean_text(self, text):
-        sentences = re.split(r'(?<!\w\.\w.)(?<![A-Z][a-z]\.)(?<=\.|\?)\s', text)
-        cleaned_sentences = []
-        for s in sentences:
-            s = re.sub(r'[^\w\s]', '', s).lower()
-            cleaned_sentences.append(s.split())
-        return cleaned_sentences
+    def split_sentences(self, text):
+        # Regex ile cümleleri böl (Nokta, soru işareti, ünlem)
+        return re.split(r'(?<!\w\.\w.)(?<![A-Z][a-z]\.)(?<=[.!?])\s', text)
 
     def analyze(self, text):
-        sentences = self.clean_text(text)
-        hawk_count = 0; dove_count = 0; matches = [] 
-        for sentence_tokens in sentences:
+        # 1. Metni ham cümlelere böl (Gösterim için)
+        raw_sentences = self.split_sentences(text)
+        
+        hawk_count = 0
+        dove_count = 0
+        
+        # Detaylı eşleşme listesi: {type, term, modifier, sentence}
+        match_details = []
+
+        for original_sentence in raw_sentences:
+            # Analiz için temizlenmiş tokenlar
+            clean_sent = re.sub(r'[^\w\s]', '', original_sentence).lower()
+            tokens = clean_sent.split()
+            
+            # Cümle bazlı kontrol
+            found_in_sentence = False
+            
             for vocab in self.dictionaries:
-                terms = vocab["terms"]; h_mods = vocab["hawkish_modifiers"]; d_mods = vocab["dovish_modifiers"]
-                for i, word in enumerate(sentence_tokens):
-                    matched_term = None; term_index = -1
+                terms = vocab["terms"]
+                h_mods = vocab["hawkish_modifiers"]
+                d_mods = vocab["dovish_modifiers"]
+
+                for i, word in enumerate(tokens):
+                    matched_term = None
+                    term_index = -1
+                    
+                    # Term Match
                     for term in terms:
                         term_parts = term.split()
-                        if len(term_parts) == 1 and word == term_parts[0]: matched_term = term; term_index = i
+                        if len(term_parts) == 1 and word == term_parts[0]:
+                            matched_term = term; term_index = i
                         elif len(term_parts) > 1:
-                            if sentence_tokens[i:i+len(term_parts)] == term_parts: matched_term = term; term_index = i
+                            if tokens[i:i+len(term_parts)] == term_parts:
+                                matched_term = term; term_index = i
+                    
                     if matched_term:
-                        start = max(0, term_index - 7); end = min(len(sentence_tokens), term_index + 7 + 1)
-                        window_tokens = sentence_tokens[start:end]; found_modifier = False
+                        # Window Check
+                        start = max(0, term_index - 7)
+                        end = min(len(tokens), term_index + 7 + 1)
+                        window = tokens[start:end]
+
+                        # Modifier Check
                         for mod in h_mods:
                             pattern = r"\b" + mod.replace("*", "\w*") + r"\b"
-                            for w in window_tokens:
+                            for w in window:
                                 if re.match(pattern, w):
-                                    hawk_count += 1; matches.append(f"HAWK: {matched_term} + {w}"); found_modifier = True; break 
-                            if found_modifier: break
-                        if found_modifier: continue 
+                                    hawk_count += 1
+                                    match_details.append({
+                                        "type": "HAWK",
+                                        "term": f"{matched_term} + {w}",
+                                        "sentence": original_sentence.strip()
+                                    })
+                                    found_in_sentence = True
+                                    break
+                            if found_in_sentence: break
+                        
+                        if found_in_sentence: break # Bir cümlede tek yön (öncelik şahin)
+
                         for mod in d_mods:
                             pattern = r"\b" + mod.replace("*", "\w*") + r"\b"
-                            for w in window_tokens:
+                            for w in window:
                                 if re.match(pattern, w):
-                                    dove_count += 1; matches.append(f"DOVE: {matched_term} + {w}"); found_modifier = True; break
-                            if found_modifier: break
+                                    dove_count += 1
+                                    match_details.append({
+                                        "type": "DOVE",
+                                        "term": f"{matched_term} + {w}",
+                                        "sentence": original_sentence.strip()
+                                    })
+                                    found_in_sentence = True
+                                    break
+                            if found_in_sentence: break
+                    
+                    if found_in_sentence: break
+                if found_in_sentence: break
+
         total = hawk_count + dove_count
         net_hawkishness = ((hawk_count - dove_count) / total) + 1 if total > 0 else 1.0
-        return {"net_hawkishness": net_hawkishness, "hawk_count": hawk_count, "dove_count": dove_count, "total_matches": total, "match_details": matches}
+
+        return {
+            "net_hawkishness": net_hawkishness,
+            "hawk_count": hawk_count,
+            "dove_count": dove_count,
+            "match_details": match_details
+        }
 
 def calculate_abg_scores(df):
     if df.empty: return pd.DataFrame()
-    analyzer = ABGAnalyzer(); results = []
+    analyzer = ABGAnalyzer()
+    results = []
     for _, row in df.iterrows():
         res = analyzer.analyze(str(row['text_content']))
-        results.append({'period_date': row['period_date'], 'Donem': row.get('Donem', ''), 'abg_index': res['net_hawkishness'], 'abg_hawk': res['hawk_count'], 'abg_dove': res['dove_count']})
+        results.append({
+            'period_date': row['period_date'],
+            'Donem': row.get('Donem', ''),
+            'abg_index': res['net_hawkishness'],
+            'abg_hawk': res['hawk_count'],
+            'abg_dove': res['dove_count']
+        })
     return pd.DataFrame(results).sort_values('period_date')

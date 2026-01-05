@@ -120,10 +120,9 @@ def fetch_market_data_adapter(start_date, end_date):
     return master_df.sort_values("SortDate"), None
 
 # =============================================================================
-# 4. METİN ANALİZİ (ESKİ SİSTEM)
+# 4. METİN ANALİZİ VE SÖZLÜKLER (ESKİ SİSTEM)
 # =============================================================================
 
-# --- SÖZLÜKLER ---
 NOUNS = {
     "cost","costs","expenditures","consumption","growth","output","demand","activity",
     "production","investment","productivity","labor","labour","job","jobs","participation",
@@ -148,13 +147,12 @@ DOVISH_ADJECTIVES = {
 HAWKISH_SINGLE = {"tight","tightening","restrictive","elevated","high","overheating","pressures","pressure","risk","risks","upside","vigilant","decisive"}
 DOVISH_SINGLE = {"disinflation","decline","declining","fall","falling","decrease","decreasing","lower","low","subdued","contained","anchored","cooling","slow","slower","improvement","better","easing","relief"}
 
-# --- TEMEL FONKSİYONLAR ---
-
 def split_into_sentences(text):
     if not text: return []
     return re.split(r'[.!?]+', text)
 
 def count_syllables(word):
+    """Standart Flesch hece sayma mantığı."""
     word = word.lower().strip(".:;?!")
     if not word: return 0
     if len(word) <= 3: return 1
@@ -164,6 +162,7 @@ def count_syllables(word):
     return len(syllables) if syllables else 1
 
 def calculate_flesch_reading_ease(text):
+    """Score = 206.835 - 1.015 (ASL) - 84.6 (ASW)"""
     if not text: return 0
     sentences = [s for s in split_into_sentences(text) if len(s.strip()) > 0]
     words = re.findall(r"[a-z']+", text.lower())
@@ -232,7 +231,7 @@ def run_full_analysis(text):
     dove_contexts = find_context_sentences(text, all_dove_matches.keys())
     return net_score, hawk_total, dove_total, hawk_list, dove_list, hawk_contexts, dove_contexts, flesch_score
 
-# --- DERİN ANALİZ ARAÇLARI ---
+# --- DERİN ANALİZ FONKSİYONLARI ---
 
 def generate_diff_html(text1, text2):
     if not text1: text1 = ""
@@ -311,10 +310,8 @@ def train_and_predict_rate(df_history, current_score):
     stats = {'prediction': prediction, 'prediction_logit': prediction_logit, 'correlation': corr, 'sample_size': len(train_data), 'coef': model.coef_[0]}
     return stats, df[['period_date', 'Donem', 'Rate_Change', 'Predicted_Change', 'Predicted_Change_Logit']].copy(), None
 
-# ... (Previous imports and functions remain unchanged) ...
-
 # =============================================================================
-# 5. ABG ANALYZER CLASS (APEL, BLIX, GRIMALDI - 2019) [UPDATED DICTIONARIES]
+# 5. ABG ANALYZER CLASS (APEL, BLIX, GRIMALDI - 2019)
 # =============================================================================
 
 class ABGAnalyzer:
@@ -346,7 +343,7 @@ class ABGAnalyzer:
             ],
             "hawkish_modifiers": [
                 "accelerat", "edg* up", "expan", "increas", "pick* up", 
-                "pickup", "soft", "strength", "strong", "weak", # Note: 'weak' appears in both columns in source table for 'consumer spending', likely context dependent, but included as per source.
+                "pickup", "soft", "strength", "strong", "weak",
                 "buoyant", "high", "rise", "rose", "rising", "step* up", 
                 "upside", "tight"
             ],
@@ -359,7 +356,6 @@ class ABGAnalyzer:
         }
 
         # TABLE 6: EMPLOYMENT
-        # Group A: Employment Terms (Positive modifiers = Hawkish)
         self.employment_dict = {
             "terms": ["employment", "labor market"],
             "hawkish_modifiers": [
@@ -374,7 +370,7 @@ class ABGAnalyzer:
             ]
         }
 
-        # Group B: Unemployment Terms (Negative modifiers = Hawkish)
+        # Group B: Unemployment
         self.unemployment_dict = {
             "terms": ["unemployment"],
             "hawkish_modifiers": [
@@ -393,25 +389,17 @@ class ABGAnalyzer:
         ]
 
     def split_sentences(self, text):
-        # Regex to split sentences (Period, Question Mark, Exclamation Point)
         return re.split(r'(?<!\w\.\w.)(?<![A-Z][a-z]\.)(?<=\.|\?)\s', text)
 
     def analyze(self, text):
-        # 1. Split text into raw sentences
         raw_sentences = self.split_sentences(text)
-        
         hawk_count = 0
         dove_count = 0
-        
-        # Detailed match list: {type, term, modifier, sentence}
         match_details = []
 
         for original_sentence in raw_sentences:
-            # Clean tokens for analysis
             clean_sent = re.sub(r'[^\w\s]', '', original_sentence).lower()
             tokens = clean_sent.split()
-            
-            # Sentence-level check flag
             found_in_sentence = False
             
             for vocab in self.dictionaries:
@@ -423,7 +411,6 @@ class ABGAnalyzer:
                     matched_term = None
                     term_index = -1
                     
-                    # Term Match Logic
                     for term in terms:
                         term_parts = term.split()
                         if len(term_parts) == 1 and word == term_parts[0]:
@@ -433,14 +420,11 @@ class ABGAnalyzer:
                                 matched_term = term; term_index = i
                     
                     if matched_term:
-                        # Window Check (+/- 7 words)
                         start = max(0, term_index - 7)
                         end = min(len(tokens), term_index + 7 + 1)
                         window = tokens[start:end]
 
-                        # Check Hawkish Modifiers
                         for mod in h_mods:
-                            # Handle wildcards like "pick* up" -> "pick\w* up"
                             pattern = r"\b" + mod.replace("*", "\w*") + r"\b"
                             for w in window:
                                 if re.match(pattern, w):
@@ -454,9 +438,8 @@ class ABGAnalyzer:
                                     break 
                             if found_in_sentence: break
                         
-                        if found_in_sentence: break # Prioritize Hawkish if conflict (or break to avoid double counting)
+                        if found_in_sentence: break
 
-                        # Check Dovish Modifiers
                         for mod in d_mods:
                             pattern = r"\b" + mod.replace("*", "\w*") + r"\b"
                             for w in window:
@@ -475,8 +458,6 @@ class ABGAnalyzer:
                 if found_in_sentence: break
 
         total = hawk_count + dove_count
-        # Net Hawkishness Formula: ((Hawk - Dove) / Total) + 1
-        # Result ranges from 0 (Dovish) to 2 (Hawkish), with 1 being Neutral.
         net_hawkishness = ((hawk_count - dove_count) / total) + 1 if total > 0 else 1.0
 
         return {
@@ -486,3 +467,22 @@ class ABGAnalyzer:
             "total_matches": total,
             "match_details": match_details
         }
+
+def calculate_abg_scores(df):
+    if df.empty: return pd.DataFrame()
+    analyzer = ABGAnalyzer(); results = []
+    for _, row in df.iterrows():
+        res = analyzer.analyze(str(row['text_content']))
+        donem_val = row.get('Donem')
+        if not donem_val and 'period_date' in row:
+            try: donem_val = pd.to_datetime(row['period_date']).strftime('%Y-%m')
+            except: donem_val = ''
+            
+        results.append({
+            'period_date': row['period_date'],
+            'Donem': donem_val,
+            'abg_index': res['net_hawkishness'],
+            'abg_hawk': res['hawk_count'],
+            'abg_dove': res['dove_count']
+        })
+    return pd.DataFrame(results).sort_values('period_date')

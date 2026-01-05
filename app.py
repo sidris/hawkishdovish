@@ -207,7 +207,6 @@ with tab2:
                     with c2: st.metric("Güvercin", f"{d_cnt}")
                     with c3: st.metric("Flesch", f"{flesch_live:.1f}")
                     st.caption(f"**Net Skor:** {s_live:.2f}")
-                    
                     with st.expander("📄 Tespit Edilen Cümleler", expanded=True):
                         k1, k2 = st.columns(2)
                         with k1:
@@ -389,20 +388,26 @@ with tab6:
             else: st.error("Kütüphane eksik veya metin boş.")
     else: st.info("Veri yok.")
 
-# ... (Üst kısımlar aynı) ...
-
 # ==============================================================================
-# TAB 7: ABF ANALİZİ (GÜNCELLENDİ)
+# TAB 7: ABF ANALİZİ (KEYERROR DÜZELTİLDİ)
 # ==============================================================================
 with tab7:
     st.header("📜 Apel, Blix ve Grimaldi (2019) Analizi")
     st.info("Bu yöntem, kelimeleri 'enflasyon', 'büyüme', 'istihdam' gibi kategorilere ayırarak, yanlarındaki sıfatlara göre 'Şahin' veya 'Güvercin' olarak puanlar.")
     
-    df_all = utils.fetch_all_data()
-    if not df_all.empty:
-        # Utils içinde period_date'e göre descending (azalan) sıralama yapıldı
-        abg_df = utils.calculate_abg_scores(df_all)
+    # 1. VERİ ÇEKME VE HAZIRLIK (KEYERROR ÇÖZÜMÜ)
+    df_abg_source = utils.fetch_all_data() # Yeni bir isimle çekiyoruz
+    
+    if not df_abg_source.empty:
+        # Sütunları burada garantili oluşturuyoruz
+        df_abg_source = df_abg_source.copy() # Copy uyarısını önle
+        df_abg_source['period_date'] = pd.to_datetime(df_abg_source['period_date'])
+        df_abg_source['Donem'] = df_abg_source['period_date'].dt.strftime('%Y-%m')
         
+        # Analizi çalıştır
+        abg_df = utils.calculate_abg_scores(df_abg_source)
+        
+        # Grafik
         fig_abg = go.Figure()
         fig_abg.add_trace(go.Scatter(x=abg_df['period_date'], y=abg_df['abg_index'], name="ABF Net Hawkishness", line=dict(color='purple', width=3), marker=dict(size=8)))
         fig_abg.add_shape(type="line", x0=abg_df['period_date'].min(), x1=abg_df['period_date'].max(), y0=1, y1=1, line=dict(color="gray", dash="dash"))
@@ -410,26 +415,31 @@ with tab7:
         st.plotly_chart(fig_abg, use_container_width=True)
         st.divider()
         
+        # Detay Seçimi
         st.subheader("🔍 Dönem Bazlı Detaylar")
-        # Liste artık en yeniden en eskiye doğru gelecek
         sel_abg_period = st.selectbox("İncelenecek Dönem:", abg_df['Donem'].tolist())
         
         if sel_abg_period:
-            text_abg = df_all[df_all['Donem'] == sel_abg_period].iloc[0]['text_content']
-            analyzer = utils.ABGAnalyzer()
-            res = analyzer.analyze(text_abg)
-            
-            c1, c2, c3 = st.columns(3)
-            c1.metric("Net Endeks", f"{res['net_hawkishness']:.2f}")
-            c2.metric("Şahin Eşleşme", res['hawk_count'])
-            c3.metric("Güvercin Eşleşme", res['dove_count'])
-            
-            with st.expander("📝 Detaylı Eşleşme Tablosu (Cümle Bağlamı)", expanded=True):
-                if res['match_details']:
-                    detail_data = []
-                    for m in res['match_details']:
-                        detail_data.append({"Tip": "🦅 ŞAHİN" if m['type'] == "HAWK" else "🕊️ GÜVERCİN", "Eşleşen Terim": m['term'], "Cümle": m['sentence']})
-                    st.dataframe(pd.DataFrame(detail_data), use_container_width=True, hide_index=True)
-                else: st.info("Bu metinde herhangi bir ABF sözlük eşleşmesi bulunamadı.")
-            with st.expander("Metin Önizleme"): st.write(text_abg)
+            # GÜVENLİ FİLTRELEME
+            subset = df_abg_source[df_abg_source['Donem'] == sel_abg_period]
+            if not subset.empty:
+                text_abg = subset.iloc[0]['text_content']
+                analyzer = utils.ABGAnalyzer()
+                res = analyzer.analyze(text_abg)
+                
+                c1, c2, c3 = st.columns(3)
+                c1.metric("Net Endeks", f"{res['net_hawkishness']:.2f}")
+                c2.metric("Şahin Eşleşme", res['hawk_count'])
+                c3.metric("Güvercin Eşleşme", res['dove_count'])
+                
+                with st.expander("📝 Detaylı Eşleşme Tablosu (Cümle Bağlamı)", expanded=True):
+                    if res['match_details']:
+                        detail_data = []
+                        for m in res['match_details']:
+                            detail_data.append({"Tip": "🦅 ŞAHİN" if m['type'] == "HAWK" else "🕊️ GÜVERCİN", "Eşleşen Terim": m['term'], "Cümle": m['sentence']})
+                        st.dataframe(pd.DataFrame(detail_data), use_container_width=True, hide_index=True)
+                    else: st.info("Bu metinde herhangi bir ABF sözlük eşleşmesi bulunamadı.")
+                with st.expander("Metin Önizleme"): st.write(text_abg)
+            else:
+                st.error("Seçilen dönem için metin bulunamadı.")
     else: st.info("Analiz için veri yok.")

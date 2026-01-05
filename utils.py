@@ -311,91 +311,178 @@ def train_and_predict_rate(df_history, current_score):
     stats = {'prediction': prediction, 'prediction_logit': prediction_logit, 'correlation': corr, 'sample_size': len(train_data), 'coef': model.coef_[0]}
     return stats, df[['period_date', 'Donem', 'Rate_Change', 'Predicted_Change', 'Predicted_Change_Logit']].copy(), None
 
+# ... (Previous imports and functions remain unchanged) ...
+
 # =============================================================================
-# 5. ABG ANALYZER SINIFI (APEL, BLIX, GRIMALDI - 2019)
+# 5. ABG ANALYZER CLASS (APEL, BLIX, GRIMALDI - 2019) [UPDATED DICTIONARIES]
 # =============================================================================
 
 class ABGAnalyzer:
     def __init__(self):
+        # TABLE 4: INFLATION
         self.inflation_dict = {
-            "terms": ["consumer prices", "consumer price", "cpi", "inflation", "inflation pressure", "inflationary pressure", "price", "prices"],
-            "hawkish_modifiers": ["accelerat", "boost", "elevat", "escalat", "high", "increas", "jump", "pickup", "ris", "rose", "run-up", "runup", "strong", "surg", "up", "mount", "intensif", "stok", "sustain"],
-            "dovish_modifiers": ["decelerat", "declin", "decreas", "down", "drop", "fall", "fell", "low", "muted", "reduc", "slow", "stable", "subdued", "weak", "contained", "abat", "dampen", "dimin", "eas", "moderat", "reced", "temper"]
+            "terms": [
+                "consumer prices", "inflation", "inflation pressure"
+            ],
+            "hawkish_modifiers": [
+                "accelerat", "boost", "elevated", "escalat", "high", "increas", 
+                "jump", "pickup", "rise", "rose", "rising", "run-up", "runup", 
+                "strong", "surg", "up", "build", "emerg", "great", "height", 
+                "intensif", "mount", "stok", "sustain"
+            ],
+            "dovish_modifiers": [
+                "decelerat", "declin", "decreas", "down", "drop", "fall", 
+                "fell", "low", "muted", "reduc", "slow", "stable", "subdued", 
+                "weak", "contained", "abat", "contain", "dampen", "dimin", 
+                "eas", "moderat", "reced", "temper"
+            ]
         }
+
+        # TABLE 5: ECONOMIC ACTIVITY
         self.growth_dict = {
-            "terms": ["consumer spending", "economic activity", "economic growth", "resource utilization", "gdp", "output", "demand", "production"],
-            "hawkish_modifiers": ["accelerat", "edg* up", "expan", "increas", "pick* up", "pickup", "soft", "strength", "strong", "buoyant", "high", "ris", "rose", "step* up", "tight"],
-            "dovish_modifiers": ["contract", "decelerat", "decreas", "drop", "retrench", "slow", "slugg", "soft", "subdued", "weak", "curtail", "declin", "downside", "fall", "fell", "low", "loose"]
+            "terms": [
+                "consumer spending", "economic activity", "economic growth", 
+                "resource utilization"
+            ],
+            "hawkish_modifiers": [
+                "accelerat", "edg* up", "expan", "increas", "pick* up", 
+                "pickup", "soft", "strength", "strong", "weak", # Note: 'weak' appears in both columns in source table for 'consumer spending', likely context dependent, but included as per source.
+                "buoyant", "high", "rise", "rose", "rising", "step* up", 
+                "upside", "tight"
+            ],
+            "dovish_modifiers": [
+                "contract", "decelerat", "decreas", "drop", "retrench", 
+                "slow", "slugg", "soft", "subdued", "weak", "curtail", 
+                "declin", "downside", "fall", "fell", "low", "moderat", 
+                "loose"
+            ]
         }
+
+        # TABLE 6: EMPLOYMENT
+        # Group A: Employment Terms (Positive modifiers = Hawkish)
         self.employment_dict = {
-            "terms": ["employment", "job", "jobs", "labor market", "labour market"],
-            "hawkish_modifiers": ["expand", "gain", "improv", "increas", "pick up", "pickup", "rais", "ris", "rose", "strength", "turn* up", "strain", "tight"],
-            "dovish_modifiers": ["slow", "declin", "reduc", "weak", "deteriorat", "shrink", "shrank", "fall", "fell", "drop", "contract", "soft"]
+            "terms": ["employment", "labor market"],
+            "hawkish_modifiers": [
+                "expand", "gain", "improv", "increas", "pick* up", "pickup", 
+                "rais", "rise", "rising", "rose", "strength", "turn* up", 
+                "strain", "tight"
+            ],
+            "dovish_modifiers": [
+                "slow", "declin", "reduc", "weak", "deteriorat", "shrink", 
+                "shrank", "fall", "fell", "drop", "contract", "sluggish", 
+                "eased", "easing", "loos", "soft"
+            ]
         }
+
+        # Group B: Unemployment Terms (Negative modifiers = Hawkish)
         self.unemployment_dict = {
             "terms": ["unemployment"],
-            "hawkish_modifiers": ["declin", "fall", "fell", "low", "reduc"],
-            "dovish_modifiers": ["sluggish", "eas", "loos", "elevat", "high", "increas", "ris", "rose"]
+            "hawkish_modifiers": [
+                "declin", "fall", "fell", "low", "reduc"
+            ],
+            "dovish_modifiers": [
+                "elevat", "high", "increas", "ris", "rose"
+            ]
         }
-        self.dictionaries = [self.inflation_dict, self.growth_dict, self.employment_dict, self.unemployment_dict]
+        
+        self.dictionaries = [
+            self.inflation_dict, 
+            self.growth_dict, 
+            self.employment_dict, 
+            self.unemployment_dict
+        ]
 
     def split_sentences(self, text):
+        # Regex to split sentences (Period, Question Mark, Exclamation Point)
         return re.split(r'(?<!\w\.\w.)(?<![A-Z][a-z]\.)(?<=\.|\?)\s', text)
 
     def analyze(self, text):
+        # 1. Split text into raw sentences
         raw_sentences = self.split_sentences(text)
-        hawk_count = 0; dove_count = 0; matches = [] 
+        
+        hawk_count = 0
+        dove_count = 0
+        
+        # Detailed match list: {type, term, modifier, sentence}
+        match_details = []
+
         for original_sentence in raw_sentences:
+            # Clean tokens for analysis
             clean_sent = re.sub(r'[^\w\s]', '', original_sentence).lower()
             tokens = clean_sent.split()
+            
+            # Sentence-level check flag
             found_in_sentence = False
+            
             for vocab in self.dictionaries:
-                terms = vocab["terms"]; h_mods = vocab["hawkish_modifiers"]; d_mods = vocab["dovish_modifiers"]
+                terms = vocab["terms"]
+                h_mods = vocab["hawkish_modifiers"]
+                d_mods = vocab["dovish_modifiers"]
+
                 for i, word in enumerate(tokens):
-                    matched_term = None; term_index = -1
+                    matched_term = None
+                    term_index = -1
+                    
+                    # Term Match Logic
                     for term in terms:
                         term_parts = term.split()
-                        if len(term_parts) == 1 and word == term_parts[0]: matched_term = term; term_index = i
+                        if len(term_parts) == 1 and word == term_parts[0]:
+                            matched_term = term; term_index = i
                         elif len(term_parts) > 1:
-                            if tokens[i:i+len(term_parts)] == term_parts: matched_term = term; term_index = i
+                            if tokens[i:i+len(term_parts)] == term_parts:
+                                matched_term = term; term_index = i
+                    
                     if matched_term:
-                        start = max(0, term_index - 7); end = min(len(tokens), term_index + 7 + 1)
+                        # Window Check (+/- 7 words)
+                        start = max(0, term_index - 7)
+                        end = min(len(tokens), term_index + 7 + 1)
                         window = tokens[start:end]
+
+                        # Check Hawkish Modifiers
                         for mod in h_mods:
+                            # Handle wildcards like "pick* up" -> "pick\w* up"
                             pattern = r"\b" + mod.replace("*", "\w*") + r"\b"
                             for w in window:
                                 if re.match(pattern, w):
-                                    hawk_count += 1; matches.append({"type": "HAWK", "term": f"{matched_term} + {w}", "sentence": original_sentence.strip()}); found_in_sentence = True; break 
+                                    hawk_count += 1
+                                    match_details.append({
+                                        "type": "HAWK",
+                                        "term": f"{matched_term} + {w}",
+                                        "sentence": original_sentence.strip()
+                                    })
+                                    found_in_sentence = True
+                                    break 
                             if found_in_sentence: break
-                        if found_in_sentence: break 
+                        
+                        if found_in_sentence: break # Prioritize Hawkish if conflict (or break to avoid double counting)
+
+                        # Check Dovish Modifiers
                         for mod in d_mods:
                             pattern = r"\b" + mod.replace("*", "\w*") + r"\b"
                             for w in window:
                                 if re.match(pattern, w):
-                                    dove_count += 1; matches.append({"type": "DOVE", "term": f"{matched_term} + {w}", "sentence": original_sentence.strip()}); found_in_sentence = True; break
+                                    dove_count += 1
+                                    match_details.append({
+                                        "type": "DOVE",
+                                        "term": f"{matched_term} + {w}",
+                                        "sentence": original_sentence.strip()
+                                    })
+                                    found_in_sentence = True
+                                    break
                             if found_in_sentence: break
+                    
                     if found_in_sentence: break
                 if found_in_sentence: break
-        total = hawk_count + dove_count
-        net_hawkishness = ((hawk_count - dove_count) / total) + 1 if total > 0 else 1.0
-        return {"net_hawkishness": net_hawkishness, "hawk_count": hawk_count, "dove_count": dove_count, "total_matches": total, "match_details": matches}
 
-def calculate_abg_scores(df):
-    if df.empty: return pd.DataFrame()
-    analyzer = ABGAnalyzer(); results = []
-    for _, row in df.iterrows():
-        res = analyzer.analyze(str(row['text_content']))
-        # DÜZELTME: Donem sütunu yoksa oluştur
-        donem_val = row.get('Donem')
-        if not donem_val and 'period_date' in row:
-            try: donem_val = pd.to_datetime(row['period_date']).strftime('%Y-%m')
-            except: donem_val = ''
-            
-        results.append({
-            'period_date': row['period_date'],
-            'Donem': donem_val,
-            'abg_index': res['net_hawkishness'],
-            'abg_hawk': res['hawk_count'],
-            'abg_dove': res['dove_count']
-        })
-    return pd.DataFrame(results).sort_values('period_date')
+        total = hawk_count + dove_count
+        # Net Hawkishness Formula: ((Hawk - Dove) / Total) + 1
+        # Result ranges from 0 (Dovish) to 2 (Hawkish), with 1 being Neutral.
+        net_hawkishness = ((hawk_count - dove_count) / total) + 1 if total > 0 else 1.0
+
+        return {
+            "net_hawkishness": net_hawkishness,
+            "hawk_count": hawk_count,
+            "dove_count": dove_count,
+            "total_matches": total,
+            "match_details": match_details
+        }

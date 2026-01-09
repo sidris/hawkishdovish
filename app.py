@@ -2,7 +2,6 @@ import streamlit as st
 import pandas as pd
 import datetime
 import plotly.graph_objects as go
-import plotly.express as px
 from plotly.subplots import make_subplots
 import utils 
 import uuid
@@ -45,14 +44,6 @@ if 'update_state' not in st.session_state: st.session_state['update_state'] = {'
 if 'stop_words_deep' not in st.session_state: st.session_state['stop_words_deep'] = []
 if 'stop_words_cloud' not in st.session_state: st.session_state['stop_words_cloud'] = []
 
-# --- CACHE İÇİN ML MODELİ ---
-@st.cache_resource
-def get_trained_predictor(ml_df):
-    predictor = utils.AdvancedMLPredictor()
-    # Cache key'i dataframe içeriğine bağlıdır, veri değişirse yeniden eğitir
-    predictor.train(ml_df)
-    return predictor
-
 def add_deep_stop():
     word = st.session_state.get("deep_stop_in", "").strip()
     if word and word not in st.session_state['stop_words_deep']:
@@ -76,9 +67,8 @@ with c_head1: st.title("🦅 Şahin/Güvercin Paneli")
 with c_head2: 
     if st.button("Çıkış"): st.session_state['logged_in'] = False; st.rerun()
 
-# 7 SEKME (TAB 7 İSMİ GÜNCELLENDİ)
 tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
-    "📈 Dashboard", "📝 Veri Girişi", "📊 Veriler", "🔍 Derin Analiz", "🤖 Basit Tahmini", "☁️ WordCloud", "🧠 Gelişmiş ML Tahmini"
+    "📈 Dashboard", "📝 Veri Girişi", "📊 Veriler", "🔍 Derin Analiz", "🤖 Faiz Tahmini", "☁️ WordCloud", "📜 ABF (2019)"
 ])
 
 # ==============================================================================
@@ -95,18 +85,24 @@ with tab1:
         df_logs['flesch_score'] = df_logs['text_content'].apply(lambda x: utils.calculate_flesch_reading_ease(str(x)))
         df_logs['score_abg_scaled'] = df_logs['score_abg'].apply(lambda x: x*100 if abs(x) <= 1 else x)
 
+        abg_df = utils.calculate_abg_scores(df_logs)
+        abg_df['abg_dashboard_val'] = (abg_df['abg_index'] - 1.0) * 100
+        
         min_d = df_logs['period_date'].min().date()
         max_d = datetime.date.today()
         df_market, err = utils.fetch_market_data_adapter(min_d, max_d)
         
         merged = pd.merge(df_logs, df_market, on="Donem", how="left")
+        merged = pd.merge(merged, abg_df[['period_date', 'abg_dashboard_val']], on='period_date', how='left')
+        
         merged = merged.sort_values("period_date")
         if 'Yıllık TÜFE' in merged.columns: merged['Yıllık TÜFE'] = pd.to_numeric(merged['Yıllık TÜFE'], errors='coerce')
         if 'PPK Faizi' in merged.columns: merged['PPK Faizi'] = pd.to_numeric(merged['PPK Faizi'], errors='coerce')
         
         fig = make_subplots(specs=[[{"secondary_y": True}]])
         fig.add_trace(go.Bar(x=merged['period_date'], y=merged['word_count'], name="Metin Uzunluğu", marker=dict(color='gray'), opacity=0.10, yaxis="y3", hoverinfo="x+y+name"))
-        fig.add_trace(go.Scatter(x=merged['period_date'], y=merged['score_abg_scaled'], name="Şahin/Güvercin Skoru", line=dict(color='black', width=2, dash='dot'), marker=dict(size=6, color='black'), yaxis="y"))
+        fig.add_trace(go.Scatter(x=merged['period_date'], y=merged['score_abg_scaled'], name="Şahin/Güvercin Skoru (Klasik)", line=dict(color='black', width=2, dash='dot'), marker=dict(size=6, color='black'), yaxis="y"))
+        fig.add_trace(go.Scatter(x=merged['period_date'], y=merged['abg_dashboard_val'], name="ABG 2019", line=dict(color='navy', width=4), yaxis="y"))
         
         if 'Yıllık TÜFE' in merged.columns: fig.add_trace(go.Scatter(x=merged['period_date'], y=merged['Yıllık TÜFE'], name="Yıllık TÜFE (%)", line=dict(color='red', dash='dot'), yaxis="y"))
         if 'PPK Faizi' in merged.columns: fig.add_trace(go.Scatter(x=merged['period_date'], y=merged['PPK Faizi'], name="Faiz (%)", line=dict(color='orange', dash='dot'), yaxis="y"))
@@ -121,7 +117,11 @@ with tab1:
             dict(x=0.02, y=130, xref="paper", yref="y", text="🦅 ŞAHİN", showarrow=False, font=dict(size=14, color="darkred", weight="bold"), xanchor="left"),
             dict(x=0.02, y=-130, xref="paper", yref="y", text="🕊️ GÜVERCİN", showarrow=False, font=dict(size=14, color="darkblue", weight="bold"), xanchor="left")
         ]
-        
+        governors = [("2020-11-01", "Naci Ağbal"), ("2021-04-01", "Şahap Kavcıoğlu"), ("2023-06-01", "Hafize Gaye Erkan"), ("2024-02-01", "Fatih Karahan")]
+        for start_date, name in governors:
+            layout_shapes.append(dict(type="line", xref="x", yref="paper", x0=start_date, x1=start_date, y0=0, y1=1, line=dict(color="gray", width=1, dash="longdash"), layer="below"))
+            layout_annotations.append(dict(x=start_date, y=1.02, xref="x", yref="paper", text=f" <b>{name.split()[0][0]}.{name.split()[-1]}</b>", showarrow=False, xanchor="left", font=dict(size=9, color="#555")))
+
         fig.update_layout(
             title="Merkez Bankası Analiz Paneli", hovermode="x unified", height=600,
             shapes=layout_shapes, annotations=layout_annotations, showlegend=True,
@@ -289,7 +289,7 @@ with tab4:
     else: st.info("Yeterli veri yok.")
 
 with tab5:
-    st.header("🤖 Basit Tahmini")
+    st.header("🤖 Text-as-Data: Faiz Tahmini")
     with st.expander("ℹ️ Model Mantığı ve Metodoloji", expanded=True):
         st.markdown("""
         Bu modül, **"Metin Madenciliği ile Parasal Politika Tahmini" (Text-as-Data)** yaklaşımını kullanır.
@@ -326,6 +326,7 @@ with tab5:
                 min_hist = history_df['period_date'].min().date(); max_hist = history_df['period_date'].max().date()
                 c_d1, c_d2 = st.columns(2)
                 d_start = c_d1.date_input("Başlangıç Tarihi", datetime.date(2021, 1, 1), min_value=min_hist, max_value=max_hist)
+                # DÜZELTME BURADA: max_value artık sabit bir gelecek tarih
                 d_end = c_d2.date_input("Bitiş Tarihi", max_hist, min_value=min_hist, max_value=datetime.date(2030, 12, 31))
                 chart_df = history_df[(history_df['period_date'].dt.date >= d_start) & (history_df['period_date'].dt.date <= d_end)]
                 with st.expander("❓ Neden Bazı Dönemlerde (Örn: 2023-07) Büyük Fark Var?"):
@@ -364,95 +365,40 @@ with tab6:
             else: st.error("Kütüphane eksik veya metin boş.")
     else: st.info("Veri yok.")
 
-# ==============================================================================
-# TAB 7: GELİŞMİŞ ML TAHMİNİ (YENİLENDİ: TARİH FİLTRELİ)
-# ==============================================================================
 with tab7:
-    st.header("🧠 Gelişmiş ML Faiz Tahmini (Ridge + Logistic Regression)")
-    st.info("""
-    Bu modül, metinleri TF-IDF ile vektörleştirip, zaman serisi (Time Series Split) doğrulama yöntemiyle eğitilen hibrit bir model kullanır.
-    * **Lojistik Regresyon:** Yönü (Artır/İndir/Sabit) tahmin eder.
-    * **Ridge Regresyon:** Baz puan değişimini (Örn: 250 bps) tahmin eder.
-    """)
-    
-    # Global DB verisi kullanılıyor
-    if 'merged' in locals() and not merged.empty:
-        
-        # 1. TARİH SEÇİMİ (FİLTRELEME)
-        st.markdown("### 📅 Eğitim Verisi Aralığı Seçimi")
-        
-        min_date_db = df_logs['period_date'].min().date()
-        max_date_db = df_logs['period_date'].max().date()
-        
-        c_filter1, c_filter2 = st.columns(2)
-        start_date_train = c_filter1.date_input("Başlangıç Tarihi", min_date_db, min_value=min_date_db, max_value=max_date_db)
-        end_date_train = c_filter2.date_input("Bitiş Tarihi", max_date_db, min_value=min_date_db, max_value=max_date_db)
-        
-        # Filtreleme İşlemi
-        mask_train = (df_logs['period_date'].dt.date >= start_date_train) & (df_logs['period_date'].dt.date <= end_date_train)
-        df_logs_filtered = df_logs.loc[mask_train]
-        
-        if not df_logs_filtered.empty:
-            st.caption(f"Seçilen aralıkta **{len(df_logs_filtered)}** adet toplantı verisi bulundu.")
-            
-            # Veriyi ML motoruna uygun hazırla
-            with st.spinner("Seçilen verilerle model eğitiliyor..."):
-                ml_df = utils.prepare_ml_dataset(df_logs_filtered, df_market)
-                
-                if not ml_df.empty:
-                    predictor = get_trained_predictor(ml_df)
-                    
-                    # Model Metrikleri
-                    if predictor.metrics:
-                        c1, c2, c3 = st.columns(3)
-                        c1.metric("Model Doğruluğu (Yön)", f"%{predictor.metrics.get('acc', 0)*100:.1f}")
-                        c2.metric("Hata Payı (RMSE)", f"{predictor.metrics.get('rmse', 0):.0f} bps")
-                        c3.metric("Ortalama Hata (MAE)", f"{predictor.metrics.get('mae', 0):.0f} bps")
-                    
-                    st.divider()
-                    
-                    # Tahmin Bölümü
-                    st.subheader("🔮 Gelecek Toplantı Tahmini")
-                    
-                    # Girdi Seçimi
-                    input_method = st.radio("Metin Kaynağı:", ["Son Toplantı Metni", "Manuel Metin Girişi"], horizontal=True)
-                    
-                    if input_method == "Son Toplantı Metni":
-                        # Filtrelenmiş verinin sonuncusunu kullanır
-                        target_text = ml_df.iloc[-1]['text']
-                        ref_date = ml_df.iloc[-1]['date']
-                        st.caption(f"Referans: {ref_date.strftime('%Y-%m-%d')} tarihli metin.")
-                    else:
-                        target_text = st.text_area("Metni buraya yapıştırın:", height=150)
-                    
-                    if target_text:
-                        if st.button("Tahmin Et", type="primary", key="btn_adv_predict"):
-                            res = predictor.predict(target_text)
-                            
-                            if res:
-                                col_res1, col_res2 = st.columns(2)
-                                
-                                with col_res1:
-                                    direction = res['pred_direction']
-                                    color = "green" if direction == "ARTIRIM" else "red" if direction == "İNDİRİM" else "gray"
-                                    st.markdown(f"### Tahmin: :{color}[{direction}]")
-                                    st.metric("Beklenen Değişim", f"{res['pred_change_bps']:.0f} bps")
-                                    st.caption(f"Güven Aralığı: {res['pred_interval_lo']:.0f} bps / {res['pred_interval_hi']:.0f} bps")
-                                
-                                with col_res2:
-                                    st.write("Olasılık Dağılımı:")
-                                    probs = res['direction_proba']
-                                    if probs:
-                                        prob_data = {
-                                            "Yön": ["İndirim", "Sabit", "Artırım"],
-                                            "Olasılık": [probs.get(-1, 0), probs.get(0, 0), probs.get(1, 0)]
-                                        }
-                                        st.bar_chart(pd.DataFrame(prob_data).set_index("Yön"))
-                            else:
-                                st.warning("Tahmin üretilemedi.")
-                else:
-                    st.warning("Seçilen tarih aralığında eşleşen piyasa verisi bulunamadı.")
-        else:
-            st.warning("Seçilen tarih aralığında veri yok.")
-    else:
-        st.warning("Veritabanı bağlantısı yok veya veri boş.")
+    st.header("📜 Apel, Blix ve Grimaldi (2019) Analizi")
+    st.info("Bu yöntem, kelimeleri 'enflasyon', 'büyüme', 'istihdam' gibi kategorilere ayırarak, yanlarındaki sıfatlara göre 'Şahin' veya 'Güvercin' olarak puanlar.")
+    df_abg_source = utils.fetch_all_data()
+    if not df_abg_source.empty:
+        df_abg_source = df_abg_source.copy()
+        df_abg_source['period_date'] = pd.to_datetime(df_abg_source['period_date'])
+        df_abg_source['Donem'] = df_abg_source['period_date'].dt.strftime('%Y-%m')
+        abg_df = utils.calculate_abg_scores(df_abg_source)
+        fig_abg = go.Figure()
+        fig_abg.add_trace(go.Scatter(x=abg_df['period_date'], y=abg_df['abg_index'], name="ABF Net Hawkishness", line=dict(color='purple', width=3), marker=dict(size=8)))
+        fig_abg.add_shape(type="line", x0=abg_df['period_date'].min(), x1=abg_df['period_date'].max(), y0=1, y1=1, line=dict(color="gray", dash="dash"))
+        fig_abg.update_layout(title="ABF (2019) Endeksi Zaman Serisi (Nötr=1.0)", yaxis_title="Hawkishness Index (0 - 2)", hovermode="x unified")
+        st.plotly_chart(fig_abg, use_container_width=True)
+        st.divider()
+        st.subheader("🔍 Dönem Bazlı Detaylar")
+        sel_abg_period = st.selectbox("İncelenecek Dönem:", abg_df['Donem'].tolist())
+        if sel_abg_period:
+            subset = df_abg_source[df_abg_source['Donem'] == sel_abg_period]
+            if not subset.empty:
+                text_abg = subset.iloc[0]['text_content']
+                analyzer = utils.ABGAnalyzer()
+                res = analyzer.analyze(text_abg)
+                c1, c2, c3 = st.columns(3)
+                c1.metric("Net Endeks", f"{res['net_hawkishness']:.2f}")
+                c2.metric("Şahin Eşleşme", res['hawk_count'])
+                c3.metric("Güvercin Eşleşme", res['dove_count'])
+                with st.expander("📝 Detaylı Eşleşme Tablosu (Cümle Bağlamı)", expanded=True):
+                    if res['match_details']:
+                        detail_data = []
+                        for m in res['match_details']:
+                            detail_data.append({"Tip": "🦅 ŞAHİN" if m['type'] == "HAWK" else "🕊️ GÜVERCİN", "Eşleşen Terim": m['term'], "Cümle": m['sentence']})
+                        st.dataframe(pd.DataFrame(detail_data), use_container_width=True, hide_index=True)
+                    else: st.info("Bu metinde herhangi bir ABF sözlük eşleşmesi bulunamadı.")
+                with st.expander("Metin Önizleme"): st.write(text_abg)
+            else: st.error("Seçilen dönem için metin bulunamadı.")
+    else: st.info("Analiz için veri yok.")

@@ -67,8 +67,9 @@ with c_head1: st.title("🦅 Şahin/Güvercin Paneli")
 with c_head2: 
     if st.button("Çıkış"): st.session_state['logged_in'] = False; st.rerun()
 
-tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
-    "📈 Dashboard", "📝 Veri Girişi", "📊 Veriler", "🔍 Derin Analiz", "🤖 Faiz Tahmini", "☁️ WordCloud", "📜 ABF (2019)", "🧪 Yeni Algoritma"
+# SEKME YAPILANDIRMASI GÜNCELLENDİ (Tab 8 kaldırıldı, Tab 4 ismi değişti)
+tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
+    "📈 Dashboard", "📝 Veri Girişi", "📊 Veriler", "🔍 Frekans ve Diff Analizi", "🤖 Faiz Tahmini", "☁️ WordCloud", "📜 ABF (2019)"
 ])
 
 # ==============================================================================
@@ -251,7 +252,8 @@ with tab3:
         else: st.error(f"Hata: {err}")
 
 with tab4:
-    st.header("🔍 Derin Analiz ve Metin Madenciliği")
+    # BAŞLIK GÜNCELLENDİ
+    st.header("🔍 Frekans ve Diff Analizi")
     df_all = utils.fetch_all_data()
     if not df_all.empty:
         df_all['period_date'] = pd.to_datetime(df_all['period_date'])
@@ -290,7 +292,7 @@ with tab4:
 
 with tab5:
     st.header("🤖 Gelişmiş PPK Faiz Tahmin Modeli")
-    st.info("Bu model, Ridge Regresyon ve Lojistik Regresyon modellerini kullanarak, geçmiş PPK metinlerindeki anahtar kelimeler ve sayısal trendler üzerinden bir sonraki faiz kararını tahmin eder.")
+    st.info("Bu model, veritabanındaki tüm veriyi eğitir ancak aşağıda seçtiğiniz metin üzerinden 'sonraki' adımı tahmin eder.")
     
     with st.expander("ℹ️ Model Detayları", expanded=False):
         st.markdown("""
@@ -303,110 +305,149 @@ with tab5:
     # 1. Veri Hazırlığı
     df_logs = utils.fetch_all_data()
     
-    # HATA DÜZELTME: Tarih Dönüşümü ve Güvenlik Kontrolü
-    min_d = datetime.date(2020, 1, 1) # Varsayılan tarih
+    min_d = datetime.date(2020, 1, 1)
     if not df_logs.empty:
-        # Sütunu datetime'a zorla
         df_logs['period_date'] = pd.to_datetime(df_logs['period_date'], errors='coerce')
-        # NaT (Not a Time) olan satırları temizle (varsa)
         df_logs = df_logs.dropna(subset=['period_date'])
         
         if not df_logs.empty:
+            # Tarih aralığı seçicisi için min/max
+            min_avail_date = df_logs['period_date'].min().date()
+            max_avail_date = df_logs['period_date'].max().date()
+            
+            # Min_d, market verisi çekmek için
             min_val = df_logs['period_date'].min()
-            # min_val bir Timestamp ise .date() kullan, değilse (örn. string ise) parse et
-            if isinstance(min_val, pd.Timestamp):
-                min_d = min_val.date()
-            elif isinstance(min_val, str):
-                min_d = pd.to_datetime(min_val).date()
-            elif isinstance(min_val, datetime.date):
-                min_d = min_val
+            if isinstance(min_val, pd.Timestamp): min_d = min_val.date()
+            elif isinstance(min_val, str): min_d = pd.to_datetime(min_val).date()
+            elif isinstance(min_val, datetime.date): min_d = min_val
 
+    # Market Verisi (Eğitim için geniş aralık tutuyoruz)
     df_market, err = utils.fetch_market_data_adapter(min_d, datetime.date.today())
-    
     ml_df = utils.prepare_ml_dataset(df_logs, df_market)
 
     if not ml_df.empty and len(ml_df) > 10:
-        # 2. Modeli Eğit
+        # 2. Modeli Eğit (Arka Planda Tüm Tarihçe ile)
         predictor = utils.AdvancedMLPredictor()
         status = predictor.train(ml_df)
         
         if status == "OK":
-            # 3. Giriş Metni Kontrolü
-            if st.session_state['form_data']['text']:
-                target_text = st.session_state['form_data']['text']
-                target_source = "Giriş Alanındaki Metin"
-            else:
-                target_text = df_logs.iloc[0]['text_content']
-                target_source = f"Son Kayıt ({df_logs.iloc[0]['period_date'].strftime('%Y-%m')})"
+            # 3. KULLANICI SEÇİMİ: Metinleri Filtreleme
+            st.markdown("### 📅 Analiz İçin Dönem Seçimi")
             
-            st.subheader(f"Analiz Edilen Metin: {target_source}")
+            # Tarih Aralığı Seçicisi
+            c_d1, c_d2 = st.columns(2)
+            start_date_sel = c_d1.date_input("Başlangıç", value=min_avail_date, min_value=min_avail_date, max_value=max_avail_date)
+            end_date_sel = c_d2.date_input("Bitiş", value=max_avail_date, min_value=min_avail_date, max_value=max_avail_date)
             
-            # 4. Tahmin Yap
-            prediction = predictor.predict(target_text)
+            # Filtreleme
+            filtered_logs = df_logs[(df_logs['period_date'].dt.date >= start_date_sel) & (df_logs['period_date'].dt.date <= end_date_sel)].copy()
+            filtered_logs = filtered_logs.sort_values("period_date", ascending=False)
+            filtered_logs['Dönem'] = filtered_logs['period_date'].dt.strftime('%Y-%m')
             
-            if prediction:
-                c1, c2, c3 = st.columns(3)
-                
-                # Yön Tahmini
-                direction = prediction['pred_direction']
-                color = "green" if direction == "ARTIRIM" else "red" if direction == "İNDİRİM" else "gray"
-                with c1:
-                    st.markdown(f"### Yön: :{color}[{direction}]")
-                    st.caption(f"Güven Skoru: %{prediction['direction_confidence']*100:.1f}")
-                
-                # Baz Puan Tahmini
-                bps = prediction['pred_change_bps']
-                with c2:
-                    st.metric("Tahmini Değişim", f"{bps:.0f} bps")
-                
-                # Aralık
-                lo = prediction['pred_interval_lo']
-                hi = prediction['pred_interval_hi']
-                with c3:
-                    st.metric("Tahmin Aralığı", f"{lo:.0f} / {hi:.0f} bps")
-                
+            # Tablo Gösterimi
+            st.markdown(f"**Seçilen Aralıktaki Kayıtlar ({len(filtered_logs)})** - Tahmin için bir satır seçiniz:")
+            
+            # Tablo: Kullanıcı buradan seçim yapacak
+            selection = st.dataframe(
+                filtered_logs[['Dönem', 'id']], 
+                use_container_width=True, 
+                hide_index=True,
+                selection_mode="single-row",
+                on_select="rerun"
+            )
+            
+            target_text = None
+            target_source = "Seçim Yapılmadı"
+            
+            # Seçili satırı al, yoksa en sonuncuyu varsay
+            if len(selection.selection.rows) > 0:
+                selected_index = selection.selection.rows[0]
+                target_row = filtered_logs.iloc[selected_index]
+                target_text = target_row['text_content']
+                target_source = f"Seçilen Kayıt: {target_row['Dönem']}"
+                selected_date_for_chart = target_row['period_date']
+            elif not filtered_logs.empty:
+                # Varsayılan olarak filtrelenmişlerin en yenisi
+                target_row = filtered_logs.iloc[0]
+                target_text = target_row['text_content']
+                target_source = f"Otomatik Seçim (En Yeni): {target_row['Dönem']}"
+                selected_date_for_chart = target_row['period_date']
+            
+            if target_text:
                 st.divider()
+                st.subheader(f"Analiz Edilen Metin: {target_source}")
                 
-                # Performans Grafiği (Backtest)
-                st.subheader("📊 Model Performansı (Geçmiş)")
+                # 4. Tahmin Yap
+                prediction = predictor.predict(target_text)
                 
-                if predictor.df_hist is not None:
-                    hist = predictor.df_hist.copy()
-                    hist['date'] = pd.to_datetime(hist['date'])
+                if prediction:
+                    c1, c2, c3 = st.columns(3)
+                    direction = prediction['pred_direction']
+                    color = "green" if direction == "ARTIRIM" else "red" if direction == "İNDİRİM" else "gray"
+                    with c1:
+                        st.markdown(f"### Yön: :{color}[{direction}]")
+                        st.caption(f"Güven Skoru: %{prediction['direction_confidence']*100:.1f}")
+                    bps = prediction['pred_change_bps']
+                    with c2: st.metric("Tahmini Değişim", f"{bps:.0f} bps")
+                    lo = prediction['pred_interval_lo']
+                    hi = prediction['pred_interval_hi']
+                    with c3: st.metric("Tahmin Aralığı", f"{lo:.0f} / {hi:.0f} bps")
                     
-                    fig = go.Figure()
+                    st.divider()
                     
-                    # Gerçekleşen
-                    fig.add_trace(go.Bar(
-                        x=hist['date'], y=hist['y_bps'],
-                        name="Gerçekleşen Değişim", marker_color='gray', opacity=0.5
-                    ))
+                    # 5. Grafik (Filtrelenmiş Aralığa Zoom Yapılmış)
+                    st.subheader("📊 Model Performansı (Geçmiş)")
                     
-                    # Geçmiş Tahminler (Varsa)
-                    if 'predicted_bps' in hist.columns:
-                        hist_pred = hist.dropna(subset=['predicted_bps'])
-                        fig.add_trace(go.Scatter(
-                            x=hist_pred['date'], y=hist_pred['predicted_bps'],
-                            name="Model Geçmiş Tahminleri (Walk-Forward)", 
-                            line=dict(color='blue', width=2, dash='dot')
-                        ))
-                    
-                    # Mevcut Tahmin Noktası
-                    fig.add_trace(go.Scatter(
-                        x=[pd.to_datetime(datetime.date.today())], 
-                        y=[bps],
-                        mode='markers',
-                        marker=dict(color=color, size=15, symbol='star'),
-                        name="Şu Anki Tahmin"
-                    ))
-                    
-                    fig.update_layout(hovermode="x unified", title="Geçmiş Faiz Değişimleri ve Mevcut Tahmin")
-                    st.plotly_chart(fig, use_container_width=True)
-
+                    if predictor.df_hist is not None:
+                        hist = predictor.df_hist.copy()
+                        hist['date'] = pd.to_datetime(hist['date'])
+                        
+                        # Grafiği de seçilen tarih aralığına göre (biraz genişleterek) filtreleyelim
+                        chart_start = pd.to_datetime(start_date_sel) - pd.Timedelta(days=90)
+                        chart_end = pd.to_datetime(end_date_sel) + pd.Timedelta(days=90)
+                        
+                        hist_view = hist[(hist['date'] >= chart_start) & (hist['date'] <= chart_end)]
+                        
+                        if not hist_view.empty:
+                            fig = go.Figure()
+                            # Gerçekleşen
+                            fig.add_trace(go.Bar(
+                                x=hist_view['date'], y=hist_view['y_bps'],
+                                name="Gerçekleşen Değişim", marker_color='gray', opacity=0.5
+                            ))
+                            # Geçmiş Tahminler
+                            if 'predicted_bps' in hist_view.columns:
+                                hist_pred = hist_view.dropna(subset=['predicted_bps'])
+                                fig.add_trace(go.Scatter(
+                                    x=hist_pred['date'], y=hist_pred['predicted_bps'],
+                                    name="Model Geçmiş Tahminleri", 
+                                    line=dict(color='blue', width=2, dash='dot')
+                                ))
+                            
+                            # Şu anki tahmin noktası (Eğer seçilen tarih grafik aralığındaysa)
+                            if chart_start <= selected_date_for_chart <= chart_end:
+                                # Gelecek bir tarih için tahmin yapıyorsak (veri setinde yoksa) x eksenine ekle
+                                # Ancak burada "geçmiş metni" analiz ediyoruz, o yüzden o tarihteki tahmin gibi gösterelim
+                                # Not: Predict fonksiyonu "bir sonraki" toplantıyı tahmin eder.
+                                # Basitlik adına, metnin ait olduğu tarihe koyuyoruz.
+                                fig.add_trace(go.Scatter(
+                                    x=[selected_date_for_chart], 
+                                    y=[bps],
+                                    mode='markers',
+                                    marker=dict(color=color, size=15, symbol='star'),
+                                    name=f"Seçilen ({target_source}) Tahmini"
+                                ))
+                            
+                            fig.update_layout(hovermode="x unified", title="Faiz Değişimleri ve Tahminler")
+                            st.plotly_chart(fig, use_container_width=True)
+                        else:
+                            st.warning("Seçilen tarih aralığında görüntülenecek grafik verisi yok.")
+                else:
+                    st.error("Tahmin üretilemedi.")
             else:
-                st.error("Tahmin üretilemedi.")
+                st.info("Lütfen listeden bir kayıt seçiniz.")
         else:
-            st.warning(f"Model eğitimi için yeterli veri yok: {status}")
+            st.warning(f"Model eğitilemedi: {status}")
     else:
         st.warning("Model eğitimi için yeterli veri yok (En az 10 toplantı kaydı ve piyasa verisi gerekli).")
 
@@ -469,89 +510,3 @@ with tab7:
                 with st.expander("Metin Önizleme"): st.write(text_abg)
             else: st.error("Seçilen dönem için metin bulunamadı.")
     else: st.info("Analiz için veri yok.")
-
-with tab8:
-    st.header("🧪 Yeni Şahin/Güvercin Algoritması (Gelişmiş)")
-    st.info("Bu algoritma, özel bir sözlük ve regex eşleşmeleri kullanarak 'enflasyon', 'ekonomik aktivite' ve 'istihdam' bloklarında analiz yapar. Yakınlık (proximity) ve 'wildcard' (kök bulma) özelliklerine sahiptir.")
-    
-    # Verileri Çek
-    df_custom_source = utils.fetch_all_data()
-    
-    if not df_custom_source.empty:
-        df_custom_source = df_custom_source.copy()
-        df_custom_source['period_date'] = pd.to_datetime(df_custom_source['period_date'])
-        df_custom_source['Donem'] = df_custom_source['period_date'].dt.strftime('%Y-%m')
-        
-        # Tüm seri için hesaplama yap (utils'deki yeni fonksiyon ile)
-        custom_series = utils.calculate_custom_algo_series(df_custom_source)
-        
-        # 1. Zaman Serisi Grafiği
-        st.subheader("📈 Zaman İçinde Net Hawkishness (Yeni Model)")
-        fig_custom = go.Figure()
-        fig_custom.add_trace(go.Scatter(
-            x=custom_series['period_date'], 
-            y=custom_series['custom_index'], 
-            name="Net Endeks (Nötr=1.0)", 
-            line=dict(color='darkgreen', width=3),
-            fill='tozeroy',
-            fillcolor='rgba(0, 100, 0, 0.1)'
-        ))
-        # Nötr Çizgisi
-        fig_custom.add_shape(type="line", x0=custom_series['period_date'].min(), x1=custom_series['period_date'].max(), y0=1, y1=1, line=dict(color="gray", dash="dash"))
-        
-        fig_custom.update_layout(
-            hovermode="x unified", 
-            yaxis_title="Skor (1 = Nötr, >1 Şahin)",
-            height=500
-        )
-        st.plotly_chart(fig_custom, use_container_width=True)
-        
-        st.divider()
-        
-        # 2. Detaylı Metin Analizi
-        st.subheader("🔍 Metin Bazlı Detay Analiz")
-        
-        c_sel1, c_sel2 = st.columns([1, 3])
-        with c_sel1:
-            sel_period_custom = st.selectbox("Dönem Seçiniz:", df_custom_source['Donem'].tolist())
-            
-        if sel_period_custom:
-            target_row = df_custom_source[df_custom_source['Donem'] == sel_period_custom].iloc[0]
-            text_custom = target_row['text_content']
-            
-            # Tekil Analiz Çalıştır
-            analysis_res = utils.analyze_hawk_dove_custom(text_custom, window_words=10, verbose=False)
-            
-            # Metrikler
-            km1, km2, km3 = st.columns(3)
-            km1.metric("Net Skor", f"{analysis_res['net_hawkishness']:.4f}")
-            km2.metric("🦅 Şahin Sayısı", analysis_res['hawk_count'])
-            km3.metric("🕊️ Güvercin Sayısı", analysis_res['dove_count'])
-            
-            # Konu Kırılımı Tablosu
-            st.markdown("#### 📂 Konu Bazlı Kırılım")
-            st.dataframe(analysis_res['topic_breakdown'], use_container_width=True, hide_index=True)
-            
-            # Eşleşme Detayları
-            st.markdown("#### 📝 Eşleşen İfadeler ve Cümleler")
-            matches_df = analysis_res['matches_df']
-            
-            if not matches_df.empty:
-                # Tabloyu daha okunur hale getirelim
-                matches_df_display = matches_df[['direction', 'topic', 'block', 'term_found', 'modifier_found', 'sentence']].copy()
-                matches_df_display.columns = ["Yön", "Konu", "Blok", "Terim", "Niteleyici", "Cümle"]
-                
-                # Yönü renklendirme (Pandas Styler ile)
-                def color_direction(val):
-                    color = '#d4fcbc' if val == 'hawk' else '#fcd4bc'
-                    return f'background-color: {color}'
-                
-                st.dataframe(matches_df_display, use_container_width=True, hide_index=True)
-            else:
-                st.warning("Bu metinde algoritma kriterlerine uygun eşleşme bulunamadı.")
-                
-            with st.expander("Metnin Tamamını Göster"):
-                st.write(text_custom)
-                
-    else:
-        st.info("Analiz edilecek veri bulunamadı.")

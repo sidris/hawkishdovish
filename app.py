@@ -67,9 +67,9 @@ with c_head1: st.title("🦅 Şahin/Güvercin Paneli")
 with c_head2: 
     if st.button("Çıkış"): st.session_state['logged_in'] = False; st.rerun()
 
-# SEKME YAPILANDIRMASI GÜNCELLENDİ (Tab 8 kaldırıldı, Tab 4 ismi değişti)
-tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
-    "📈 Dashboard", "📝 Veri Girişi", "📊 Veriler", "🔍 Frekans ve Diff Analizi", "🤖 Faiz Tahmini", "☁️ WordCloud", "📜 ABF (2019)"
+# SEKME YAPILANDIRMASI GÜNCELLENDİ (Yeni Algoritma kaldırıldı, Tab 4 ismi değişti, Önemli Tarihler eklendi)
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab_imp = st.tabs([
+    "📈 Dashboard", "📝 Veri Girişi", "📊 Veriler", "🔍 Frekans ve Diff Analizi", "🤖 Faiz Tahmini", "☁️ WordCloud", "📜 ABF (2019)", "📅 Önemli Tarihler"
 ])
 
 # ==============================================================================
@@ -78,6 +78,7 @@ tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
 with tab1:
     with st.spinner("Veriler Yükleniyor..."):
         df_logs = utils.fetch_all_data()
+        df_events = utils.fetch_events() # Önemli olayları çek
     
     if not df_logs.empty:
         df_logs['period_date'] = pd.to_datetime(df_logs['period_date'])
@@ -123,6 +124,35 @@ with tab1:
             layout_shapes.append(dict(type="line", xref="x", yref="paper", x0=start_date, x1=start_date, y0=0, y1=1, line=dict(color="gray", width=1, dash="longdash"), layer="below"))
             layout_annotations.append(dict(x=start_date, y=1.02, xref="x", yref="paper", text=f" <b>{name.split()[0][0]}.{name.split()[-1]}</b>", showarrow=False, xanchor="left", font=dict(size=9, color="#555")))
 
+        # --- YENİ EKLENTİ: ÖNEMLİ OLAYLAR ---
+        event_links_display = []
+        if not df_events.empty:
+            for _, ev in df_events.iterrows():
+                ev_date = pd.to_datetime(ev['event_date']).strftime('%Y-%m-%d')
+                
+                # 1. Dikey Çizgi
+                layout_shapes.append(dict(
+                    type="line", xref="x", yref="paper",
+                    x0=ev_date, x1=ev_date, y0=0, y1=1,
+                    line=dict(color="purple", width=2, dash="dot")
+                ))
+                
+                # 2. Etiket (HTML linkler Plotly'de her zaman düzgün çalışmayabilir, o yüzden aşağıya liste de ekliyoruz)
+                first_link = ev['links'].split('\n')[0] if ev['links'] else ""
+                
+                layout_annotations.append(dict(
+                    x=ev_date, y=0.05, xref="x", yref="paper",
+                    text=f"ℹ️ <a href='{first_link}' target='_blank'>Haber</a>",
+                    showarrow=False, xanchor="left",
+                    font=dict(size=10, color="purple"),
+                    bgcolor="rgba(255,255,255,0.7)"
+                ))
+                
+                # Aşağıdaki liste için veri hazırla
+                if ev['links']:
+                    links_list = [l.strip() for l in ev['links'].split('\n') if l.strip()]
+                    event_links_display.append({"Tarih": ev_date, "Linkler": links_list})
+
         fig.update_layout(
             title="Merkez Bankası Analiz Paneli", hovermode="x unified", height=600,
             shapes=layout_shapes, annotations=layout_annotations, showlegend=True,
@@ -132,6 +162,15 @@ with tab1:
             yaxis3=dict(title="Kelime", overlaying="y", side="right", showgrid=False, visible=False, range=[0, merged['word_count'].max() * 2])
         )
         st.plotly_chart(fig, use_container_width=True)
+        
+        # Grafiğin Altında Linkleri Listele (Garantili Erişim İçin)
+        if event_links_display:
+            with st.expander("📅 Grafikteki Önemli Tarihler ve Haber Linkleri", expanded=False):
+                for item in event_links_display:
+                    st.markdown(f"**{item['Tarih']}**")
+                    for link in item['Linkler']:
+                        st.markdown(f"- [Haber Linki]({link})")
+                        
         if st.button("🔄 Yenile"): st.cache_data.clear(); st.rerun()
     else: st.info("Kayıt yok.")
 
@@ -344,36 +383,19 @@ with tab5:
             filtered_logs = filtered_logs.sort_values("period_date", ascending=False)
             filtered_logs['Dönem'] = filtered_logs['period_date'].dt.strftime('%Y-%m')
             
-            # Tablo Gösterimi
-            st.markdown(f"**Seçilen Aralıktaki Kayıtlar ({len(filtered_logs)})** - Tahmin için bir satır seçiniz:")
+            # --- TABLO YERİNE SEÇİM KUTUSU ---
+            # Kullanıcıya seçtirmek için dönem listesi
+            period_options = filtered_logs['Dönem'].tolist()
             
-            # Tablo: Kullanıcı buradan seçim yapacak
-            selection = st.dataframe(
-                filtered_logs[['Dönem', 'id']], 
-                use_container_width=True, 
-                hide_index=True,
-                selection_mode="single-row",
-                on_select="rerun"
-            )
-            
-            target_text = None
-            target_source = "Seçim Yapılmadı"
-            
-            # Seçili satırı al, yoksa en sonuncuyu varsay
-            if len(selection.selection.rows) > 0:
-                selected_index = selection.selection.rows[0]
-                target_row = filtered_logs.iloc[selected_index]
+            if period_options:
+                selected_period = st.selectbox("Analiz Edilecek Toplantıyı Seçin:", period_options, index=0)
+                
+                # Seçilen satırı bul
+                target_row = filtered_logs[filtered_logs['Dönem'] == selected_period].iloc[0]
                 target_text = target_row['text_content']
                 target_source = f"Seçilen Kayıt: {target_row['Dönem']}"
                 selected_date_for_chart = target_row['period_date']
-            elif not filtered_logs.empty:
-                # Varsayılan olarak filtrelenmişlerin en yenisi
-                target_row = filtered_logs.iloc[0]
-                target_text = target_row['text_content']
-                target_source = f"Otomatik Seçim (En Yeni): {target_row['Dönem']}"
-                selected_date_for_chart = target_row['period_date']
-            
-            if target_text:
+                
                 st.divider()
                 st.subheader(f"Analiz Edilen Metin: {target_source}")
                 
@@ -426,10 +448,6 @@ with tab5:
                             
                             # Şu anki tahmin noktası (Eğer seçilen tarih grafik aralığındaysa)
                             if chart_start <= selected_date_for_chart <= chart_end:
-                                # Gelecek bir tarih için tahmin yapıyorsak (veri setinde yoksa) x eksenine ekle
-                                # Ancak burada "geçmiş metni" analiz ediyoruz, o yüzden o tarihteki tahmin gibi gösterelim
-                                # Not: Predict fonksiyonu "bir sonraki" toplantıyı tahmin eder.
-                                # Basitlik adına, metnin ait olduğu tarihe koyuyoruz.
                                 fig.add_trace(go.Scatter(
                                     x=[selected_date_for_chart], 
                                     y=[bps],
@@ -445,7 +463,7 @@ with tab5:
                 else:
                     st.error("Tahmin üretilemedi.")
             else:
-                st.info("Lütfen listeden bir kayıt seçiniz.")
+                st.info("Bu tarih aralığında kayıt bulunamadı.")
         else:
             st.warning(f"Model eğitilemedi: {status}")
     else:
@@ -510,3 +528,45 @@ with tab7:
                 with st.expander("Metin Önizleme"): st.write(text_abg)
             else: st.error("Seçilen dönem için metin bulunamadı.")
     else: st.info("Analiz için veri yok.")
+
+with tab_imp:
+    st.header("📅 Önemli Tarihler ve Haberler")
+    st.info("Buraya girdiğiniz tarihler Dashboard grafiğinde işaretlenecek ve haber linkleri eklenecektir.")
+    
+    with st.container(border=True):
+        st.subheader("Yeni Olay Ekle")
+        c1, c2 = st.columns([1, 2])
+        with c1:
+            new_ev_date = st.date_input("Olay Tarihi", datetime.date.today())
+        with c2:
+            new_ev_links = st.text_area("Haber Linkleri (Her satıra bir link)", height=100)
+            
+        if st.button("Kaydet", type="primary"):
+            if new_ev_links:
+                utils.add_event(new_ev_date, new_ev_links)
+                st.success("Kaydedildi!")
+                st.rerun()
+            else:
+                st.error("Lütfen en az bir link giriniz.")
+    
+    st.divider()
+    st.subheader("Kayıtlı Olaylar")
+    events = utils.fetch_events()
+    
+    if not events.empty:
+        # Tabloyu göster ve silme işlemi
+        for idx, row in events.iterrows():
+            with st.container(border=True):
+                col1, col2, col3 = st.columns([2, 5, 1])
+                with col1:
+                    st.write(f"**{row['event_date']}**")
+                with col2:
+                    links = row['links'].split('\n') if row['links'] else []
+                    for l in links:
+                        st.markdown(f"- [{l}]({l})")
+                with col3:
+                    if st.button("Sil", key=f"del_ev_{row['id']}"):
+                        utils.delete_event(row['id'])
+                        st.rerun()
+    else:
+        st.info("Henüz kayıtlı bir olay yok.")

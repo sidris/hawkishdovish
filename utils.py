@@ -83,7 +83,8 @@ def fetch_market_data_adapter(start_date, end_date):
     if not EVDS_API_KEY: return pd.DataFrame(), "EVDS Anahtarı Eksik."
     df_inf = pd.DataFrame()
     try:
-        s = start_date.strftime("%d-%m-%Y"); e = end_date.strftime("%d-%m-%Y")
+        s = start_date.strftime("%d-%m-%Y")
+        e = end_date.strftime("%d-%m-%Y")
         for form, col in [(1, "Aylık TÜFE"), (3, "Yıllık TÜFE")]:
             url = f"{EVDS_BASE}/series={EVDS_TUFE_SERIES}&startDate={s}&endDate={e}&type=json&formulas={form}"
             r = requests.get(url, headers={"key": EVDS_API_KEY}, timeout=20)
@@ -101,7 +102,8 @@ def fetch_market_data_adapter(start_date, end_date):
 
     df_pol = pd.DataFrame()
     try:
-        s_bis = start_date.strftime("%Y-%m-%d"); e_bis = end_date.strftime("%Y-%m-%d")
+        s_bis = start_date.strftime("%Y-%m-%d")
+        e_bis = end_date.strftime("%Y-%m-%d")
         url_bis = f"https://stats.bis.org/api/v1/data/WS_CBPOL/D.TR?format=csv&startPeriod={s_bis}&endPeriod={e_bis}"
         r_bis = requests.get(url_bis, timeout=20)
         if r_bis.status_code == 200:
@@ -154,72 +156,30 @@ def split_into_sentences(text):
     return re.split(r'[.!?]+', text)
 
 def count_syllables_en(word):
-    """
-    JS Logic:
-    - If length <= 3 -> return 1
-    - Remove silent 'e' or 'ed' or 'es' endings (non-vowel + e/ed/es)
-    - Remove starting 'y'
-    - Count [aeiouy]{1,2} groups
-    """
     word = word.lower()
-    if len(word) <= 3:
-        return 1
-    
-    # Python regex equivalent of JS: word.replace(/(?:[^laeiouy]|ed|[^laeiouy]e)$/i, '')
-    # [^laeiouy] means non-vowel.
+    if len(word) <= 3: return 1
     word = re.sub(r'(?:[^laeiouy]|ed|[^laeiouy]e)$', '', word, flags=re.IGNORECASE)
-    
-    # Python equivalent of JS: word.replace(/^y/i, '')
     word = re.sub(r'^y', '', word, flags=re.IGNORECASE)
-    
-    # JS: word.match(/[aeiouy]{1,2}/g)
     syllables = re.findall(r'[aeiouy]{1,2}', word, flags=re.IGNORECASE)
-    
     return len(syllables) if syllables else 1
 
 def calculate_flesch_reading_ease(text):
-    """
-    JS Logic Implementation:
-    1. ASL (Average Sentence Length) is calculated on CLEANED text (no bullets, no decimals).
-    2. ASW (Average Syllables per Word) is calculated on RAW text.
-    """
     if not text: return 0
-    
-    # --- 1. ASL Calculation (Uses CLEANED text) ---
-    # JS: getEnglishTextStats -> filters bullets
     lines = text.split('\n')
-    # JS Regex: /^\s*[-•]\s*/
     filtered_lines = [ln for ln in lines if not re.match(r'^\s*[-•]\s*', ln)]
     filtered_text = ' '.join(filtered_lines)
-    
-    # JS Regex: /\d+\.\d+/g (Remove decimals)
     cleaned_text = re.sub(r'\d+\.\d+', '', filtered_text)
-    
-    # Count sentences (JS: match(/[^\.!\?]+[\.!\?]+/g))
     sentences = re.findall(r'[^\.!\?]+[\.!\?]+', cleaned_text)
     sentence_count = len(sentences) if sentences else 1
-    
-    # Count words in cleaned text
     words_cleaned = [w for w in re.split(r'\s+', cleaned_text) if w]
     total_words_cleaned = len(words_cleaned)
-    
-    # Calculate ASL
     average_sentence_length = total_words_cleaned / sentence_count if sentence_count > 0 else 0
-    
-    # --- 2. ASW Calculation (Uses RAW text) ---
-    # JS: getAverageSyllablesPerWordEn -> uses raw text split by whitespace
     words_raw = [w for w in re.split(r'\s+', text) if w]
     total_words_raw = len(words_raw)
-    
     if total_words_raw == 0: return 0
-    
     total_syllables_raw = sum(count_syllables_en(w) for w in words_raw)
     average_syllables_per_word = total_syllables_raw / total_words_raw
-    
-    # --- 3. Final Formula ---
-    # Score = 206.835 - (1.015 * ASL) - (84.6 * ASW)
     score = 206.835 - (1.015 * average_sentence_length) - (84.6 * average_syllables_per_word)
-    
     return round(score, 2)
 
 def find_context_sentences(text, found_phrases):
@@ -243,10 +203,7 @@ def run_full_analysis(text):
     clean_text = text.lower()
     tokens = re.findall(r"[a-z']+", clean_text)
     token_counts = Counter(tokens)
-    
-    # Güncellenmiş Flesch Fonksiyonu
     flesch_score = calculate_flesch_reading_ease(text)
-    
     bigrams = make_ngrams(tokens, 2)
     trigrams = make_ngrams(tokens, 3)
     bigram_counts = Counter(bigrams)
@@ -516,3 +473,314 @@ def calculate_abg_scores(df: pd.DataFrame) -> pd.DataFrame:
             except Exception: donem_val = ""
         rows.append({"period_date": row.get("period_date"), "Donem": donem_val, "abg_index": res["net_hawkishness"], "abg_hawk": res["hawk_count"], "abg_dove": res["dove_count"]})
     return pd.DataFrame(rows).sort_values("period_date", ascending=False)
+
+# =============================================================================
+# 6. YENİ ÖZEL ŞAHİN/GÜVERCİN ALGORİTMASI (KULLANICI TANIMLI)
+# =============================================================================
+
+def M_custom(token_or_phrase: str, wildcard_first: bool = False):
+    toks = token_or_phrase.split()
+    wild = [False] * len(toks)
+    if wildcard_first and toks:
+        wild[0] = True
+    return {"phrase": toks, "wild": wild, "pattern": token_or_phrase}
+
+CUSTOM_ALGO_DICT = {
+   "inflation": [
+        {
+           "block": "consumer_prices_inflation",
+           "terms": ["consumer prices", "inflation"],
+           "hawk": [
+               M_custom("accelerat", True), M_custom("boost", True), M_custom("elevated"),
+               M_custom("escalat", True), M_custom("high", True), M_custom("increas", True),
+               M_custom("jump", True), M_custom("pickup"), M_custom("rise", True),
+               M_custom("rose"), M_custom("rising"), M_custom("runup"),
+               M_custom("strong", True), M_custom("surg", True), M_custom("up", True)
+            ],
+           "dove": [
+               M_custom("decelerat", True), M_custom("declin", True), M_custom("decreas", True),
+               M_custom("down", True), M_custom("drop", True), M_custom("fall", True),
+               M_custom("fell"), M_custom("low", True), M_custom("muted"),
+               M_custom("reduc", True), M_custom("slow", True), M_custom("stable"),
+               M_custom("subdued", True), M_custom("weak", True), M_custom("contained")
+            ],
+        },
+        {
+           "block": "inflation_pressure",
+           "terms": ["inflation pressure"],
+           "hawk": [
+               M_custom("accelerat", True), M_custom("boost", True), M_custom("build", True),
+               M_custom("elevat", True), M_custom("emerg", True), M_custom("great", True),
+               M_custom("height", True), M_custom("high", True), M_custom("increas", True),
+               M_custom("intensif", True), M_custom("mount", True), M_custom("pickup"),
+               M_custom("rise"), M_custom("rose"), M_custom("rising"),
+               M_custom("stok", True), M_custom("strong", True), M_custom("sustain", True)
+            ],
+           "dove": [
+               M_custom("abat", True), M_custom("contain", True), M_custom("dampen", True),
+               M_custom("decelerat", True), M_custom("declin", True), M_custom("decreas", True),
+               M_custom("dimin", True), M_custom("eas", True), M_custom("fall", True),
+               M_custom("fell"), M_custom("low", True), M_custom("moderat", True),
+               M_custom("reced", True), M_custom("reduc", True), M_custom("subdued"),
+               M_custom("temper", True)
+            ],
+        },
+    ],
+   "economic_activity": [
+        {
+           "block": "consumer_spending",
+           "terms": ["consumer spending"],
+           "hawk": [
+               M_custom("accelerat", True), M_custom("edg up", True), M_custom("expan", True),
+               M_custom("increas", True), M_custom("pick up", True), M_custom("pickup"),
+               M_custom("soft", True), M_custom("strength", True), M_custom("strong", True),
+               M_custom("weak", True),
+            ],
+           "dove": [
+               M_custom("contract", True), M_custom("decelerat", True), M_custom("decreas", True),
+               M_custom("drop", True), M_custom("retrench", True), M_custom("slow", True),
+               M_custom("slugg", True), M_custom("soft", True), M_custom("subdued"),
+            ],
+        },
+        {
+           "block": "economic_activity_growth",
+           "terms": ["economic activity", "economic growth"],
+           "hawk": [
+               M_custom("accelerat", True), M_custom("buoyant"), M_custom("edg up", True),
+               M_custom("expan", True), M_custom("increas", True), M_custom("high", True),
+               M_custom("pick up", True), M_custom("pickup"), M_custom("rise", True),
+               M_custom("rose"), M_custom("rising"), M_custom("step up", True),
+               M_custom("strength", True), M_custom("strong", True), M_custom("upside"),
+            ],
+           "dove": [
+               M_custom("contract", True), M_custom("curtail", True), M_custom("decelerat", True),
+               M_custom("declin", True), M_custom("decreas", True), M_custom("downside"),
+               M_custom("drop"), M_custom("fall", True), M_custom("fell"),
+               M_custom("low", True), M_custom("moderat", True), M_custom("slow", True),
+               M_custom("slugg", True), M_custom("weak", True),
+            ],
+        },
+        {
+           "block": "resource_utilization",
+           "terms": ["resource utilization"],
+           "hawk": [
+               M_custom("high", True), M_custom("increas", True), M_custom("rise"),
+               M_custom("rising"), M_custom("rose"), M_custom("tight", True),
+            ],
+           "dove": [
+               M_custom("declin", True), M_custom("fall", True), M_custom("fell"),
+               M_custom("loose", True), M_custom("low", True),
+            ],
+        },
+    ],
+   "employment": [
+        {
+           "block": "employment",
+           "terms": ["employment"],
+           "hawk": [
+               M_custom("expand", True), M_custom("gain", True), M_custom("improv", True),
+               M_custom("increas", True), M_custom("pick up", True), M_custom("pickup"),
+               M_custom("rais", True), M_custom("rise", True), M_custom("rising"),
+               M_custom("rose"), M_custom("strength", True), M_custom("turn up", True),
+            ],
+           "dove": [
+               M_custom("slow", True), M_custom("declin", True), M_custom("reduc", True),
+               M_custom("weak", True), M_custom("deteriorat", True), M_custom("shrink", True),
+               M_custom("shrank"), M_custom("fall", True), M_custom("fell"),
+               M_custom("drop", True), M_custom("contract", True), M_custom("sluggish"),
+            ],
+        },
+        {
+           "block": "labor_market",
+           "terms": ["labor market"],
+           "hawk": [M_custom("strain", True), M_custom("tight", True)],
+           "dove": [M_custom("eased"), M_custom("easing"), M_custom("loos", True), M_custom("soft", True), M_custom("weak", True)],
+        },
+        {
+           "block": "unemployment",
+           "terms": ["unemployment"],
+           "hawk": [M_custom("declin", True), M_custom("fall", True), M_custom("fell"), M_custom("low", True), M_custom("reduc", True)],
+           "dove": [M_custom("elevat", True), M_custom("high"), M_custom("increas", True), M_custom("ris", True), M_custom("rose", True)],
+        },
+    ],
+}
+
+def normalize_text_custom(text: str) -> str:
+    t = text.lower().replace("’", "'").replace("`", "'")
+    t = re.sub(r"(?<=\w)-(?=\w)", " ", t)
+    t = re.sub(r"\brun\s+up\b", "runup", t)
+    t = re.sub(r"\s+", " ", t).strip()
+    return t
+
+def split_sentences_custom(text: str):
+    text = re.sub(r"\n+", ". ", text)
+    sents = re.split(r"(?<=[\.\!\?\;])\s+", text)
+    return [s.strip() for s in sents if s.strip()]
+
+def tokenize_custom(sent: str):
+    return re.findall(r"[a-z]+", sent)
+
+def match_token_custom(tok: str, pat: str, wildcard: bool) -> bool:
+    return tok.startswith(pat) if wildcard else tok == pat
+
+def find_phrase_positions_custom(tokens, phrase_tokens, wild_flags):
+    m = len(phrase_tokens)
+    hits = []
+    for i in range(0, len(tokens) - m + 1):
+        ok = True
+        for j in range(m):
+            if not match_token_custom(tokens[i + j], phrase_tokens[j], wild_flags[j]):
+                ok = False
+                break
+        if ok:
+            hits.append((i, i + m - 1))
+    return hits
+
+def find_term_positions_flex_custom(tokens, term: str):
+    tt = term.split()
+    m = len(tt)
+    hits = []
+    for i in range(0, len(tokens) - m + 1):
+        window = tokens[i:i+m]
+        ok = True
+        for j in range(m):
+            if window[j] == tt[j]:
+                continue
+            if window[j] == tt[j] + "s" or tt[j] == window[j] + "s":
+                continue
+            ok = False
+            break
+        if ok:
+            hits.append((i, i + m - 1))
+    return hits
+
+def select_non_overlapping_terms_custom(tokens, term_infos):
+    term_infos_sorted = sorted(term_infos, key=lambda x: len(x["term"].split()), reverse=True)
+    occupied = set()
+    selected = []
+    for info in term_infos_sorted:
+        for (s, e) in find_term_positions_flex_custom(tokens, info["term"]):
+            if any(k in occupied for k in range(s, e + 1)):
+                continue
+            occupied.update(range(s, e + 1))
+            selected.append({**info, "start": s, "end": e})
+    selected.sort(key=lambda x: x["start"])
+    return selected
+
+def analyze_hawk_dove_custom(
+    text: str,
+    dictionary: dict = CUSTOM_ALGO_DICT,
+    window_words: int = 7,
+    dedupe_within_term_window: bool = True,
+    nearest_only: bool = True,
+    verbose: bool = False
+):
+    text_n = normalize_text_custom(text)
+    sentences = split_sentences_custom(text_n)
+    
+    topic_term_infos = {}
+    for topic, blocks in dictionary.items():
+        infos = []
+        for b in blocks:
+            for term in b["terms"]:
+                infos.append({"topic": topic, "block": b["block"], "term": term})
+        topic_term_infos[topic] = infos
+
+    topic_counts = {topic: {"hawk": 0, "dove": 0} for topic in dictionary.keys()}
+    matches = []
+
+    for sent in sentences:
+        tokens = tokenize_custom(sent)
+        if not tokens: continue
+
+        for topic, term_infos in topic_term_infos.items():
+            selected_terms = select_non_overlapping_terms_custom(tokens, term_infos)
+            if not selected_terms: continue
+
+            blocks_by_name = {b["block"]: b for b in dictionary[topic]}
+
+            for tinfo in selected_terms:
+                block = blocks_by_name[tinfo["block"]]
+                ts, te = tinfo["start"], tinfo["end"]
+                w0 = max(0, ts - window_words)
+                w1 = min(len(tokens) - 1, te + window_words)
+                term_found = " ".join(tokens[ts:te + 1])
+
+                hawk_hits = []
+                for m in block["hawk"]:
+                    for (ms, me) in find_phrase_positions_custom(tokens, m["phrase"], m["wild"]):
+                        if me < w0 or ms > w1: continue
+                        dist = min(abs(ms - te), abs(ts - me))
+                        hawk_hits.append((dist, m, ms, me))
+
+                dove_hits = []
+                for m in block["dove"]:
+                    for (ms, me) in find_phrase_positions_custom(tokens, m["phrase"], m["wild"]):
+                        if me < w0 or ms > w1: continue
+                        dist = min(abs(ms - te), abs(ts - me))
+                        dove_hits.append((dist, m, ms, me))
+
+                if nearest_only:
+                    hawk_hits = sorted(hawk_hits, key=lambda x: x[0])[:1]
+                    dove_hits = sorted(dove_hits, key=lambda x: x[0])[:1]
+
+                seen = set()
+
+                def add_hit(direction, dist, m, ms, me):
+                    mod_found = " ".join(tokens[ms:me+1])
+                    key = (topic, block["block"], ts, te, direction, mod_found)
+                    if dedupe_within_term_window and key in seen: return
+                    seen.add(key)
+                    topic_counts[topic][direction] += 1
+                    matches.append({
+                        "topic": topic, "block": block["block"], "direction": direction,
+                        "term_found": term_found, "modifier_found": mod_found,
+                        "distance": dist, "sentence": sent
+                    })
+
+                for (dist, m, ms, me) in hawk_hits: add_hit("hawk", dist, m, ms, me)
+                for (dist, m, ms, me) in dove_hits: add_hit("dove", dist, m, ms, me)
+
+    hawk_total = sum(v["hawk"] for v in topic_counts.values())
+    dove_total = sum(v["dove"] for v in topic_counts.values())
+    denom = hawk_total + dove_total
+    net_hawkishness = 1.0 if denom == 0 else (1.0 + (hawk_total - dove_total) / denom)
+
+    df_topic = pd.DataFrame([
+        {
+            "topic": t, "hawk": c["hawk"], "dove": c["dove"],
+            "net": (1.0 if (c["hawk"] + c["dove"]) == 0 else 1.0 + (c["hawk"] - c["dove"]) / (c["hawk"] + c["dove"]))
+        }
+        for t, c in topic_counts.items()
+    ]).sort_values(["hawk", "dove"], ascending=False)
+
+    df_matches = pd.DataFrame(matches)
+
+    return {
+        "net_hawkishness": net_hawkishness,
+        "hawk_count": hawk_total,
+        "dove_count": dove_total,
+        "topic_breakdown": df_topic,
+        "matches_df": df_matches
+    }
+
+def calculate_custom_algo_series(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None or df.empty: return pd.DataFrame()
+    rows = []
+    for _, row in df.iterrows():
+        txt = str(row.get("text_content", ""))
+        res = analyze_hawk_dove_custom(txt, window_words=10)
+        
+        donem_val = row.get("Donem")
+        if (donem_val is None or donem_val == "") and ("period_date" in row):
+            try: donem_val = pd.to_datetime(row["period_date"]).strftime("%Y-%m")
+            except Exception: donem_val = ""
+
+        rows.append({
+            "period_date": row.get("period_date"),
+            "Donem": donem_val,
+            "custom_index": res["net_hawkishness"],
+            "hawk_count": res["hawk_count"],
+            "dove_count": res["dove_count"]
+        })
+    return pd.DataFrame(rows).sort_values("period_date", ascending=True)

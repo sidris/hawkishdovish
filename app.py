@@ -375,11 +375,23 @@ with tab5:
                     hist['date'] = pd.to_datetime(hist['date'])
                     
                     fig = go.Figure()
+                    
+                    # Gerçekleşen
                     fig.add_trace(go.Bar(
                         x=hist['date'], y=hist['y_bps'],
                         name="Gerçekleşen Değişim", marker_color='gray', opacity=0.5
                     ))
                     
+                    # Geçmiş Tahminler (Varsa)
+                    if 'predicted_bps' in hist.columns:
+                        hist_pred = hist.dropna(subset=['predicted_bps'])
+                        fig.add_trace(go.Scatter(
+                            x=hist_pred['date'], y=hist_pred['predicted_bps'],
+                            name="Model Geçmiş Tahminleri (Walk-Forward)", 
+                            line=dict(color='blue', width=2, dash='dot')
+                        ))
+                    
+                    # Mevcut Tahmin Noktası
                     fig.add_trace(go.Scatter(
                         x=[pd.to_datetime(datetime.date.today())], 
                         y=[bps],

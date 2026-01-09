@@ -67,8 +67,8 @@ with c_head1: st.title("🦅 Şahin/Güvercin Paneli")
 with c_head2: 
     if st.button("Çıkış"): st.session_state['logged_in'] = False; st.rerun()
 
-tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
-    "📈 Dashboard", "📝 Veri Girişi", "📊 Veriler", "🔍 Derin Analiz", "🤖 Faiz Tahmini", "☁️ WordCloud", "📜 ABF (2019)"
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
+    "📈 Dashboard", "📝 Veri Girişi", "📊 Veriler", "🔍 Derin Analiz", "🤖 Faiz Tahmini", "☁️ WordCloud", "📜 ABF (2019)", "🧪 Yeni Algoritma"
 ])
 
 # ==============================================================================
@@ -326,7 +326,6 @@ with tab5:
                 min_hist = history_df['period_date'].min().date(); max_hist = history_df['period_date'].max().date()
                 c_d1, c_d2 = st.columns(2)
                 d_start = c_d1.date_input("Başlangıç Tarihi", datetime.date(2021, 1, 1), min_value=min_hist, max_value=max_hist)
-                # DÜZELTME BURADA: max_value artık sabit bir gelecek tarih
                 d_end = c_d2.date_input("Bitiş Tarihi", max_hist, min_value=min_hist, max_value=datetime.date(2030, 12, 31))
                 chart_df = history_df[(history_df['period_date'].dt.date >= d_start) & (history_df['period_date'].dt.date <= d_end)]
                 with st.expander("❓ Neden Bazı Dönemlerde (Örn: 2023-07) Büyük Fark Var?"):
@@ -402,3 +401,89 @@ with tab7:
                 with st.expander("Metin Önizleme"): st.write(text_abg)
             else: st.error("Seçilen dönem için metin bulunamadı.")
     else: st.info("Analiz için veri yok.")
+
+with tab8:
+    st.header("🧪 Yeni Şahin/Güvercin Algoritması (Gelişmiş)")
+    st.info("Bu algoritma, özel bir sözlük ve regex eşleşmeleri kullanarak 'enflasyon', 'ekonomik aktivite' ve 'istihdam' bloklarında analiz yapar. Yakınlık (proximity) ve 'wildcard' (kök bulma) özelliklerine sahiptir.")
+    
+    # Verileri Çek
+    df_custom_source = utils.fetch_all_data()
+    
+    if not df_custom_source.empty:
+        df_custom_source = df_custom_source.copy()
+        df_custom_source['period_date'] = pd.to_datetime(df_custom_source['period_date'])
+        df_custom_source['Donem'] = df_custom_source['period_date'].dt.strftime('%Y-%m')
+        
+        # Tüm seri için hesaplama yap (utils'deki yeni fonksiyon ile)
+        custom_series = utils.calculate_custom_algo_series(df_custom_source)
+        
+        # 1. Zaman Serisi Grafiği
+        st.subheader("📈 Zaman İçinde Net Hawkishness (Yeni Model)")
+        fig_custom = go.Figure()
+        fig_custom.add_trace(go.Scatter(
+            x=custom_series['period_date'], 
+            y=custom_series['custom_index'], 
+            name="Net Endeks (Nötr=1.0)", 
+            line=dict(color='darkgreen', width=3),
+            fill='tozeroy',
+            fillcolor='rgba(0, 100, 0, 0.1)'
+        ))
+        # Nötr Çizgisi
+        fig_custom.add_shape(type="line", x0=custom_series['period_date'].min(), x1=custom_series['period_date'].max(), y0=1, y1=1, line=dict(color="gray", dash="dash"))
+        
+        fig_custom.update_layout(
+            hovermode="x unified", 
+            yaxis_title="Skor (1 = Nötr, >1 Şahin)",
+            height=500
+        )
+        st.plotly_chart(fig_custom, use_container_width=True)
+        
+        st.divider()
+        
+        # 2. Detaylı Metin Analizi
+        st.subheader("🔍 Metin Bazlı Detay Analiz")
+        
+        c_sel1, c_sel2 = st.columns([1, 3])
+        with c_sel1:
+            sel_period_custom = st.selectbox("Dönem Seçiniz:", df_custom_source['Donem'].tolist())
+            
+        if sel_period_custom:
+            target_row = df_custom_source[df_custom_source['Donem'] == sel_period_custom].iloc[0]
+            text_custom = target_row['text_content']
+            
+            # Tekil Analiz Çalıştır
+            analysis_res = utils.analyze_hawk_dove_custom(text_custom, window_words=10, verbose=False)
+            
+            # Metrikler
+            km1, km2, km3 = st.columns(3)
+            km1.metric("Net Skor", f"{analysis_res['net_hawkishness']:.4f}")
+            km2.metric("🦅 Şahin Sayısı", analysis_res['hawk_count'])
+            km3.metric("🕊️ Güvercin Sayısı", analysis_res['dove_count'])
+            
+            # Konu Kırılımı Tablosu
+            st.markdown("#### 📂 Konu Bazlı Kırılım")
+            st.dataframe(analysis_res['topic_breakdown'], use_container_width=True, hide_index=True)
+            
+            # Eşleşme Detayları
+            st.markdown("#### 📝 Eşleşen İfadeler ve Cümleler")
+            matches_df = analysis_res['matches_df']
+            
+            if not matches_df.empty:
+                # Tabloyu daha okunur hale getirelim
+                matches_df_display = matches_df[['direction', 'topic', 'block', 'term_found', 'modifier_found', 'sentence']].copy()
+                matches_df_display.columns = ["Yön", "Konu", "Blok", "Terim", "Niteleyici", "Cümle"]
+                
+                # Yönü renklendirme (Pandas Styler ile)
+                def color_direction(val):
+                    color = '#d4fcbc' if val == 'hawk' else '#fcd4bc'
+                    return f'background-color: {color}'
+                
+                st.dataframe(matches_df_display, use_container_width=True, hide_index=True)
+            else:
+                st.warning("Bu metinde algoritma kriterlerine uygun eşleşme bulunamadı.")
+                
+            with st.expander("Metnin Tamamını Göster"):
+                st.write(text_custom)
+                
+    else:
+        st.info("Analiz edilecek veri bulunamadı.")

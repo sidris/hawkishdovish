@@ -602,7 +602,6 @@ def prepare_ml_dataset(df_logs, df_market):
     """DB verilerini ML motorunun beklediği formata sokar."""
     if df_logs.empty or df_market.empty: return pd.DataFrame()
     
-    # HATA DÜZELTME: Donem sütunu yoksa oluştur (Güvenlik Önlemi)
     if 'Donem' not in df_logs.columns and 'period_date' in df_logs.columns:
         df_logs = df_logs.copy()
         df_logs['period_date'] = pd.to_datetime(df_logs['period_date'])
@@ -616,7 +615,6 @@ def prepare_ml_dataset(df_logs, df_market):
     df = df.sort_values("period_date").reset_index(drop=True)
     
     # 2. Rate Change Calculation (Current - Previous)
-    # ML modeli, o satırdaki metnin, o satırdaki faiz kararını açıkladığını varsayarak eğitilir
     df['rate_change_bps'] = df['PPK Faizi'].diff().fillna(0.0) * 100
     
     # 3. Columns mapping
@@ -662,6 +660,9 @@ class AdvancedMLPredictor:
         n_splits = choose_splits(len(df))
         y_p, d_p, c_p, res, res_dir = walk_forward_fast(X, y_bps, y_dir, dates, clf, r_cut, r_hike, r_all, n_splits)
         
+        # Store predictions in df_hist for visualization
+        self.df_hist['predicted_bps'] = y_p
+
         # Metrics
         mask = ~np.isnan(y_p)
         if np.any(mask):

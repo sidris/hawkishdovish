@@ -302,7 +302,25 @@ with tab5:
 
     # 1. Veri Hazırlığı
     df_logs = utils.fetch_all_data()
-    min_d = df_logs['period_date'].min().date() if not df_logs.empty else datetime.date(2020,1,1)
+    
+    # HATA DÜZELTME: Tarih Dönüşümü ve Güvenlik Kontrolü
+    min_d = datetime.date(2020, 1, 1) # Varsayılan tarih
+    if not df_logs.empty:
+        # Sütunu datetime'a zorla
+        df_logs['period_date'] = pd.to_datetime(df_logs['period_date'], errors='coerce')
+        # NaT (Not a Time) olan satırları temizle (varsa)
+        df_logs = df_logs.dropna(subset=['period_date'])
+        
+        if not df_logs.empty:
+            min_val = df_logs['period_date'].min()
+            # min_val bir Timestamp ise .date() kullan, değilse (örn. string ise) parse et
+            if isinstance(min_val, pd.Timestamp):
+                min_d = min_val.date()
+            elif isinstance(min_val, str):
+                min_d = pd.to_datetime(min_val).date()
+            elif isinstance(min_val, datetime.date):
+                min_d = min_val
+
     df_market, err = utils.fetch_market_data_adapter(min_d, datetime.date.today())
     
     ml_df = utils.prepare_ml_dataset(df_logs, df_market)
@@ -319,7 +337,7 @@ with tab5:
                 target_source = "Giriş Alanındaki Metin"
             else:
                 target_text = df_logs.iloc[0]['text_content']
-                target_source = f"Son Kayıt ({pd.to_datetime(df_logs.iloc[0]['period_date']).strftime('%Y-%m')})"
+                target_source = f"Son Kayıt ({df_logs.iloc[0]['period_date'].strftime('%Y-%m')})"
             
             st.subheader(f"Analiz Edilen Metin: {target_source}")
             
@@ -352,7 +370,6 @@ with tab5:
                 # Performans Grafiği (Backtest)
                 st.subheader("📊 Model Performansı (Geçmiş)")
                 
-                # Geçmiş verileri görselleştirmek için df_hist kullanabiliriz
                 if predictor.df_hist is not None:
                     hist = predictor.df_hist.copy()
                     hist['date'] = pd.to_datetime(hist['date'])
@@ -363,11 +380,6 @@ with tab5:
                         name="Gerçekleşen Değişim", marker_color='gray', opacity=0.5
                     ))
                     
-                    # Tahmin çizgisini eklemek için basit bir line plot (Walk-Forward sonuçları burada saklanmıyor, 
-                    # ancak eğitim sonrası son fit edilen modelin genel eğilimini görmek için 'roll_mean' vb eklenebilir
-                    # veya sadece gerçekleşenleri gösterip tahmin sonucunu vurgulayabiliriz.)
-                    
-                    # Burada sadece Gerçekleşen Değişimi ve Son Tahmini Nokta olarak ekleyelim
                     fig.add_trace(go.Scatter(
                         x=[pd.to_datetime(datetime.date.today())], 
                         y=[bps],
@@ -382,7 +394,7 @@ with tab5:
             else:
                 st.error("Tahmin üretilemedi.")
         else:
-            st.warning(f"Model eğitilemedi: {status}")
+            st.warning(f"Model eğitimi için yeterli veri yok: {status}")
     else:
         st.warning("Model eğitimi için yeterli veri yok (En az 10 toplantı kaydı ve piyasa verisi gerekli).")
 

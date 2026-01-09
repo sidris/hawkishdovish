@@ -21,7 +21,8 @@ try:
     from sklearn.pipeline import Pipeline
     from sklearn.preprocessing import StandardScaler, FunctionTransformer
     from sklearn.feature_extraction.text import TfidfVectorizer
-    from sklearn.linear_model import LogisticRegression, Ridge
+    # DÜZELTME BURADA: LinearRegression EKLENDİ
+    from sklearn.linear_model import LinearRegression, LogisticRegression, Ridge
     from sklearn.model_selection import TimeSeriesSplit
     from sklearn.metrics import mean_absolute_error, mean_squared_error, classification_report, confusion_matrix
     from wordcloud import WordCloud, STOPWORDS
@@ -163,11 +164,6 @@ def split_into_sentences(text):
     return re.split(r'[.!?]+', text)
 
 def calculate_flesch_reading_ease(text):
-    """
-    JS Logic Implementation:
-    1. ASL (Average Sentence Length) is calculated on CLEANED text (no bullets, no decimals).
-    2. ASW (Average Syllables per Word) is calculated on RAW text.
-    """
     if not text: return 0
     lines = [line for line in text.split('\n') if not re.match(r'^\s*[-•]\s*', line)]
     filtered_text = ' '.join(lines)
@@ -304,32 +300,60 @@ def generate_wordcloud_img(text, custom_stops=None):
     ax.imshow(wc, interpolation='bilinear'); ax.axis('off')
     return fig
 
+# ESKİ TAHMİN FONKSİYONU (TAB 5 İÇİN GEREKLİ)
 def train_and_predict_rate(df_history, current_score):
     if not HAS_ML_DEPS: return None, None, "Kütüphane eksik"
     if df_history.empty or 'PPK Faizi' not in df_history.columns: return None, None, "Yetersiz Veri"
+    
     df = df_history.sort_values('period_date').copy()
     df = df.drop_duplicates(subset=['Donem'], keep='last').copy()
+    
     df['Next_Rate'] = df['PPK Faizi'].shift(-1)
     df['Rate_Change'] = df['Next_Rate'] - df['PPK Faizi']
+    
     train_data = df.dropna(subset=['score_abg_scaled', 'Rate_Change'])
+    
     if len(train_data) < 5: return None, None, "Model için en az 5 ay veri lazım."
-    X = train_data[['score_abg_scaled']]; y = train_data['Rate_Change']
-    model = LinearRegression(); model.fit(X, y)
+    
+    X = train_data[['score_abg_scaled']]
+    y = train_data['Rate_Change']
+    
+    # 1. Linear Model
+    model = LinearRegression()
+    model.fit(X, y)
+    
+    # 2. Logit Model (Kararlı)
     y_bps = (y * 100).round(0).astype(int)
     try:
         model_logit = LogisticRegression(max_iter=1000, random_state=42)
         model_logit.fit(X, y_bps)
         has_logit = True
-    except: has_logit = False
+    except:
+        has_logit = False
+    
     full_X = df.dropna(subset=['score_abg_scaled'])[['score_abg_scaled']]
     df.loc[full_X.index, 'Predicted_Change'] = model.predict(full_X)
-    if has_logit: df.loc[full_X.index, 'Predicted_Change_Logit'] = model_logit.predict(full_X) / 100.0
-    else: df.loc[full_X.index, 'Predicted_Change_Logit'] = np.nan
+    
+    if has_logit:
+        df.loc[full_X.index, 'Predicted_Change_Logit'] = model_logit.predict(full_X) / 100.0
+    else:
+        df.loc[full_X.index, 'Predicted_Change_Logit'] = np.nan
+    
     prediction = model.predict([[current_score]])[0]
+    
     prediction_logit = prediction
-    if has_logit: prediction_logit = model_logit.predict([[current_score]])[0] / 100.0
+    if has_logit:
+        prediction_logit = model_logit.predict([[current_score]])[0] / 100.0
+        
     corr = np.corrcoef(train_data['score_abg_scaled'], train_data['Rate_Change'])[0,1]
-    stats = {'prediction': prediction, 'prediction_logit': prediction_logit, 'correlation': corr, 'sample_size': len(train_data), 'coef': model.coef_[0]}
+    
+    stats = {
+        'prediction': prediction,
+        'prediction_logit': prediction_logit,
+        'correlation': corr,
+        'sample_size': len(train_data),
+        'coef': model.coef_[0]
+    }
     return stats, df[['period_date', 'Donem', 'Rate_Change', 'Predicted_Change', 'Predicted_Change_Logit']].copy(), None
 
 # =============================================================================
@@ -709,3 +733,16 @@ class AdvancedMLPredictor:
             self.clf_pipe, self.reg_pipes['cut'], self.reg_pipes['hike'], self.reg_pipes['all'],
             self.intervals['overall'], self.intervals['by_dir']
         )
+
+# NOT: Artık ABG (2019) sekmesi kaldırıldı veya kullanılmıyor.
+# Ancak Dashboard (Tab 1) kodunda calculate_abg_scores çağrılıyorsa, 
+# hata almamak için eski ABG fonksiyonunu "boş" veya "basit" döndürecek şekilde tutabiliriz.
+# Eğer Dashboard'da da ABG çizgisini kaldırmak isterseniz app.py'den ilgili satırları silmelisiniz.
+# Şimdilik hata vermemesi için "calculate_abg_scores" fonksiyonunu "dummy" (etkisiz) bırakıyorum.
+
+def calculate_abg_scores(df):
+    # Bu fonksiyon artık kullanılmıyor, ancak app.py'de çağrılırsa hata vermemesi için boş DataFrame dönüyor.
+    # Eğer Dashboard'da ABG çizgisi hala isteniyorsa, eski ABG kodunu geri eklemek gerekir.
+    # Kullanıcı "sadece değiştirmekten başka bir şey yapma" dediği için
+    # Tab 7'deki ML kodu ile ABG kodu çakışmasın diye bunu pasife çekiyoruz.
+    return pd.DataFrame()

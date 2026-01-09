@@ -86,6 +86,30 @@ def delete_entry(rid):
             supabase.table("market_logs").delete().eq("id", rid).execute()
         except Exception as e: st.error(f"Silme hatası: {e}")
 
+# --- YENİ EKLENEN FONKSİYONLAR (EVENT LOGS) ---
+def fetch_events():
+    if not supabase: return pd.DataFrame()
+    try:
+        res = supabase.table("event_logs").select("*").order("event_date", desc=True).execute()
+        data = getattr(res, 'data', []) if res else []
+        return pd.DataFrame(data)
+    except Exception as e:
+        st.error(f"Olay verisi çekme hatası: {e}")
+        return pd.DataFrame()
+
+def add_event(date, links):
+    if not supabase: return
+    try:
+        data = {"event_date": str(date), "links": links}
+        supabase.table("event_logs").insert(data).execute()
+    except Exception as e: st.error(f"Olay ekleme hatası: {e}")
+
+def delete_event(rid):
+    if supabase:
+        try:
+            supabase.table("event_logs").delete().eq("id", rid).execute()
+        except Exception as e: st.error(f"Olay silme hatası: {e}")
+
 @st.cache_data(ttl=600)
 def fetch_market_data_adapter(start_date, end_date):
     if not EVDS_API_KEY: return pd.DataFrame(), "EVDS Anahtarı Eksik."

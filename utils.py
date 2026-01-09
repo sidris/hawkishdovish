@@ -6,6 +6,8 @@ import io
 import datetime
 import re
 import difflib
+import os
+import tempfile
 from collections import Counter
 import numpy as np
 from dataclasses import dataclass
@@ -13,7 +15,15 @@ from typing import List, Dict, Tuple, Any, Optional
 
 # --- 1. EK KÜTÜPHANELER ---
 try:
-    from sklearn.linear_model import LinearRegression, LogisticRegression
+    import sklearn
+    from sklearn.base import clone
+    from sklearn.compose import ColumnTransformer
+    from sklearn.pipeline import Pipeline
+    from sklearn.preprocessing import StandardScaler, FunctionTransformer
+    from sklearn.feature_extraction.text import TfidfVectorizer
+    from sklearn.linear_model import LogisticRegression, Ridge
+    from sklearn.model_selection import TimeSeriesSplit
+    from sklearn.metrics import mean_absolute_error, mean_squared_error, classification_report, confusion_matrix
     from wordcloud import WordCloud, STOPWORDS
     import matplotlib.pyplot as plt
     HAS_ML_DEPS = True
@@ -45,7 +55,6 @@ EVDS_TUFE_SERIES = "TP.FG.J0"
 # =============================================================================
 # 3. VERİTABANI VE PİYASA VERİSİ
 # =============================================================================
-
 def fetch_all_data():
     if not supabase: return pd.DataFrame()
     try:
@@ -122,7 +131,7 @@ def fetch_market_data_adapter(start_date, end_date):
     return master_df.sort_values("SortDate"), None
 
 # =============================================================================
-# 4. METİN ANALİZİ (JS REFERANSLI FLESCH ALGORİTMASI)
+# 4. ESKİ FONKSİYONLAR (Dashboard ve Diğer Sekmeler İçin)
 # =============================================================================
 
 NOUNS = {
@@ -153,30 +162,6 @@ def split_into_sentences(text):
     if not text: return []
     return re.split(r'[.!?]+', text)
 
-def count_syllables_en(word):
-    """
-    JS Logic:
-    - If length <= 3 -> return 1
-    - Remove silent 'e' or 'ed' or 'es' endings (non-vowel + e/ed/es)
-    - Remove starting 'y'
-    - Count [aeiouy]{1,2} groups
-    """
-    word = word.lower()
-    if len(word) <= 3:
-        return 1
-    
-    # Python regex equivalent of JS: word.replace(/(?:[^laeiouy]|ed|[^laeiouy]e)$/i, '')
-    # [^laeiouy] means non-vowel.
-    word = re.sub(r'(?:[^laeiouy]|ed|[^laeiouy]e)$', '', word, flags=re.IGNORECASE)
-    
-    # Python equivalent of JS: word.replace(/^y/i, '')
-    word = re.sub(r'^y', '', word, flags=re.IGNORECASE)
-    
-    # JS: word.match(/[aeiouy]{1,2}/g)
-    syllables = re.findall(r'[aeiouy]{1,2}', word, flags=re.IGNORECASE)
-    
-    return len(syllables) if syllables else 1
-
 def calculate_flesch_reading_ease(text):
     """
     JS Logic Implementation:
@@ -184,42 +169,29 @@ def calculate_flesch_reading_ease(text):
     2. ASW (Average Syllables per Word) is calculated on RAW text.
     """
     if not text: return 0
-    
-    # --- 1. ASL Calculation (Uses CLEANED text) ---
-    # JS: getEnglishTextStats -> filters bullets
-    lines = text.split('\n')
-    # JS Regex: /^\s*[-•]\s*/
-    filtered_lines = [ln for ln in lines if not re.match(r'^\s*[-•]\s*', ln)]
-    filtered_text = ' '.join(filtered_lines)
-    
-    # JS Regex: /\d+\.\d+/g (Remove decimals)
+    lines = [line for line in text.split('\n') if not re.match(r'^\s*[-•]\s*', line)]
+    filtered_text = ' '.join(lines)
     cleaned_text = re.sub(r'\d+\.\d+', '', filtered_text)
-    
-    # Count sentences (JS: match(/[^\.!\?]+[\.!\?]+/g))
     sentences = re.findall(r'[^\.!\?]+[\.!\?]+', cleaned_text)
     sentence_count = len(sentences) if sentences else 1
-    
-    # Count words in cleaned text
     words_cleaned = [w for w in re.split(r'\s+', cleaned_text) if w]
     total_words_cleaned = len(words_cleaned)
-    
-    # Calculate ASL
-    average_sentence_length = total_words_cleaned / sentence_count if sentence_count > 0 else 0
-    
-    # --- 2. ASW Calculation (Uses RAW text) ---
-    # JS: getAverageSyllablesPerWordEn -> uses raw text split by whitespace
+    if total_words_cleaned == 0: return 0
+    average_sentence_length = total_words_cleaned / sentence_count
     words_raw = [w for w in re.split(r'\s+', text) if w]
-    total_words_raw = len(words_raw)
+    if not words_raw: return 0
     
-    if total_words_raw == 0: return 0
-    
+    def count_syllables_en(word):
+        word = word.lower()
+        if len(word) <= 3: return 1
+        word = re.sub(r'(?:[^laeiouy]|ed|[^laeiouy]e)$', '', word, flags=re.IGNORECASE)
+        word = re.sub(r'^y', '', word, flags=re.IGNORECASE)
+        syllables = re.findall(r'[aeiouy]{1,2}', word, flags=re.IGNORECASE)
+        return len(syllables) if syllables else 1
+
     total_syllables_raw = sum(count_syllables_en(w) for w in words_raw)
-    average_syllables_per_word = total_syllables_raw / total_words_raw
-    
-    # --- 3. Final Formula ---
-    # Score = 206.835 - (1.015 * ASL) - (84.6 * ASW)
+    average_syllables_per_word = total_syllables_raw / len(words_raw)
     score = 206.835 - (1.015 * average_sentence_length) - (84.6 * average_syllables_per_word)
-    
     return round(score, 2)
 
 def find_context_sentences(text, found_phrases):
@@ -243,10 +215,7 @@ def run_full_analysis(text):
     clean_text = text.lower()
     tokens = re.findall(r"[a-z']+", clean_text)
     token_counts = Counter(tokens)
-    
-    # Güncellenmiş Flesch Fonksiyonu
     flesch_score = calculate_flesch_reading_ease(text)
-    
     bigrams = make_ngrams(tokens, 2)
     trigrams = make_ngrams(tokens, 3)
     bigram_counts = Counter(bigrams)
@@ -364,155 +333,379 @@ def train_and_predict_rate(df_history, current_score):
     return stats, df[['period_date', 'Donem', 'Rate_Change', 'Predicted_Change', 'Predicted_Change_Logit']].copy(), None
 
 # =============================================================================
-# 5. ABG (APEL, BLIX, GRIMALDI - 2019) ANALYZER
+# 5. YENİ ML (RIDGE + LOGISTIC) ALGORİTMASI (ABG ANALYZER YERİNE)
 # =============================================================================
 
-@dataclass(frozen=True)
-class ModPattern:
-    token_regexes: Tuple[re.Pattern, ...]
+@dataclass
+class CFG:
+    cap_low: int = -750
+    cap_high: int = 750
+    token_pattern: str = r"(?u)\b[0-9a-zçğıöşü]{2,}\b" # TR Karakter desteği
+    word_ngram: Tuple[int,int] = (1, 2)
+    min_df: int = 1
+    max_df: float = 1.0
+    max_features: int = 20000   
+    trend_window: int = 6
+    max_splits: int = 6
+    half_life_days: float = 365.0
+    q_lo: float = 0.02
+    q_hi: float = 0.98
+    vol_factor: float = 1.0
+    vol_cap: float = 3.0
+    unc_factor: float = 1.5
+    blend_cond: float = 0.65
+    blend_all: float = 0.35
+    fallback_cut_bps: float = -75.0
+    fallback_hike_bps: float = 75.0
 
-@dataclass(frozen=True)
-class TermEntry:
-    term_tokens: Tuple[str, ...]
-    hawk_mods: Tuple[ModPattern, ...]
-    dove_mods: Tuple[ModPattern, ...]
+cfg = CFG()
 
-class ABG2019Analyzer:
-    def __init__(self, window_size: int = 7):
-        self.window_size = window_size
-        self.entries: List[TermEntry] = self._build_dictionary_from_appendix()
+def normalize_tr_text(s: str) -> str:
+    if s is None: return ""
+    s = str(s).lower()
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
 
-    def split_sentences(self, text: str) -> List[str]:
-        return re.split(r'[.!?]+', text)
+def clip_bps(x, lo=cfg.cap_low, hi=cfg.cap_high):
+    return np.clip(x, lo, hi)
 
-    def tokenize(self, sentence: str) -> List[str]:
-        s = sentence.lower()
-        return re.findall(r"[a-z]+(?:-[a-z]+)*", s)
+def bps_to_direction(y_bps: np.ndarray) -> np.ndarray:
+    y = np.asarray(y_bps, dtype=float)
+    out = np.zeros_like(y, dtype=int)
+    out[y < 0] = -1
+    out[y > 0] = 1
+    return out
 
-    def _compile_token_wildcard(self, token: str) -> re.Pattern:
-        token = token.strip().lower()
-        if "*" in token:
-            base = re.escape(token.replace("*", ""))
-            return re.compile(rf"^{base}[a-z-]*$")
+def exp_time_weights(dates: pd.Series, half_life_days: float = cfg.half_life_days) -> np.ndarray:
+    d = pd.to_datetime(dates)
+    t = (d - d.min()).dt.days.values.astype(float)
+    lam = np.log(2.0) / float(half_life_days)
+    w = np.exp(lam * t)
+    return w / np.mean(w)
+
+def rolling_slope(y: np.ndarray, window: int) -> np.ndarray:
+    y = np.asarray(y, dtype=float)
+    out = np.zeros_like(y, dtype=float)
+    for i in range(len(y)):
+        j0 = max(0, i - window + 1)
+        seg = y[j0:i+1]
+        if len(seg) < 3:
+            out[i] = 0.0
+            continue
+        x = np.arange(len(seg), dtype=float)
+        out[i] = np.polyfit(x, seg, 1)[0]
+    return out
+
+def safe_median_days(dates: pd.Series) -> float:
+    if len(dates) <= 1: return 30.0
+    diffs = pd.to_datetime(dates).diff().dt.days.dropna()
+    return float(diffs.median()) if len(diffs) else 30.0
+
+def choose_splits(n: int) -> int:
+    return int(min(cfg.max_splits, max(3, n // 8)))
+
+def rmse_metric(y_true, y_pred):
+    return float(np.sqrt(mean_squared_error(y_true, y_pred)))
+
+def add_features(df: pd.DataFrame, trend_window: int = cfg.trend_window) -> pd.DataFrame:
+    out = df.copy()
+    out["y_bps"] = clip_bps(out["rate_change_bps"].values)
+    out["y_dir"] = bps_to_direction(out["y_bps"].values)
+
+    out["prev_change_bps"] = clip_bps(out["y_bps"].shift(1).fillna(0.0).values)
+    out["prev_abs_change"] = np.abs(out["prev_change_bps"].values)
+    out["prev_sign"] = np.sign(out["prev_change_bps"].values).astype(int)
+
+    streak, cur = [], 0
+    for v in out["y_bps"].shift(1).fillna(0.0).values:
+        if float(v) == 0.0: cur += 1
+        else: cur = 0
+        streak.append(cur)
+    out["hold_streak"] = np.array(streak, dtype=int)
+
+    out["mean_abs_last3"] = (
+        out["y_bps"].shift(1).fillna(0).abs() +
+        out["y_bps"].shift(2).fillna(0).abs() +
+        out["y_bps"].shift(3).fillna(0).abs()
+    ).values / 3.0
+
+    med = safe_median_days(out["date"])
+    out["days_since_prev"] = out["date"].diff().dt.days.fillna(med).clip(lower=0).astype(float)
+
+    out["roll_mean_bps"] = out["y_bps"].rolling(trend_window, min_periods=1).mean()
+    out["roll_std_bps"] = out["y_bps"].rolling(trend_window, min_periods=1).std().fillna(0.0)
+    out["roll_slope_bps"] = rolling_slope(out["y_bps"].values, trend_window)
+    out["momentum_bps"] = out["y_bps"] - out["roll_mean_bps"]
+
+    base = float(out["roll_std_bps"].median()) if len(out) else 1.0
+    base = base if np.isfinite(base) and base > 0 else 1.0
+    out["vol_ratio"] = (out["roll_std_bps"] / base).replace([np.inf, -np.inf], 1.0).fillna(1.0)
+    return out
+
+KEYWORDS = [
+    "enflasyon", "çekirdek", "fiyat", "beklenti", "talep", "iktisadi faaliyet", "büyüme",
+    "kur", "kredi", "risk primi", "finansal koşul", "sıkı", "sıkılaşma", "gevşeme", 
+    "kararlı", "ilave", "gerekirse", "dezenflasyon", "inflation", "price", "growth"
+]
+
+def keyword_features(text_series: pd.Series) -> np.ndarray:
+    X = []
+    for t in text_series.fillna("").astype(str).values:
+        t = t.lower()
+        row = [t.count(kw) for kw in KEYWORDS]
+        row.append(len(t))
+        X.append(row)
+    return np.asarray(X, dtype=float)
+
+kw_transformer = FunctionTransformer(keyword_features, validate=False)
+
+def build_preprocess(numeric_cols: List[str]) -> ColumnTransformer:
+    word_tfidf = TfidfVectorizer(
+        token_pattern=cfg.token_pattern,
+        analyzer="word",
+        ngram_range=cfg.word_ngram,
+        min_df=cfg.min_df,
+        max_df=cfg.max_df,
+        max_features=cfg.max_features,
+        sublinear_tf=True
+    )
+    preprocess = ColumnTransformer(
+        transformers=[
+            ("w", word_tfidf, "text"),
+            ("kw", Pipeline([("kw", kw_transformer), ("sc", StandardScaler(with_mean=False))]), "text"),
+            ("num", Pipeline([("sc", StandardScaler(with_mean=False))]), numeric_cols),
+        ],
+        remainder="drop",
+        sparse_threshold=0.3
+    )
+    return preprocess
+
+def build_models(preprocess: ColumnTransformer):
+    clf = LogisticRegression(solver="saga", max_iter=5000, class_weight="balanced", C=2.0, random_state=42)
+    reg_all  = Ridge(alpha=2.0, random_state=42)
+    reg_cut  = Ridge(alpha=2.0, random_state=42)
+    reg_hike = Ridge(alpha=2.0, random_state=42)
+
+    clf_pipe = Pipeline([("prep", clone(preprocess)), ("clf", clf)])
+    reg_all_pipe  = Pipeline([("prep", clone(preprocess)), ("reg", reg_all)])
+    reg_cut_pipe  = Pipeline([("prep", clone(preprocess)), ("reg", reg_cut)])
+    reg_hike_pipe = Pipeline([("prep", clone(preprocess)), ("reg", reg_hike)])
+    return clf_pipe, reg_cut_pipe, reg_hike_pipe, reg_all_pipe
+
+def walk_forward_fast(X, y_bps, y_dir, dates, clf_pipe, reg_cut_pipe, reg_hike_pipe, reg_all_pipe, n_splits: int):
+    tscv = TimeSeriesSplit(n_splits=n_splits)
+    y_pred = np.full(len(y_bps), np.nan, dtype=float)
+    dir_pred = np.full(len(y_bps), np.nan, dtype=float)
+    conf_pred = np.full(len(y_bps), np.nan, dtype=float)
+    residuals = []
+    residuals_by_dir = {-1: [], 0: [], 1: []}
+
+    for tr, te in tscv.split(X):
+        w_tr = exp_time_weights(dates.iloc[tr])
+        clf_pipe.fit(X.iloc[tr], y_dir[tr], clf__sample_weight=w_tr)
+        d_hat = clf_pipe.predict(X.iloc[te]).astype(int)
+
+        if hasattr(clf_pipe.named_steps["clf"], "predict_proba"):
+            conf_te = clf_pipe.predict_proba(X.iloc[te]).max(axis=1)
         else:
-            return re.compile(rf"^{re.escape(token)}$")
+            conf_te = np.ones(len(te), dtype=float)
 
-    def _compile_modifier(self, modifier: str) -> List[ModPattern]:
-        modifier = modifier.strip().lower()
-        if not modifier: return []
-        alts = modifier.split("/")
-        out: List[ModPattern] = []
-        for alt in alts:
-            alt = alt.strip()
-            if not alt: continue
-            parts = alt.split()
-            token_regexes = tuple(self._compile_token_wildcard(p) for p in parts)
-            out.append(ModPattern(token_regexes=token_regexes))
-        return out
+        reg_all_pipe.fit(X.iloc[tr], y_bps[tr], reg__sample_weight=w_tr)
+        tr_cut = tr[y_dir[tr] == -1]; tr_hike = tr[y_dir[tr] == 1]
+        can_cut = len(tr_cut) >= 8; can_hike = len(tr_hike) >= 8
 
-    def _entry(self, term: str, hawk_mods: List[str], dove_mods: List[str]) -> TermEntry:
-        term_tokens = tuple(term.lower().split())
-        h_patterns: List[ModPattern] = []
-        d_patterns: List[ModPattern] = []
-        for m in hawk_mods: h_patterns.extend(self._compile_modifier(m))
-        for m in dove_mods: d_patterns.extend(self._compile_modifier(m))
-        return TermEntry(term_tokens=term_tokens, hawk_mods=tuple(h_patterns), dove_mods=tuple(d_patterns))
+        if can_cut: reg_cut_pipe.fit(X.iloc[tr_cut], y_bps[tr_cut], reg__sample_weight=exp_time_weights(dates.iloc[tr_cut]))
+        if can_hike: reg_hike_pipe.fit(X.iloc[tr_hike], y_bps[tr_hike], reg__sample_weight=exp_time_weights(dates.iloc[tr_hike]))
 
-    def _build_dictionary_from_appendix(self) -> List[TermEntry]:
-        inflation_consumer_prices_hawk = ["accelerat*", "boost*", "elevat*", "escalat*", "high*", "increas*", "jump*", "pickup", "rise*", "rose", "rising", "run-up/runup", "strong*", "surg*", "up*"]
-        inflation_consumer_prices_dove = ["decelerat*", "declin*", "decreas*", "down*", "drop*", "fall*", "fell", "low*", "muted", "reduc*", "slow*", "stable", "subdued", "weak*", "contained"]
-        inflation_infl_pressure_hawk = ["accelerat*", "boost*", "build*", "elevat*", "emerg*", "great*", "height*", "high*", "increas*", "intensif*", "mount*", "pickup", "rise", "rose", "rising", "stok*", "strong*", "sustain*"]
-        inflation_infl_pressure_dove = ["abat*", "contain*", "dampen*", "decelerat*", "declin*", "decreas*", "dimin*", "eas*", "fall*", "fell", "low*", "moderat*", "reced*", "reduc*", "subdued", "temper*"]
-        econ_cons_spend_hawk = ["accelerat*", "edg* up", "expan*", "increas*", "pick* up", "pickup", "soft*", "strength*", "strong*", "weak*"]
-        econ_cons_spend_dove = ["contract*", "decelerat*", "decreas*", "drop*", "retrench*", "slow*", "slugg*", "soft*", "subdued"]
-        econ_activity_hawk = ["accelerat*"]; econ_activity_dove = ["contract*"]
-        econ_growth_hawk = ["buoyant", "edg* up", "expan*", "increas*", "high*", "pick* up", "pickup", "rise*", "rose", "rising", "step* up", "strength*", "strong*", "upside"]
-        econ_growth_dove = ["curtail*", "decelerat*", "declin*", "decreas*", "downside", "drop", "fall*", "fell", "low*", "moderat*", "slow*", "slugg*", "weak*"]
-        resource_util_hawk = ["high*", "increas*", "rise", "rising", "rose", "tight*"]; resource_util_dove = ["declin*", "fall*", "fell", "loose*", "low*"]
-        employment_hawk = ["expand*", "gain*", "improv*", "increas*", "pick* up", "pickup", "rais*", "rise*", "rising", "rose", "strength*", "turn* up"]
-        employment_dove = ["slow*", "declin*", "reduc*", "weak*", "deteriorat*", "shrink*", "shrank", "fall*", "fell", "drop*", "contract*", "sluggish"]
-        labor_market_hawk = ["strain*", "tight*"]; labor_market_dove = ["eased", "easing", "loos*", "soft*", "weak*"]
-        unemployment_hawk = ["declin*", "fall*", "fell", "low*", "reduc*"]; unemployment_dove = ["elevat*", "high", "increas*", "ris*", "rose*"]
+        for j, idx in enumerate(te):
+            d = int(d_hat[j]); conf_pred[idx] = float(conf_te[j])
+            pred_all = float(reg_all_pipe.predict(X.iloc[[idx]])[0])
+            if d == 0: pred_cond = 0.0
+            elif d == -1: pred_cond = float(reg_cut_pipe.predict(X.iloc[[idx]])[0]) if can_cut else cfg.fallback_cut_bps
+            else: pred_cond = float(reg_hike_pipe.predict(X.iloc[[idx]])[0]) if can_hike else cfg.fallback_hike_bps
 
-        return [
-            self._entry("consumer prices", inflation_consumer_prices_hawk, inflation_consumer_prices_dove),
-            self._entry("inflation",       inflation_consumer_prices_hawk, inflation_consumer_prices_dove),
-            self._entry("inflation pressure", inflation_infl_pressure_hawk, inflation_infl_pressure_dove),
-            self._entry("consumer spending", econ_cons_spend_hawk, econ_cons_spend_dove),
-            self._entry("economic activity", econ_activity_hawk, econ_activity_dove),
-            self._entry("economic growth",   econ_growth_hawk, econ_growth_dove),
-            self._entry("resource utilization", resource_util_hawk, resource_util_dove),
-            self._entry("employment", employment_hawk, employment_dove),
-            self._entry("labor market", labor_market_hawk, labor_market_dove),
-            self._entry("unemployment", unemployment_hawk, unemployment_dove),
+            pred = cfg.blend_cond * pred_cond + cfg.blend_all * pred_all
+            pred = float(clip_bps(pred))
+            y_pred[idx] = pred; dir_pred[idx] = d
+            res = float(y_bps[idx] - pred)
+            residuals.append(res); residuals_by_dir[d].append(res)
+
+    return y_pred, dir_pred, conf_pred, residuals, residuals_by_dir
+
+def compute_interval(residuals, residuals_by_dir, q_lo=cfg.q_lo, q_hi=cfg.q_hi):
+    def qpair(arr):
+        arr = np.asarray(arr, dtype=float)
+        if arr.size < 20: return (-250.0, 250.0)
+        return (float(np.quantile(arr, q_lo)), float(np.quantile(arr, q_hi)))
+    overall = qpair(residuals)
+    by_dir = {d: qpair(residuals_by_dir.get(d, np.array([]))) for d in [-1,0,1]}
+    return overall, by_dir
+
+def widen_interval(lo, hi, vol_ratio, conf):
+    vr = float(vol_ratio) if np.isfinite(vol_ratio) else 1.0
+    vr = max(0.5, min(vr, cfg.vol_cap))
+    mult_vol = 1.0 + cfg.vol_factor * max(0.0, (vr - 1.0))
+    c = float(conf) if np.isfinite(conf) else 1.0
+    unc = max(0.0, 1.0 - c)
+    mult_unc = 1.0 + cfg.unc_factor * unc
+    mult = mult_vol * mult_unc
+    return (lo * mult, hi * mult)
+
+def fit_final(X, y_bps, y_dir, dates, clf_pipe, reg_cut_pipe, reg_hike_pipe, reg_all_pipe):
+    w_all = exp_time_weights(dates)
+    clf_pipe.fit(X, y_dir, clf__sample_weight=w_all)
+    reg_all_pipe.fit(X, y_bps, reg__sample_weight=w_all)
+    cut_idx = np.where(y_dir == -1)[0]
+    hike_idx = np.where(y_dir == 1)[0]
+    if len(cut_idx) >= 8: reg_cut_pipe.fit(X.iloc[cut_idx], y_bps[cut_idx], reg__sample_weight=exp_time_weights(dates.iloc[cut_idx]))
+    if len(hike_idx) >= 8: reg_hike_pipe.fit(X.iloc[hike_idx], y_bps[hike_idx], reg__sample_weight=exp_time_weights(dates.iloc[hike_idx]))
+
+def build_next_row(df_hist: pd.DataFrame, next_text: str) -> pd.DataFrame:
+    last = df_hist.iloc[-1]
+    y = df_hist["y_bps"].values.astype(float)
+    prev_change_bps = float(clip_bps(last["y_bps"]))
+    hold_streak = int(last["hold_streak"] + (1 if prev_change_bps == 0 else 0))
+    
+    w = cfg.trend_window
+    roll_mean = float(pd.Series(y).tail(w).mean())
+    roll_std = float(pd.Series(y).tail(w).std(ddof=0)) if len(y) >= 2 else 0.0
+    roll_slope = float(rolling_slope(y, w)[-1])
+    momentum = float(prev_change_bps - roll_mean)
+    
+    base = float(df_hist["roll_std_bps"].median()) if len(df_hist) else 1.0
+    vol_ratio = float(roll_std / base) if base > 0 else 1.0
+
+    row = pd.DataFrame([{
+        "text": normalize_tr_text(next_text),
+        "prev_change_bps": prev_change_bps,
+        "prev_abs_change": abs(prev_change_bps),
+        "prev_sign": int(np.sign(prev_change_bps)),
+        "hold_streak": hold_streak,
+        "mean_abs_last3": float(np.mean(np.abs(df_hist["y_bps"].tail(3).values))),
+        "days_since_prev": float(last["days_since_prev"]),
+        "roll_mean_bps": roll_mean,
+        "roll_std_bps": roll_std,
+        "roll_slope_bps": roll_slope,
+        "momentum_bps": momentum,
+        "vol_ratio": vol_ratio
+    }])
+    return row
+
+def predict_next(df_hist, next_text, clf_pipe, reg_cut_pipe, reg_hike_pipe, reg_all_pipe, overall_q, by_dir_q):
+    row = build_next_row(df_hist, next_text)
+    d_hat = int(clf_pipe.predict(row)[0])
+    
+    conf = 1.0
+    proba_map = {}
+    if hasattr(clf_pipe.named_steps["clf"], "predict_proba"):
+        proba = clf_pipe.predict_proba(row)[0]
+        classes = clf_pipe.named_steps["clf"].classes_
+        proba_map = {int(c): float(p) for c,p in zip(classes, proba)}
+        conf = float(np.max(proba))
+
+    pred_all = float(reg_all_pipe.predict(row)[0])
+    if d_hat == 0: pred_cond = 0.0
+    elif d_hat == -1: 
+        try: pred_cond = float(reg_cut_pipe.predict(row)[0])
+        except: pred_cond = cfg.fallback_cut_bps
+    else: 
+        try: pred_cond = float(reg_hike_pipe.predict(row)[0])
+        except: pred_cond = cfg.fallback_hike_bps
+
+    pred = cfg.blend_cond * pred_cond + cfg.blend_all * pred_all
+    pred = float(clip_bps(pred))
+
+    lo_d, hi_d = by_dir_q.get(d_hat, overall_q)
+    lo_o, hi_o = overall_q
+    lo = min(lo_d, lo_o); hi = max(hi_d, hi_o)
+    lo_w, hi_w = widen_interval(lo, hi, vol_ratio=float(row["vol_ratio"].iloc[0]), conf=conf)
+    
+    return {
+        "pred_direction": {-1:"İNDİRİM", 0:"SABİT", 1:"ARTIRIM"}[d_hat],
+        "direction_confidence": conf,
+        "direction_proba": proba_map,
+        "pred_change_bps": pred,
+        "pred_interval_lo": float(clip_bps(pred + lo_w)),
+        "pred_interval_hi": float(clip_bps(pred + hi_w))
+    }
+
+# --- VERİ HAZIRLAMA & ANA MOTOR ---
+def prepare_ml_dataset(df_logs, df_market):
+    """DB verilerini ML motorunun beklediği formata sokar."""
+    if df_logs.empty or df_market.empty: return pd.DataFrame()
+    
+    # 1. Merge
+    df = pd.merge(df_logs, df_market, on="Donem", how="left")
+    df = df.sort_values("period_date").reset_index(drop=True)
+    
+    # 2. Rate Change Calculation (Current - Previous)
+    # ML modeli, o satırdaki metnin, o satırdaki faiz kararını açıkladığını varsayarak eğitilir
+    df['rate_change_bps'] = df['PPK Faizi'].diff().fillna(0.0) * 100
+    
+    # 3. Columns mapping
+    ml_df = pd.DataFrame({
+        "date": df['period_date'],
+        "text": df['text_content'],
+        "rate_change_bps": df['rate_change_bps']
+    })
+    
+    # NaN temizliği
+    ml_df = ml_df.dropna(subset=['text', 'rate_change_bps'])
+    return ml_df
+
+class AdvancedMLPredictor:
+    def __init__(self):
+        self.clf_pipe = None
+        self.reg_pipes = {}
+        self.intervals = {}
+        self.df_hist = None
+        self.metrics = {}
+        
+    def train(self, ml_df):
+        if not HAS_ML_DEPS: return "Kütüphane eksik"
+        
+        df = add_features(ml_df, trend_window=cfg.trend_window)
+        self.df_hist = df # Tahmin için lazım
+        
+        numeric_cols = [
+            "prev_change_bps", "prev_abs_change", "prev_sign",
+            "hold_streak", "mean_abs_last3", "days_since_prev",
+            "roll_mean_bps", "roll_std_bps", "roll_slope_bps", "momentum_bps", "vol_ratio"
         ]
+        
+        X = df[["text"] + numeric_cols]
+        y_bps = df["y_bps"].values.astype(float)
+        y_dir = df["y_dir"].values.astype(int)
+        dates = df["date"]
+        
+        preprocess = build_preprocess(numeric_cols)
+        clf, r_cut, r_hike, r_all = build_models(preprocess)
+        
+        # Walk Forward Validation
+        n_splits = choose_splits(len(df))
+        y_p, d_p, c_p, res, res_dir = walk_forward_fast(X, y_bps, y_dir, dates, clf, r_cut, r_hike, r_all, n_splits)
+        
+        # Metrics
+        mask = ~np.isnan(y_p)
+        if np.any(mask):
+            self.metrics['mae'] = mean_absolute_error(y_bps[mask], y_p[mask])
+            self.metrics['rmse'] = rmse_metric(y_bps[mask], y_p[mask])
+            self.metrics['acc'] = np.mean(y_dir[mask] == d_p[mask].astype(int))
+        
+        # Fit Final Models
+        overall_q, by_dir_q = compute_interval(res, res_dir)
+        self.intervals = {'overall': overall_q, 'by_dir': by_dir_q}
+        
+        fit_final(X, y_bps, y_dir, dates, clf, r_cut, r_hike, r_all)
+        
+        self.clf_pipe = clf
+        self.reg_pipes = {'cut': r_cut, 'hike': r_hike, 'all': r_all}
+        return "OK"
 
-    def _find_term_spans(self, tokens: List[str]) -> List[Tuple[int, int, TermEntry]]:
-        raw: List[Tuple[int, int, TermEntry]] = []
-        n = len(tokens)
-        for entry in self.entries:
-            t = entry.term_tokens
-            L = len(t)
-            if L == 0: continue
-            for i in range(0, n - L + 1):
-                if tuple(tokens[i:i+L]) == t: raw.append((i, i+L, entry))
-        raw.sort(key=lambda x: (-(x[1]-x[0]), x[0]))
-        chosen: List[Tuple[int, int, TermEntry]] = []
-        occupied = [False] * n
-        for s, e, entry in raw:
-            if any(occupied[k] for k in range(s, e)): continue
-            chosen.append((s, e, entry))
-            for k in range(s, e): occupied[k] = True
-        chosen.sort(key=lambda x: x[0])
-        return chosen
-
-    def _match_modifier_at(self, tokens: List[str], pos: int, pat: ModPattern) -> bool:
-        L = len(pat.token_regexes)
-        if pos + L > len(tokens): return False
-        for j in range(L):
-            if not pat.token_regexes[j].match(tokens[pos+j]): return False
-        return True
-
-    def analyze(self, text: str) -> Dict[str, Any]:
-        sentences = self.split_sentences(text)
-        hawk = 0; dove = 0; details: List[Dict[str, Any]] = []
-        for sent in sentences:
-            sent = sent.strip()
-            if not sent: continue
-            tokens = self.tokenize(sent)
-            if not tokens: continue
-            term_spans = self._find_term_spans(tokens)
-            for (ts, te, entry) in term_spans:
-                w_start = max(0, ts - self.window_size)
-                w_end = min(len(tokens), te + self.window_size)
-                for pat in entry.hawk_mods:
-                    L = len(pat.token_regexes)
-                    for p in range(w_start, w_end - L + 1):
-                        if self._match_modifier_at(tokens, p, pat):
-                            hawk += 1; mod_str = " ".join(tokens[p:p+L])
-                            details.append({"type": "HAWK", "term": " ".join(entry.term_tokens), "modifier": mod_str, "sentence": sent})
-                for pat in entry.dove_mods:
-                    L = len(pat.token_regexes)
-                    for p in range(w_start, w_end - L + 1):
-                        if self._match_modifier_at(tokens, p, pat):
-                            dove += 1; mod_str = " ".join(tokens[p:p+L])
-                            details.append({"type": "DOVE", "term": " ".join(entry.term_tokens), "modifier": mod_str, "sentence": sent})
-        total = hawk + dove
-        net = 1.0 + ((hawk - dove) / total) if total > 0 else 1.0
-        return {"net_hawkishness": net, "hawk_count": hawk, "dove_count": dove, "total_matches": total, "match_details": details}
-
-class ABGAnalyzer:
-    def __init__(self): self.engine = ABG2019Analyzer(window_size=7)
-    def analyze(self, text): return self.engine.analyze(text)
-
-def calculate_abg_scores(df: pd.DataFrame) -> pd.DataFrame:
-    if df is None or df.empty: return pd.DataFrame()
-    analyzer = ABG2019Analyzer(window_size=7); rows = []
-    for _, row in df.iterrows():
-        res = analyzer.analyze(str(row.get("text_content", "")))
-        donem_val = row.get("Donem")
-        if (donem_val is None or donem_val == "") and ("period_date" in row):
-            try: donem_val = pd.to_datetime(row["period_date"]).strftime("%Y-%m")
-            except Exception: donem_val = ""
-        rows.append({"period_date": row.get("period_date"), "Donem": donem_val, "abg_index": res["net_hawkishness"], "abg_hawk": res["hawk_count"], "abg_dove": res["dove_count"]})
-    return pd.DataFrame(rows).sort_values("period_date", ascending=False)
+    def predict(self, text):
+        if self.df_hist is None or self.clf_pipe is None: return None
+        return predict_next(
+            self.df_hist, text, 
+            self.clf_pipe, self.reg_pipes['cut'], self.reg_pipes['hike'], self.reg_pipes['all'],
+            self.intervals['overall'], self.intervals['by_dir']
+        )

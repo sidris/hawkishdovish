@@ -49,6 +49,7 @@ if 'stop_words_cloud' not in st.session_state: st.session_state['stop_words_clou
 @st.cache_resource
 def get_trained_predictor(ml_df):
     predictor = utils.AdvancedMLPredictor()
+    # Cache key'i dataframe içeriğine bağlıdır, veri değişirse yeniden eğitir
     predictor.train(ml_df)
     return predictor
 
@@ -75,13 +76,13 @@ with c_head1: st.title("🦅 Şahin/Güvercin Paneli")
 with c_head2: 
     if st.button("Çıkış"): st.session_state['logged_in'] = False; st.rerun()
 
-# 7 SEKME (TAB 7 ARTIK GELİŞMİŞ ML - ADI ABF 2019 KALDI)
+# 7 SEKME (TAB 7 İSMİ GÜNCELLENDİ)
 tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
-    "📈 Dashboard", "📝 Veri Girişi", "📊 Veriler", "🔍 Derin Analiz", "🤖 Basit Tahmini", "☁️ WordCloud", "📜 ABF (2019)"
+    "📈 Dashboard", "📝 Veri Girişi", "📊 Veriler", "🔍 Derin Analiz", "🤖 Basit Tahmini", "☁️ WordCloud", "🧠 Gelişmiş ML Tahmini"
 ])
 
 # ==============================================================================
-# TAB 1: DASHBOARD (ÖNCEKİ KOD)
+# TAB 1: DASHBOARD
 # ==============================================================================
 with tab1:
     with st.spinner("Veriler Yükleniyor..."):
@@ -133,7 +134,9 @@ with tab1:
         if st.button("🔄 Yenile"): st.cache_data.clear(); st.rerun()
     else: st.info("Kayıt yok.")
 
-# ... TAB 2, 3, 4, 5, 6 için kodları aynen koruyun ...
+# ==============================================================================
+# TAB 2: VERİ GİRİŞİ
+# ==============================================================================
 with tab2:
     st.subheader("Veri İşlemleri")
     st.info("ℹ️ **BİLGİ:** Aşağıdaki geçmiş kayıtlar listesinden istediğiniz dönemi seçerek, hangi cümlelerin hesaplamaya alındığını görebilirsiniz.")
@@ -362,72 +365,94 @@ with tab6:
     else: st.info("Veri yok.")
 
 # ==============================================================================
-# TAB 7: GELİŞMİŞ ML TAHMİNİ (ABG 2019 YERİNE GEÇTİ)
+# TAB 7: GELİŞMİŞ ML TAHMİNİ (YENİLENDİ: TARİH FİLTRELİ)
 # ==============================================================================
 with tab7:
-    st.header("📜 ABF (2019) -> Gelişmiş ML Tahmini")
+    st.header("🧠 Gelişmiş ML Faiz Tahmini (Ridge + Logistic Regression)")
     st.info("""
     Bu modül, metinleri TF-IDF ile vektörleştirip, zaman serisi (Time Series Split) doğrulama yöntemiyle eğitilen hibrit bir model kullanır.
     * **Lojistik Regresyon:** Yönü (Artır/İndir/Sabit) tahmin eder.
     * **Ridge Regresyon:** Baz puan değişimini (Örn: 250 bps) tahmin eder.
     """)
     
+    # Global DB verisi kullanılıyor
     if 'merged' in locals() and not merged.empty:
-        # Veriyi ML motoruna uygun hazırla
-        with st.spinner("Veri hazırlanıyor ve model eğitiliyor..."):
-            ml_df = utils.prepare_ml_dataset(df_logs, df_market)
+        
+        # 1. TARİH SEÇİMİ (FİLTRELEME)
+        st.markdown("### 📅 Eğitim Verisi Aralığı Seçimi")
+        
+        min_date_db = df_logs['period_date'].min().date()
+        max_date_db = df_logs['period_date'].max().date()
+        
+        c_filter1, c_filter2 = st.columns(2)
+        start_date_train = c_filter1.date_input("Başlangıç Tarihi", min_date_db, min_value=min_date_db, max_value=max_date_db)
+        end_date_train = c_filter2.date_input("Bitiş Tarihi", max_date_db, min_value=min_date_db, max_value=max_date_db)
+        
+        # Filtreleme İşlemi
+        mask_train = (df_logs['period_date'].dt.date >= start_date_train) & (df_logs['period_date'].dt.date <= end_date_train)
+        df_logs_filtered = df_logs.loc[mask_train]
+        
+        if not df_logs_filtered.empty:
+            st.caption(f"Seçilen aralıkta **{len(df_logs_filtered)}** adet toplantı verisi bulundu.")
             
-            if not ml_df.empty:
-                predictor = get_trained_predictor(ml_df)
+            # Veriyi ML motoruna uygun hazırla
+            with st.spinner("Seçilen verilerle model eğitiliyor..."):
+                ml_df = utils.prepare_ml_dataset(df_logs_filtered, df_market)
                 
-                # Model Metrikleri
-                if predictor.metrics:
-                    c1, c2, c3 = st.columns(3)
-                    c1.metric("Model Doğruluğu (Yön)", f"%{predictor.metrics.get('acc', 0)*100:.1f}")
-                    c2.metric("Hata Payı (RMSE)", f"{predictor.metrics.get('rmse', 0):.0f} bps")
-                    c3.metric("Ortalama Hata (MAE)", f"{predictor.metrics.get('mae', 0):.0f} bps")
-                
-                st.divider()
-                
-                # Tahmin Bölümü
-                st.subheader("🔮 Gelecek Toplantı Tahmini")
-                
-                # Girdi Seçimi
-                input_method = st.radio("Metin Kaynağı:", ["Son Toplantı Metni", "Manuel Metin Girişi"], horizontal=True)
-                
-                if input_method == "Son Toplantı Metni":
-                    target_text = ml_df.iloc[-1]['text']
-                    ref_date = ml_df.iloc[-1]['date']
-                    st.caption(f"Referans: {ref_date.strftime('%Y-%m-%d')} tarihli metin.")
+                if not ml_df.empty:
+                    predictor = get_trained_predictor(ml_df)
+                    
+                    # Model Metrikleri
+                    if predictor.metrics:
+                        c1, c2, c3 = st.columns(3)
+                        c1.metric("Model Doğruluğu (Yön)", f"%{predictor.metrics.get('acc', 0)*100:.1f}")
+                        c2.metric("Hata Payı (RMSE)", f"{predictor.metrics.get('rmse', 0):.0f} bps")
+                        c3.metric("Ortalama Hata (MAE)", f"{predictor.metrics.get('mae', 0):.0f} bps")
+                    
+                    st.divider()
+                    
+                    # Tahmin Bölümü
+                    st.subheader("🔮 Gelecek Toplantı Tahmini")
+                    
+                    # Girdi Seçimi
+                    input_method = st.radio("Metin Kaynağı:", ["Son Toplantı Metni", "Manuel Metin Girişi"], horizontal=True)
+                    
+                    if input_method == "Son Toplantı Metni":
+                        # Filtrelenmiş verinin sonuncusunu kullanır
+                        target_text = ml_df.iloc[-1]['text']
+                        ref_date = ml_df.iloc[-1]['date']
+                        st.caption(f"Referans: {ref_date.strftime('%Y-%m-%d')} tarihli metin.")
+                    else:
+                        target_text = st.text_area("Metni buraya yapıştırın:", height=150)
+                    
+                    if target_text:
+                        if st.button("Tahmin Et", type="primary", key="btn_adv_predict"):
+                            res = predictor.predict(target_text)
+                            
+                            if res:
+                                col_res1, col_res2 = st.columns(2)
+                                
+                                with col_res1:
+                                    direction = res['pred_direction']
+                                    color = "green" if direction == "ARTIRIM" else "red" if direction == "İNDİRİM" else "gray"
+                                    st.markdown(f"### Tahmin: :{color}[{direction}]")
+                                    st.metric("Beklenen Değişim", f"{res['pred_change_bps']:.0f} bps")
+                                    st.caption(f"Güven Aralığı: {res['pred_interval_lo']:.0f} bps / {res['pred_interval_hi']:.0f} bps")
+                                
+                                with col_res2:
+                                    st.write("Olasılık Dağılımı:")
+                                    probs = res['direction_proba']
+                                    if probs:
+                                        prob_data = {
+                                            "Yön": ["İndirim", "Sabit", "Artırım"],
+                                            "Olasılık": [probs.get(-1, 0), probs.get(0, 0), probs.get(1, 0)]
+                                        }
+                                        st.bar_chart(pd.DataFrame(prob_data).set_index("Yön"))
+                            else:
+                                st.warning("Tahmin üretilemedi.")
                 else:
-                    target_text = st.text_area("Metni buraya yapıştırın:", height=150)
-                
-                if target_text:
-                    if st.button("Tahmin Et", type="primary", key="btn_adv_predict"):
-                        res = predictor.predict(target_text)
-                        
-                        if res:
-                            col_res1, col_res2 = st.columns(2)
-                            
-                            with col_res1:
-                                direction = res['pred_direction']
-                                color = "green" if direction == "ARTIRIM" else "red" if direction == "İNDİRİM" else "gray"
-                                st.markdown(f"### Tahmin: :{color}[{direction}]")
-                                st.metric("Beklenen Değişim", f"{res['pred_change_bps']:.0f} bps")
-                                st.caption(f"Güven Aralığı: {res['pred_interval_lo']:.0f} bps / {res['pred_interval_hi']:.0f} bps")
-                            
-                            with col_res2:
-                                st.write("Olasılık Dağılımı:")
-                                probs = res['direction_proba']
-                                if probs:
-                                    prob_data = {
-                                        "Yön": ["İndirim", "Sabit", "Artırım"],
-                                        "Olasılık": [probs.get(-1, 0), probs.get(0, 0), probs.get(1, 0)]
-                                    }
-                                    st.bar_chart(pd.DataFrame(prob_data).set_index("Yön"))
-                        else:
-                            st.warning("Tahmin üretilemedi.")
-            else:
-                st.warning("Yeterli veri yok.")
+                    st.warning("Seçilen tarih aralığında eşleşen piyasa verisi bulunamadı.")
+        else:
+            st.warning("Seçilen tarih aralığında veri yok.")
     else:
         st.warning("Veritabanı bağlantısı yok veya veri boş.")

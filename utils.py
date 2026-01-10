@@ -636,97 +636,6 @@ def predict_next(df_hist, next_text, clf_pipe, reg_cut_pipe, reg_hike_pipe, reg_
         "pred_interval_hi": float(clip_bps(pred + hi_w))
     }
 
-# --- VERİ HAZIRLAMA & ANA MOTOR ---
-def prepare_ml_dataset(df_logs, df_market):
-    """DB verilerini ML motorunun beklediği formata sokar."""
-    if df_logs.empty or df_market.empty: return pd.DataFrame()
-    
-    if 'Donem' not in df_logs.columns and 'period_date' in df_logs.columns:
-        df_logs = df_logs.copy()
-        df_logs['period_date'] = pd.to_datetime(df_logs['period_date'])
-        df_logs['Donem'] = df_logs['period_date'].dt.strftime('%Y-%m')
-    
-    if 'Donem' not in df_market.columns:
-        return pd.DataFrame()
-
-    # 1. Merge
-    df = pd.merge(df_logs, df_market, on="Donem", how="left")
-    df = df.sort_values("period_date").reset_index(drop=True)
-    
-    # 2. Rate Change Calculation (Current - Previous)
-    df['rate_change_bps'] = df['PPK Faizi'].diff().fillna(0.0) * 100
-    
-    # 3. Columns mapping
-    ml_df = pd.DataFrame({
-        "date": df['period_date'],
-        "text": df['text_content'],
-        "rate_change_bps": df['rate_change_bps']
-    })
-    
-    # NaN temizliği
-    ml_df = ml_df.dropna(subset=['text', 'rate_change_bps'])
-    return ml_df
-
-class AdvancedMLPredictor:
-    def __init__(self):
-        self.clf_pipe = None
-        self.reg_pipes = {}
-        self.intervals = {}
-        self.df_hist = None
-        self.metrics = {}
-        
-    def train(self, ml_df):
-        if not HAS_ML_DEPS: return "Kütüphane eksik"
-        
-        df = add_features(ml_df, trend_window=cfg.trend_window)
-        self.df_hist = df # Tahmin için lazım
-        
-        numeric_cols = [
-            "prev_change_bps", "prev_abs_change", "prev_sign",
-            "hold_streak", "mean_abs_last3", "days_since_prev",
-            "roll_mean_bps", "roll_std_bps", "roll_slope_bps", "momentum_bps", "vol_ratio"
-        ]
-        
-        X = df[["text"] + numeric_cols]
-        y_bps = df["y_bps"].values.astype(float)
-        y_dir = df["y_dir"].values.astype(int)
-        dates = df["date"]
-        
-        preprocess = build_preprocess(numeric_cols)
-        clf, r_cut, r_hike, r_all = build_models(preprocess)
-        
-        # Walk Forward Validation
-        n_splits = choose_splits(len(df))
-        y_p, d_p, c_p, res, res_dir = walk_forward_fast(X, y_bps, y_dir, dates, clf, r_cut, r_hike, r_all, n_splits)
-        
-        # Store predictions in df_hist for visualization
-        self.df_hist['predicted_bps'] = y_p
-
-        # Metrics
-        mask = ~np.isnan(y_p)
-        if np.any(mask):
-            self.metrics['mae'] = mean_absolute_error(y_bps[mask], y_p[mask])
-            self.metrics['rmse'] = rmse_metric(y_bps[mask], y_p[mask])
-            self.metrics['acc'] = np.mean(y_dir[mask] == d_p[mask].astype(int))
-        
-        # Fit Final Models
-        overall_q, by_dir_q = compute_interval(res, res_dir)
-        self.intervals = {'overall': overall_q, 'by_dir': by_dir_q}
-        
-        fit_final(X, y_bps, y_dir, dates, clf, r_cut, r_hike, r_all)
-        
-        self.clf_pipe = clf
-        self.reg_pipes = {'cut': r_cut, 'hike': r_hike, 'all': r_all}
-        return "OK"
-
-    def predict(self, text):
-        if self.df_hist is None or self.clf_pipe is None: return None
-        return predict_next(
-            self.df_hist, text, 
-            self.clf_pipe, self.reg_pipes['cut'], self.reg_pipes['hike'], self.reg_pipes['all'],
-            self.intervals['overall'], self.intervals['by_dir']
-        )
-
 # =============================================================================
 # 6. ABG (APEL, BLIX, GRIMALDI - 2019) ANALYZER (GÜNCELLENMİŞ VERSİYON)
 # =============================================================================
@@ -787,49 +696,86 @@ DICT = {
 
     "economic_activity": [
         {
-            "block": "consumer_spending_demand",
-            "terms": ["consumer spending", "domestic demand"],
+            "block": "consumer_spending",
+            "terms": ["consumer spending"],
             "hawk": [
-                M("accelerat", True), M("edg up", True), M("expan", True),
-                M("increas", True), M("pick up", True), M("pickup"),
-                M("soft", True), M("strength", True), M("strong", True),
-                M("resilien", True), # "resilient" eklendi
+                M("accelerat", True),
+                M("edg up", True),
+                M("expan", True),
+                M("increas", True),
+                M("pick up", True),
+                M("pickup"),
+                M("soft", True),
+                M("strength", True),
+                M("strong", True),
                 M("weak", True),
             ],
             "dove": [
-                M("contract", True), M("decelerat", True), M("decreas", True),
-                M("drop", True), M("retrench", True), M("slow", True),
-                M("slugg", True), M("soft", True), M("subdued"),
+                M("contract", True),
+                M("decelerat", True),
+                M("decreas", True),
+                M("drop", True),
+                M("retrench", True),
+                M("slow", True),
+                M("slugg", True),
+                M("soft", True),
+                M("subdued"),
             ],
         },
         {
             "block": "economic_activity_growth",
             "terms": ["economic activity", "economic growth"],
             "hawk": [
-                M("accelerat", True), M("buoyant"), M("edg up", True),
-                M("expan", True), M("increas", True), M("high", True),
-                M("pick up", True), M("pickup"), M("rise", True),
-                M("rose"), M("rising"), M("step up", True),
-                M("strength", True), M("strong", True), M("upside"),
+                M("accelerat", True),
+                M("buoyant"),
+                M("edg up", True),
+                M("expan", True),
+                M("increas", True),
+                M("high", True),
+                M("pick up", True),
+                M("pickup"),
+                M("rise", True),
+                M("rose"),
+                M("rising"),
+                M("step up", True),
+                M("strength", True),
+                M("strong", True),
+                M("upside"),
             ],
             "dove": [
-                M("contract", True), M("curtail", True), M("decelerat", True),
-                M("declin", True), M("decreas", True), M("downside"),
-                M("drop"), M("fall", True), M("fell"),
-                M("low", True), M("moderat", True), M("slow", True),
-                M("slugg", True), M("weak", True),
+                M("contract", True),
+                M("curtail", True),
+                M("decelerat", True),
+                M("declin", True),
+                M("decreas", True),
+                M("downside"),
+                M("drop"),
+                M("fall", True),
+                M("fell"),
+                M("low", True),
+                M("moderat", True),
+                M("slow", True),
+                M("slugg", True),
+                M("weak", True),
             ],
         },
         {
             "block": "resource_utilization",
             "terms": ["resource utilization"],
             "hawk": [
-                M("high", True), M("increas", True), M("rise"),
-                M("rising"), M("rose"), M("tight", True),
+                M("high", True),
+                M("increas", True),
+                M("rise"),
+                M("rising"),
+                M("rose"),
+                M("tight", True),
             ],
             "dove": [
-                M("declin", True), M("fall", True), M("fell"),
-                M("loose", True), M("low", True),
+                M("declin", True),
+                M("fall", True),
+                M("fell"),
+                M("loose", True),
+                M("low", True),
             ],
         },
     ],
@@ -839,16 +785,32 @@ DICT = {
             "block": "employment",
             "terms": ["employment"],
             "hawk": [
-                M("expand", True), M("gain", True), M("improv", True),
-                M("increas", True), M("pick up", True), M("pickup"),
-                M("rais", True), M("rise", True), M("rising"),
-                M("rose"), M("strength", True), M("turn up", True),
+                M("expand", True),
+                M("gain", True),
+                M("improv", True),
+                M("increas", True),
+                M("pick up", True),
+                M("pickup"),
+                M("rais", True),
+                M("rise", True),
+                M("rising"),
+                M("rose"),
+                M("strength", True),
+                M("turn up", True),
             ],
             "dove": [
-                M("slow", True), M("declin", True), M("reduc", True),
-                M("weak", True), M("deteriorat", True), M("shrink", True),
-                M("shrank"), M("fall", True), M("fell"),
-                M("drop", True), M("contract", True), M("sluggish"),
+                M("slow", True),
+                M("declin", True),
+                M("reduc", True),
+                M("weak", True),
+                M("deteriorat", True),
+                M("shrink", True),
+                M("shrank"),
+                M("fall", True),
+                M("fell"),
+                M("drop", True),
+                M("contract", True),
+                M("sluggish"),
             ],
         },
         {
@@ -864,21 +826,6 @@ DICT = {
             "dove": [M("elevat", True), M("high"), M("increas", True), M("ris", True), M("rose", True)],
         },
     ],
-
-    "monetary_policy": [
-        {
-            "block": "policy_rate",
-            "terms": ["policy rate", "interest rate", "repo auction rate", "monetary stance"],
-            "hawk": [
-                M("rais", True), M("hike", True), M("increas", True), 
-                M("tight", True), M("decisive"), M("high", True), M("maintain", True) 
-            ],
-            "dove": [
-                M("cut"), M("low", True), M("decreas", True), 
-                M("eas", True), M("loos", True)
-            ]
-        }
-    ]
 }
 
 # --- 6.3. METİN İŞLEME FONKSİYONLARI ---
@@ -950,14 +897,10 @@ def _select_non_overlapping_terms(tokens, term_infos):
 def analyze_hawk_dove(
     text: str,
     DICT: dict = DICT,
-    window_words: int = 10,
+    window_words: int = 7,
     dedupe_within_term_window: bool = True,
-    nearest_only: bool = True
+    nearest_only: bool = False
 ):
-    """
-    Colab'da doğrulanan, Policy Rate ve Domestic Demand eklenmiş algoritma.
-    Streamlit uyumludur.
-    """
     text_n = _normalize_text(text)
     sentences = _split_sentences(text_n)
 
@@ -970,6 +913,9 @@ def analyze_hawk_dove(
         topic_term_infos[topic] = infos
 
     topic_counts = {topic: {"hawk": 0, "dove": 0} for topic in DICT.keys()}
+    
+    # APP.PY UYUMLULUK: Detay listesini başlatıyoruz
+    matches = []
     
     for sent in sentences:
         tokens = _tokenize(sent)
@@ -1019,7 +965,22 @@ def analyze_hawk_dove(
                     if dedupe_within_term_window and key in seen:
                         return
                     seen.add(key)
+                    
                     topic_counts[topic][direction] += 1
+                    
+                    # APP.PY UYUMLULUK: Listeye ekleme yapıyoruz
+                    matches.append({
+                        "topic": topic,
+                        "block": block["block"],
+                        "direction": direction,
+                        "term": tinfo["term"], # app.py "term" bekleyebilir
+                        "term_found": term_found,
+                        "modifier_pattern": m["pattern"],
+                        "modifier_found": mod_found,
+                        "distance": dist,
+                        "sentence": sent,
+                        "type": "HAWK" if direction == "hawk" else "DOVE" # app.py için kolaylık
+                    })
 
                 for (dist, m, ms, me) in hawk_hits:
                     add_hit("hawk", dist, m, ms, me)
@@ -1036,7 +997,8 @@ def analyze_hawk_dove(
         "net_hawkishness": net_hawkishness,
         "hawk_count": hawk_total,
         "dove_count": dove_total,
-        "topic_counts": topic_counts
+        "topic_counts": topic_counts,
+        "match_details": matches # APP.PY'NİN İSTEDİĞİ ANAHTAR
     }
 
 # --- 6.5. WRAPPER FONKSİYON (UYGULAMA İÇİN) ---
@@ -1053,9 +1015,9 @@ def calculate_abg_scores(df: pd.DataFrame) -> pd.DataFrame:
         res = analyze_hawk_dove(
             text_content,
             DICT=DICT,
-            window_words=10,             # Colab'daki ayar
-            dedupe_within_term_window=True, # Colab'daki ayar
-            nearest_only=True            # Colab'daki ayar
+            window_words=7,              # Verdiğin kodda 7 idi
+            dedupe_within_term_window=True, 
+            nearest_only=False           # Verdiğin kodda False idi
         )
         
         donem_val = row.get("Donem")

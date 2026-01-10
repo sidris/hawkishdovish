@@ -508,8 +508,25 @@ with tab7:
             subset = df_abg_source[df_abg_source['Donem'] == sel_abg_period]
             if not subset.empty:
                 text_abg = subset.iloc[0]['text_content']
-                analyzer = utils.ABGAnalyzer()
-                res = analyzer.analyze(text_abg)
+                
+res = utils.analyze_hawk_dove(
+    txt_input, 
+    DICT=utils.DICT, 
+    window_words=10, 
+    dedupe_within_term_window=True, 
+    nearest_only=True
+)
+
+# Sonuçları ekrana basma kısmı (değişken isimleri yeni yapıya göre)
+st.metric("Net Hawkishness", f"{res['net_hawkishness']:.4f}")
+col1, col2 = st.columns(2)
+col1.metric("Hawk Sayısı", res['hawk_count'])
+col2.metric("Dove Sayısı", res['dove_count'])
+
+# Detayları gösterme (Opsiyonel, eğer eski kodda detay tablosu varsa)
+if "topic_counts" in res:
+    st.write("Detaylı Kırılım:")
+    st.json(res["topic_counts"])
                 c1, c2, c3 = st.columns(3)
                 c1.metric("Net Endeks", f"{res['net_hawkishness']:.2f}")
                 c2.metric("Şahin Eşleşme", res['hawk_count'])

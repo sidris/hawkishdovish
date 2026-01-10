@@ -28,13 +28,14 @@ try:
 except ImportError:
     HAS_ML_DEPS = False
 
-# VADER & FINBERT KONTROLLERİ
+# VADER SENTIMENT KONTROLÜ
 try:
     from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
     HAS_VADER = True
 except ImportError:
     HAS_VADER = False
 
+# FINBERT KONTROLÜ
 try:
     import torch
     import torch.nn.functional as F
@@ -65,7 +66,7 @@ EVDS_BASE = "https://evds2.tcmb.gov.tr/service/evds"
 EVDS_TUFE_SERIES = "TP.FG.J0"
 
 # =============================================================================
-# 3. KULLANICININ VERDİĞİ ORİJİNAL ALGORİTMA (ABF)
+# 3. ABF ALGORİTMASI (SİZİN VERDİĞİNİZ SÖZLÜK)
 # =============================================================================
 
 def M(token_or_phrase: str, wildcard_first: bool = False):
@@ -75,7 +76,6 @@ def M(token_or_phrase: str, wildcard_first: bool = False):
         wild[0] = True
     return {"phrase": toks, "wild": wild, "pattern": token_or_phrase}
 
-# SİZİN VERDİĞİNİZ SÖZLÜK (ORİJİNAL - DEĞİŞTİRİLMEDİ)
 DICT = {
    "inflation": [
         {
@@ -196,8 +196,6 @@ DICT = {
     ],
 }
 
-# --- NLP FONKSİYONLARI ---
-
 def normalize_text(text: str) -> str:
     if not text: return ""
     t = text.lower().replace("’", "'").replace("`", "'")
@@ -273,7 +271,6 @@ def analyze_hawk_dove(
     text_n = normalize_text(text)
     sentences = split_sentences(text_n)
 
-    # term infos
     topic_term_infos = {}
     for topic, blocks in DICT.items():
         infos = []
@@ -345,7 +342,6 @@ def analyze_hawk_dove(
                        "modifier_found": mod_found,
                        "distance": dist,
                        "sentence": sent,
-                       # app.py için gerekli ek alanlar
                        "term": tinfo["term"],
                        "type": "HAWK" if direction == "hawk" else "DOVE"
                    })
@@ -368,7 +364,7 @@ def analyze_hawk_dove(
     return {
        "topic_counts": topic_counts,
        "matches": matches,
-       "match_details": matches, # APP.PY UYUMLULUĞU
+       "match_details": matches,
        "net_hawkishness": net_hawkishness,
        "hawk_pct": hawk_pct,
        "dove_pct": dove_pct,
@@ -378,78 +374,10 @@ def analyze_hawk_dove(
     }
 
 # =============================================================================
-# 4. APP.PY İÇİN YARDIMCI FONKSİYONLAR & DATA FETCH (ROBUST)
+# 4. APP.PY YARDIMCILARI VE VADER / FINBERT / ML (DÜZELTİLDİ)
 # =============================================================================
 
-@st.cache_data(ttl=600)
-def fetch_market_data_adapter(start_date, end_date):
-    """
-    EVDS'den veri çeker. Hata durumunda veya API keysiz durumda
-    boş ama doğru kolonlara sahip DataFrame döner.
-    """
-    # Her durumda dönecek boş yapı (KeyError önlemek için)
-    empty_df = pd.DataFrame(columns=["Donem", "Yıllık TÜFE", "PPK Faizi", "SortDate"])
-    
-    if not EVDS_API_KEY: 
-        # Dummy data
-        dates = pd.date_range(start=start_date, end=end_date, freq='M')
-        if len(dates) == 0: return empty_df, "Tarih Yok"
-        
-        return pd.DataFrame({
-            'Donem': dates.strftime('%Y-%m'),
-            'Yıllık TÜFE': [0]*len(dates),
-            'PPK Faizi': [0]*len(dates),
-            'SortDate': dates
-        }), "API Key Yok - Dummy"
-
-    # API VARSA VERİ ÇEKMEYİ DENE
-    df_inf = pd.DataFrame()
-    try:
-        s = start_date.strftime("%d-%m-%Y")
-        e = end_date.strftime("%d-%m-%Y")
-        for form, col in [(1, "Aylık TÜFE"), (3, "Yıllık TÜFE")]:
-            url = f"{EVDS_BASE}/series={EVDS_TUFE_SERIES}&startDate={s}&endDate={e}&type=json&formulas={form}"
-            r = requests.get(url, headers={"key": EVDS_API_KEY}, timeout=20)
-            if r.status_code == 200 and r.json().get("items"):
-                temp = pd.DataFrame(r.json()["items"])
-                temp["dt"] = pd.to_datetime(temp["Tarih"], dayfirst=True, errors="coerce")
-                if temp["dt"].isnull().all(): temp["dt"] = pd.to_datetime(temp["Tarih"], format="%Y-%m", errors="coerce")
-                temp = temp.dropna(subset=["dt"])
-                temp["Donem"] = temp["dt"].dt.strftime("%Y-%m")
-                val_c = [c for c in temp.columns if "TP" in c][0]
-                temp = temp.rename(columns={val_c: col})[["Donem", col]]
-                if df_inf.empty: df_inf = temp
-                else: df_inf = pd.merge(df_inf, temp, on="Donem", how="outer")
-    except Exception: pass
-
-    df_pol = pd.DataFrame()
-    try:
-        s_bis = start_date.strftime("%Y-%m-%d")
-        e_bis = end_date.strftime("%Y-%m-%d")
-        url_bis = f"https://stats.bis.org/api/v1/data/WS_CBPOL/D.TR?format=csv&startPeriod={s_bis}&endPeriod={e_bis}"
-        r_bis = requests.get(url_bis, timeout=20)
-        if r_bis.status_code == 200:
-            temp_bis = pd.read_csv(io.StringIO(r_bis.content.decode("utf-8")), usecols=["TIME_PERIOD", "OBS_VALUE"])
-            temp_bis["dt"] = pd.to_datetime(temp_bis["TIME_PERIOD"])
-            temp_bis["Donem"] = temp_bis["dt"].dt.strftime("%Y-%m")
-            temp_bis["PPK Faizi"] = pd.to_numeric(temp_bis["OBS_VALUE"], errors="coerce")
-            df_pol = temp_bis.sort_values("dt").groupby("Donem").last().reset_index()[["Donem", "PPK Faizi"]]
-    except Exception: pass
-
-    master_df = pd.DataFrame()
-    if not df_inf.empty and not df_pol.empty: master_df = pd.merge(df_inf, df_pol, on="Donem", how="outer")
-    elif not df_inf.empty: master_df = df_inf
-    elif not df_pol.empty: master_df = df_pol
-
-    if master_df.empty: return empty_df, "Veri Bulunamadı"
-    
-    # Eksik kolonları tamamla
-    for c in ["Yıllık TÜFE", "PPK Faizi"]:
-        if c not in master_df.columns: master_df[c] = 0.0
-        
-    master_df["SortDate"] = pd.to_datetime(master_df["Donem"] + "-01")
-    return master_df.sort_values("SortDate"), None
-
+# --- DATA FETCH ---
 def fetch_all_data():
     if not supabase: return pd.DataFrame()
     try:
@@ -499,17 +427,76 @@ def delete_event(rid):
         try: supabase.table("event_logs").delete().eq("id", rid).execute()
         except Exception: pass
 
+@st.cache_data(ttl=600)
+def fetch_market_data_adapter(start_date, end_date):
+    empty_df = pd.DataFrame(columns=["Donem", "Yıllık TÜFE", "PPK Faizi", "SortDate"])
+    
+    if not EVDS_API_KEY: 
+        dates = pd.date_range(start=start_date, end=end_date, freq='M')
+        if len(dates) == 0: return empty_df, "Tarih Yok"
+        return pd.DataFrame({
+            'Donem': dates.strftime('%Y-%m'),
+            'Yıllık TÜFE': [0]*len(dates),
+            'PPK Faizi': [0]*len(dates),
+            'SortDate': dates
+        }), "API Key Yok"
+
+    df_inf = pd.DataFrame()
+    try:
+        s = start_date.strftime("%d-%m-%Y")
+        e = end_date.strftime("%d-%m-%Y")
+        for form, col in [(1, "Aylık TÜFE"), (3, "Yıllık TÜFE")]:
+            url = f"{EVDS_BASE}/series={EVDS_TUFE_SERIES}&startDate={s}&endDate={e}&type=json&formulas={form}"
+            r = requests.get(url, headers={"key": EVDS_API_KEY}, timeout=20)
+            if r.status_code == 200 and r.json().get("items"):
+                temp = pd.DataFrame(r.json()["items"])
+                temp["dt"] = pd.to_datetime(temp["Tarih"], dayfirst=True, errors="coerce")
+                if temp["dt"].isnull().all(): temp["dt"] = pd.to_datetime(temp["Tarih"], format="%Y-%m", errors="coerce")
+                temp = temp.dropna(subset=["dt"])
+                temp["Donem"] = temp["dt"].dt.strftime("%Y-%m")
+                val_c = [c for c in temp.columns if "TP" in c][0]
+                temp = temp.rename(columns={val_c: col})[["Donem", col]]
+                if df_inf.empty: df_inf = temp
+                else: df_inf = pd.merge(df_inf, temp, on="Donem", how="outer")
+    except Exception: pass
+
+    df_pol = pd.DataFrame()
+    try:
+        s_bis = start_date.strftime("%Y-%m-%d")
+        e_bis = end_date.strftime("%Y-%m-%d")
+        url_bis = f"https://stats.bis.org/api/v1/data/WS_CBPOL/D.TR?format=csv&startPeriod={s_bis}&endPeriod={e_bis}"
+        r_bis = requests.get(url_bis, timeout=20)
+        if r_bis.status_code == 200:
+            temp_bis = pd.read_csv(io.StringIO(r_bis.content.decode("utf-8")), usecols=["TIME_PERIOD", "OBS_VALUE"])
+            temp_bis["dt"] = pd.to_datetime(temp_bis["TIME_PERIOD"])
+            temp_bis["Donem"] = temp_bis["dt"].dt.strftime("%Y-%m")
+            temp_bis["PPK Faizi"] = pd.to_numeric(temp_bis["OBS_VALUE"], errors="coerce")
+            df_pol = temp_bis.sort_values("dt").groupby("Donem").last().reset_index()[["Donem", "PPK Faizi"]]
+    except Exception: pass
+
+    master_df = pd.DataFrame()
+    if not df_inf.empty and not df_pol.empty: master_df = pd.merge(df_inf, df_pol, on="Donem", how="outer")
+    elif not df_inf.empty: master_df = df_inf
+    elif not df_pol.empty: master_df = df_pol
+
+    if master_df.empty: return empty_df, "Veri Bulunamadı"
+    
+    for c in ["Yıllık TÜFE", "PPK Faizi"]:
+        if c not in master_df.columns: master_df[c] = 0.0
+        
+    master_df["SortDate"] = pd.to_datetime(master_df["Donem"] + "-01")
+    return master_df.sort_values("SortDate"), None
+
+# --- ANALIZ WRAPPERS ---
 def run_full_analysis(text):
     res = analyze_hawk_dove(text, DICT=DICT)
     s_abg = res['net_hawkishness']
     h_cnt = res['hawk_count']
     d_cnt = res['dove_count']
-    
     h_list = []
     d_list = []
     h_ctx = {}
     d_ctx = {}
-    
     if res['matches']:
         for m in res['matches']:
             item = f"{m['term_found']} ({m['modifier_found']})"
@@ -521,7 +508,6 @@ def run_full_analysis(text):
                 d_list.append(item)
                 if m['term_found'] not in d_ctx: d_ctx[m['term_found']] = []
                 d_ctx[m['term_found']].append(m['sentence'])
-                
     flesch = calculate_flesch_reading_ease(text)
     return s_abg, h_cnt, d_cnt, h_list, d_list, h_ctx, d_ctx, flesch
 
@@ -598,7 +584,8 @@ def generate_wordcloud_img(text, stop_words):
         return fig
     except: return None
 
-# --- ML PLACEHOLDERS ---
+# --- ML & VADER & FINBERT UYGULAMALARI (DÜZELTİLDİ) ---
+
 @dataclass
 class CFG:
     trend_window: int = 6
@@ -654,5 +641,90 @@ class AdvancedMLPredictor:
             "pred_change_bps": 0.0, "pred_interval_lo": -50.0, "pred_interval_hi": 50.0
         }
 
-def calculate_vader_series(df): return pd.DataFrame()
-def calculate_finbert_series(df): return pd.DataFrame()
+def calculate_vader_series(df: pd.DataFrame) -> pd.DataFrame:
+    """KeyError hatasını çözmek için tam implementasyon."""
+    if not HAS_VADER or df is None or df.empty: 
+        # Boş olsa bile app.py'nin beklediği kolonları dön
+        return pd.DataFrame(columns=["period_date", "Donem", "vader_compound", "vader_pos", "vader_neg", "vader_neu"])
+    
+    analyzer = SentimentIntensityAnalyzer()
+    results = []
+    for _, row in df.iterrows():
+        text = str(row.get("text_content", ""))
+        scores = analyzer.polarity_scores(text)
+        donem_val = row.get("Donem")
+        if (donem_val is None or donem_val == "") and ("period_date" in row):
+            try: donem_val = pd.to_datetime(row["period_date"]).strftime("%Y-%m")
+            except: donem_val = ""
+        results.append({
+            "period_date": row.get("period_date"),
+            "Donem": donem_val,
+            "vader_compound": scores["compound"],
+            "vader_pos": scores["pos"],
+            "vader_neg": scores["neg"],
+            "vader_neu": scores["neu"]
+        })
+    return pd.DataFrame(results).sort_values("period_date", ascending=True)
+
+@st.cache_resource
+def load_finbert_model():
+    if not HAS_FINBERT: return None, None
+    try:
+        model_name = "ProsusAI/finbert"
+        tokenizer = AutoTokenizer.from_pretrained(model_name)
+        model = AutoModelForSequenceClassification.from_pretrained(model_name)
+        model.eval()
+        return tokenizer, model
+    except: return None, None
+
+def calculate_finbert_series(df: pd.DataFrame) -> pd.DataFrame:
+    cols = ["period_date", "finbert_pos", "finbert_neg", "finbert_neu", "finbert_score"]
+    if not HAS_FINBERT or df is None or df.empty: return pd.DataFrame(columns=cols)
+    
+    tokenizer, model = load_finbert_model()
+    if not tokenizer or not model: return pd.DataFrame(columns=cols)
+    
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model.to(device)
+    results = []
+    progress_bar = st.progress(0)
+    total_rows = len(df)
+    
+    for i, (idx, row) in enumerate(df.iterrows()):
+        text = str(row.get("text_content", ""))
+        sentences = [s.strip() for s in re.split(r'(?<=[.!?])\s+', text) if s.strip()]
+        
+        if not sentences:
+            results.append({"period_date": row.get("period_date"), "finbert_pos":0, "finbert_neg":0, "finbert_neu":0, "finbert_score": 0})
+            continue
+            
+        sent_scores = {"positive": [], "negative": [], "neutral": [], "len": []}
+        with torch.no_grad():
+            for s in sentences:
+                inputs = tokenizer(s, return_tensors="pt", truncation=True, max_length=256).to(device)
+                outputs = model(**inputs)
+                probs = F.softmax(outputs.logits, dim=-1).squeeze().cpu().numpy()
+                sent_scores["positive"].append(float(probs[0]))
+                sent_scores["negative"].append(float(probs[1]))
+                sent_scores["neutral"].append(float(probs[2]))
+                sent_scores["len"].append(len(s))
+        
+        weights = np.array(sent_scores["len"])
+        if weights.sum() == 0:
+            w_pos, w_neg, w_neu = 0, 0, 0
+        else:
+            w_pos = np.average(sent_scores["positive"], weights=weights)
+            w_neg = np.average(sent_scores["negative"], weights=weights)
+            w_neu = np.average(sent_scores["neutral"], weights=weights)
+        
+        results.append({
+            "period_date": row.get("period_date"),
+            "finbert_pos": w_pos,
+            "finbert_neg": w_neg,
+            "finbert_neu": w_neu,
+            "finbert_score": w_pos - w_neg
+        })
+        progress_bar.progress((i + 1) / total_rows)
+        
+    progress_bar.empty()
+    return pd.DataFrame(results).sort_values("period_date", ascending=True)

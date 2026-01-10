@@ -34,14 +34,13 @@ try:
     else:
         supabase = None
 except Exception as e:
-    # Hata durumunda sessiz kal veya st.error bas
     supabase = None
 
 EVDS_BASE = "https://evds2.tcmb.gov.tr/service/evds"
 EVDS_TUFE_SERIES = "TP.FG.J0"
 
 # =============================================================================
-# 3. VERİTABANI İŞLEMLERİ
+# 3. VERİTABANI İŞLEMLERİ (MARKET LOGS & EVENTS)
 # =============================================================================
 
 def fetch_all_data():
@@ -75,6 +74,30 @@ def delete_entry(rid):
             supabase.table("market_logs").delete().eq("id", rid).execute()
         except Exception as e: st.error(f"Silme hatası: {e}")
 
+# --- EVENTS (BU KISIM EKSİKTİ, EKLENDİ) ---
+def fetch_events():
+    if not supabase: return pd.DataFrame()
+    try:
+        res = supabase.table("event_logs").select("*").order("event_date", desc=True).execute()
+        data = getattr(res, 'data', []) if res else []
+        return pd.DataFrame(data)
+    except Exception:
+        return pd.DataFrame()
+
+def add_event(date, links):
+    if not supabase: return
+    try:
+        data = {"event_date": str(date), "links": links}
+        supabase.table("event_logs").insert(data).execute()
+    except Exception as e: st.error(f"Olay ekleme hatası: {e}")
+
+def delete_event(rid):
+    if supabase:
+        try:
+            supabase.table("event_logs").delete().eq("id", rid).execute()
+        except Exception as e: st.error(f"Olay silme hatası: {e}")
+
+# --- MARKET DATA ---
 @st.cache_data(ttl=600)
 def fetch_market_data_adapter(start_date, end_date):
     if not EVDS_API_KEY: return pd.DataFrame(), "EVDS Anahtarı Eksik."
@@ -119,11 +142,10 @@ def fetch_market_data_adapter(start_date, end_date):
     return master_df.sort_values("SortDate"), None
 
 # =============================================================================
-# 4. OKUNABİLİRLİK VE FREKANS ANALİZİ (DÜZELTİLDİ)
+# 4. OKUNABİLİRLİK VE FREKANS ANALİZİ
 # =============================================================================
 
 def count_syllables_en(word):
-    """JS Logic: Length<=3 -> 1, remove silent endings, count vowel groups."""
     word = word.lower()
     if len(word) <= 3: return 1
     word = re.sub(r'(?:[^laeiouy]|ed|[^laeiouy]e)$', '', word, flags=re.IGNORECASE)
@@ -132,17 +154,11 @@ def count_syllables_en(word):
     return len(syllables) if syllables else 1
 
 def calculate_flesch_reading_ease(text):
-    """
-    JS Logic Implementation:
-    Score = 206.835 - (1.015 * ASL) - (84.6 * ASW)
-    """
     if not text: return 0
-    
-    # 1. ASL (Cleaned text)
     lines = text.split('\n')
     filtered_lines = [ln for ln in lines if not re.match(r'^\s*[-•]\s*', ln)]
     filtered_text = ' '.join(filtered_lines)
-    cleaned_text = re.sub(r'\d+\.\d+', '', filtered_text) # Remove decimals
+    cleaned_text = re.sub(r'\d+\.\d+', '', filtered_text)
     
     sentences = re.findall(r'[^\.!\?]+[\.!\?]+', cleaned_text)
     sentence_count = len(sentences) if sentences else 1
@@ -151,7 +167,6 @@ def calculate_flesch_reading_ease(text):
     total_words_cleaned = len(words_cleaned)
     average_sentence_length = total_words_cleaned / sentence_count if sentence_count > 0 else 0
     
-    # 2. ASW (Raw text)
     words_raw = [w for w in re.split(r'\s+', text) if w]
     total_words_raw = len(words_raw)
     
@@ -187,7 +202,6 @@ def get_top_terms_series(df, top_n=7, custom_stops=None):
     all_text = " ".join(df['text_content'].astype(str).tolist()).lower()
     words = re.findall(r"\b[a-z]{4,}\b", all_text)
     
-    # Kapsamlı Stopwords Listesi (Frekans analizi bozulmasın diye)
     stops = set([
         "that", "with", "this", "from", "have", "which", "will", "been", "were", 
         "market", "central", "bank", "committee", "monetary", "policy", "decision", 
@@ -234,7 +248,6 @@ def M(token_or_phrase: str, wildcard_first: bool = False):
         wild[0] = True
     return {"phrase": toks, "wild": wild, "pattern": token_or_phrase}
 
-# SENİN VERDİĞİN ORİJİNAL SÖZLÜK
 DICT = {
    "inflation": [
         {
@@ -281,7 +294,7 @@ DICT = {
            "block": "labor_market",
            "terms": ["labor market"],
            "hawk": [M("strain", True), M("tight", True)],
-           "dove": [M("eased"), M("easing"), M("loos", True), M("soft", True), M("weak", True)],
+           "dove": [M("eased", True), M("easing", True), M("loos", True), M("soft", True), M("weak", True)],
         },
         {
            "block": "unemployment",
@@ -411,7 +424,6 @@ def analyze_hawk_dove(text: str, DICT: dict, window_words: int = 7, dedupe_withi
                        "topic": topic, "block": block["block"], "direction": direction,
                        "term_found": term_found, "modifier_pattern": m["pattern"], "modifier_found": mod_found,
                        "distance": dist, "sentence": sent,
-                       # app.py uyumluluk alanları
                        "term": tinfo["term"], "type": "HAWK" if direction == "hawk" else "DOVE"
                    })
 
@@ -426,18 +438,17 @@ def analyze_hawk_dove(text: str, DICT: dict, window_words: int = 7, dedupe_withi
     return {
        "topic_counts": topic_counts,
        "matches": matches,
-       "match_details": matches, # Alias for app.py
+       "match_details": matches,
        "net_hawkishness": net_hawkishness,
        "hawk_count": hawk_total,
        "dove_count": dove_total
     }
 
 # =============================================================================
-# 6. APP.PY İÇİN ENTEGRASYON VE ML
+# 6. ENTEGRASYON VE ML
 # =============================================================================
 
 class ABGAnalyzer:
-    # app.py'de bu class kullanıldığı için, verdiğin fonksiyonu sarmalayan dummy class
     def analyze(self, text):
         return analyze_hawk_dove(text, DICT=DICT, window_words=10, dedupe_within_term_window=True, nearest_only=True)
 

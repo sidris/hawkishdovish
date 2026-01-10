@@ -351,7 +351,7 @@ class CFG:
     word_ngram: Tuple[int,int] = (1, 2)
     min_df: int = 1
     max_df: float = 1.0
-    max_features: int = 20000   
+    max_features: int = 20000    
     trend_window: int = 6
     max_splits: int = 6
     half_life_days: float = 365.0

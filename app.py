@@ -67,9 +67,9 @@ with c_head1: st.title("🦅 Şahin/Güvercin Paneli")
 with c_head2: 
     if st.button("Çıkış"): st.session_state['logged_in'] = False; st.rerun()
 
-# SEKME YAPILANDIRMASI GÜNCELLENDİ (VADER Eklendi)
-tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab_imp, tab_vader = st.tabs([
-    "📈 Dashboard", "📝 Veri Girişi", "📊 Veriler", "🔍 Frekans ve Diff Analizi", "🤖 Faiz Tahmini", "☁️ WordCloud", "📜 ABF (2019)", "📅 Önemli Tarihler", "😊 VADER Analizi"
+# SEKME YAPILANDIRMASI GÜNCELLENDİ (VADER ve FINBERT Eklendi)
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab_imp, tab_vader, tab_finbert = st.tabs([
+    "📈 Dashboard", "📝 Veri Girişi", "📊 Veriler", "🔍 Frekans ve Diff Analizi", "🤖 Faiz Tahmini", "☁️ WordCloud", "📜 ABF (2019)", "📅 Önemli Tarihler", "😊 VADER", "💰 FinBERT"
 ])
 
 # ==============================================================================
@@ -341,35 +341,47 @@ with tab5:
         df_logs = df_logs.dropna(subset=['period_date'])
         
         if not df_logs.empty:
+            # Tarih aralığı seçicisi için min/max
             min_avail_date = df_logs['period_date'].min().date()
             max_avail_date = df_logs['period_date'].max().date()
             
+            # Min_d, market verisi çekmek için
             min_val = df_logs['period_date'].min()
             if isinstance(min_val, pd.Timestamp): min_d = min_val.date()
             elif isinstance(min_val, str): min_d = pd.to_datetime(min_val).date()
             elif isinstance(min_val, datetime.date): min_d = min_val
 
+    # Market Verisi (Eğitim için geniş aralık tutuyoruz)
     df_market, err = utils.fetch_market_data_adapter(min_d, datetime.date.today())
     ml_df = utils.prepare_ml_dataset(df_logs, df_market)
 
     if not ml_df.empty and len(ml_df) > 10:
+        # 2. Modeli Eğit (Arka Planda Tüm Tarihçe ile)
         predictor = utils.AdvancedMLPredictor()
         status = predictor.train(ml_df)
         
         if status == "OK":
+            # 3. KULLANICI SEÇİMİ: Metinleri Filtreleme
             st.markdown("### 📅 Analiz İçin Dönem Seçimi")
+            
+            # Tarih Aralığı Seçicisi
             c_d1, c_d2 = st.columns(2)
             start_date_sel = c_d1.date_input("Başlangıç", value=min_avail_date, min_value=min_avail_date, max_value=max_avail_date)
             end_date_sel = c_d2.date_input("Bitiş", value=max_avail_date, min_value=min_avail_date, max_value=max_avail_date)
             
+            # Filtreleme
             filtered_logs = df_logs[(df_logs['period_date'].dt.date >= start_date_sel) & (df_logs['period_date'].dt.date <= end_date_sel)].copy()
             filtered_logs = filtered_logs.sort_values("period_date", ascending=False)
             filtered_logs['Dönem'] = filtered_logs['period_date'].dt.strftime('%Y-%m')
             
+            # --- TABLO YERİNE SEÇİM KUTUSU ---
+            # Kullanıcıya seçtirmek için dönem listesi
             period_options = filtered_logs['Dönem'].tolist()
             
             if period_options:
                 selected_period = st.selectbox("Analiz Edilecek Toplantıyı Seçin:", period_options, index=0)
+                
+                # Seçilen satırı bul
                 target_row = filtered_logs[filtered_logs['Dönem'] == selected_period].iloc[0]
                 target_text = target_row['text_content']
                 target_source = f"Seçilen Kayıt: {target_row['Dönem']}"
@@ -377,6 +389,8 @@ with tab5:
                 
                 st.divider()
                 st.subheader(f"Analiz Edilen Metin: {target_source}")
+                
+                # 4. Tahmin Yap
                 prediction = predictor.predict(target_text)
                 
                 if prediction:
@@ -393,22 +407,28 @@ with tab5:
                     with c3: st.metric("Tahmin Aralığı", f"{lo:.0f} / {hi:.0f} bps")
                     
                     st.divider()
+                    
+                    # 5. Grafik (Filtrelenmiş Aralığa Zoom Yapılmış)
                     st.subheader("📊 Model Performansı (Geçmiş)")
                     
                     if predictor.df_hist is not None:
                         hist = predictor.df_hist.copy()
                         hist['date'] = pd.to_datetime(hist['date'])
                         
+                        # Grafiği de seçilen tarih aralığına göre (biraz genişleterek) filtreleyelim
                         chart_start = pd.to_datetime(start_date_sel) - pd.Timedelta(days=90)
                         chart_end = pd.to_datetime(end_date_sel) + pd.Timedelta(days=90)
+                        
                         hist_view = hist[(hist['date'] >= chart_start) & (hist['date'] <= chart_end)]
                         
                         if not hist_view.empty:
                             fig = go.Figure()
+                            # Gerçekleşen
                             fig.add_trace(go.Bar(
                                 x=hist_view['date'], y=hist_view['y_bps'],
                                 name="Gerçekleşen Değişim", marker_color='gray', opacity=0.5
                             ))
+                            # Geçmiş Tahminler
                             if 'predicted_bps' in hist_view.columns:
                                 hist_pred = hist_view.dropna(subset=['predicted_bps'])
                                 fig.add_trace(go.Scatter(
@@ -416,6 +436,8 @@ with tab5:
                                     name="Model Geçmiş Tahminleri", 
                                     line=dict(color='blue', width=2, dash='dot')
                                 ))
+                            
+                            # Şu anki tahmin noktası (Eğer seçilen tarih grafik aralığındaysa)
                             if chart_start <= selected_date_for_chart <= chart_end:
                                 fig.add_trace(go.Scatter(
                                     x=[selected_date_for_chart], 
@@ -424,6 +446,7 @@ with tab5:
                                     marker=dict(color=color, size=15, symbol='star'),
                                     name=f"Seçilen ({target_source}) Tahmini"
                                 ))
+                            
                             fig.update_layout(hovermode="x unified", title="Faiz Değişimleri ve Tahminler")
                             st.plotly_chart(fig, use_container_width=True)
                         else:
@@ -538,7 +561,6 @@ with tab_imp:
     else:
         st.info("Henüz kayıtlı bir olay yok.")
 
-# YENİ EKLENEN VADER SEKMESİ
 with tab_vader:
     st.header("😊 VADER Duygu Analizi")
     st.info("VADER, metinlerdeki duygu yoğunluğunu ölçer. (Not: Kütüphane İngilizce odaklıdır, Türkçe metinlerde skorlar düşük kalabilir)")
@@ -574,3 +596,42 @@ with tab_vader:
             st.dataframe(vader_df, use_container_width=True)
         else:
             st.info("Veri yok.")
+
+with tab_finbert:
+    st.header("💰 FinBERT Analizi (ProsusAI)")
+    st.info("FinBERT, finansal metinler için eğitilmiş bir BERT modelidir. (Not: Bu model İngilizce metinlerde en iyi sonucu verir. Türkçe metinlerde sonuçlar nötr çıkabilir.)")
+    
+    if not utils.HAS_FINBERT:
+        st.error("Gerekli kütüphaneler (torch, transformers) eksik.")
+    else:
+        # Analizi Çalıştır Butonu (Çünkü yavaş olabilir)
+        if st.button("FinBERT Analizini Başlat (Yavaş Olabilir)", type="primary"):
+            df_logs = utils.fetch_all_data()
+            if not df_logs.empty:
+                df_logs['period_date'] = pd.to_datetime(df_logs['period_date'])
+                df_logs['Donem'] = df_logs['period_date'].dt.strftime('%Y-%m')
+                
+                with st.spinner("FinBERT modeli yükleniyor ve metinler analiz ediliyor..."):
+                    finbert_df = utils.calculate_finbert_series(df_logs)
+                
+                if not finbert_df.empty:
+                    # Zaman Serisi
+                    st.subheader("📈 FinBERT Duygu Skoru (Ağırlıklı)")
+                    fig_fb = go.Figure()
+                    fig_fb.add_trace(go.Scatter(x=finbert_df['period_date'], y=finbert_df['finbert_score'], mode='lines+markers', name='Net Skor', line=dict(color='darkblue')))
+                    fig_fb.add_hline(y=0, line_dash="dash", line_color="gray")
+                    fig_fb.update_layout(title="Net Skor (Pozitif - Negatif)", hovermode="x unified")
+                    st.plotly_chart(fig_fb, use_container_width=True)
+                    
+                    # Bileşenler
+                    st.subheader("📊 Duygu Bileşenleri")
+                    fig_comp = go.Figure()
+                    fig_comp.add_trace(go.Bar(x=finbert_df['period_date'], y=finbert_df['finbert_pos'], name='Pozitif', marker_color='green'))
+                    fig_comp.add_trace(go.Bar(x=finbert_df['period_date'], y=finbert_df['finbert_neg'], name='Negatif', marker_color='red'))
+                    fig_comp.add_trace(go.Scatter(x=finbert_df['period_date'], y=finbert_df['finbert_neu'], name='Nötr', line=dict(color='gray', dash='dot')))
+                    fig_comp.update_layout(barmode='group', hovermode="x unified")
+                    st.plotly_chart(fig_comp, use_container_width=True)
+                    
+                    st.dataframe(finbert_df, use_container_width=True)
+            else:
+                st.info("Analiz edilecek veri yok.")

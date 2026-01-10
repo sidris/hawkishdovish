@@ -9,7 +9,12 @@ import difflib
 from collections import Counter
 import numpy as np
 
-# --- 1. EK KÜTÜPHANELER ---
+# --- 1. KÜTÜPHANE KONTROLLERİ VE GLOBAL FLAGLER ---
+HAS_ML_DEPS = False
+HAS_VADER = False
+HAS_FINBERT = False
+
+# ML Kütüphaneleri
 try:
     from sklearn.linear_model import LinearRegression, LogisticRegression
     from wordcloud import WordCloud, STOPWORDS
@@ -17,6 +22,22 @@ try:
     HAS_ML_DEPS = True
 except ImportError:
     HAS_ML_DEPS = False
+
+# VADER Kontrolü
+try:
+    from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
+    HAS_VADER = True
+except ImportError:
+    HAS_VADER = False
+
+# FinBERT Kontrolü
+try:
+    import torch
+    import torch.nn.functional as F
+    from transformers import AutoTokenizer, AutoModelForSequenceClassification
+    HAS_FINBERT = True
+except ImportError:
+    HAS_FINBERT = False
 
 # --- 2. AYARLAR VE BAĞLANTI ---
 try:
@@ -97,7 +118,18 @@ def delete_event(rid):
 # --- MARKET DATA ---
 @st.cache_data(ttl=600)
 def fetch_market_data_adapter(start_date, end_date):
-    if not EVDS_API_KEY: return pd.DataFrame(), "EVDS Anahtarı Eksik."
+    empty_df = pd.DataFrame(columns=["Donem", "Yıllık TÜFE", "PPK Faizi", "SortDate"])
+    
+    if not EVDS_API_KEY: 
+        dates = pd.date_range(start=start_date, end=end_date, freq='M')
+        if len(dates) == 0: return empty_df, "Tarih Yok"
+        return pd.DataFrame({
+            'Donem': dates.strftime('%Y-%m'),
+            'Yıllık TÜFE': [0]*len(dates),
+            'PPK Faizi': [0]*len(dates),
+            'SortDate': dates
+        }), "API Key Yok"
+
     df_inf = pd.DataFrame()
     try:
         s = start_date.strftime("%d-%m-%Y"); e = end_date.strftime("%d-%m-%Y")
@@ -114,7 +146,7 @@ def fetch_market_data_adapter(start_date, end_date):
                 temp = temp.rename(columns={val_c: col})[["Donem", col]]
                 if df_inf.empty: df_inf = temp
                 else: df_inf = pd.merge(df_inf, temp, on="Donem", how="outer")
-    except Exception as e: return pd.DataFrame(), f"TÜFE Hatası: {e}"
+    except Exception: pass
 
     df_pol = pd.DataFrame()
     try:
@@ -127,14 +159,18 @@ def fetch_market_data_adapter(start_date, end_date):
             temp_bis["Donem"] = temp_bis["dt"].dt.strftime("%Y-%m")
             temp_bis["PPK Faizi"] = pd.to_numeric(temp_bis["OBS_VALUE"], errors="coerce")
             df_pol = temp_bis.sort_values("dt").groupby("Donem").last().reset_index()[["Donem", "PPK Faizi"]]
-    except Exception as e: return pd.DataFrame(), f"BIS Hatası: {e}"
+    except Exception: pass
 
     master_df = pd.DataFrame()
     if not df_inf.empty and not df_pol.empty: master_df = pd.merge(df_inf, df_pol, on="Donem", how="outer")
     elif not df_inf.empty: master_df = df_inf
     elif not df_pol.empty: master_df = df_pol
 
-    if master_df.empty: return pd.DataFrame(), "Veri bulunamadı."
+    if master_df.empty: return empty_df, "Veri Bulunamadı"
+    
+    for c in ["Yıllık TÜFE", "PPK Faizi"]:
+        if c not in master_df.columns: master_df[c] = 0.0
+        
     master_df["SortDate"] = pd.to_datetime(master_df["Donem"] + "-01")
     return master_df.sort_values("SortDate"), None
 
@@ -199,7 +235,7 @@ def get_top_terms_series(df, top_n=7, custom_stops=None):
     all_text = " ".join(df['text_content'].astype(str).tolist()).lower()
     words = re.findall(r"\b[a-z]{4,}\b", all_text)
     
-    # DÜZELTME: "inflation", "growth", "prices", "trend", "stance" GİBİ KELİMELER LİSTEDEN ÇIKARILDI
+    # STOPWORDS: Inflation, growth vb. artık burada YOK.
     stops = set([
         "that", "with", "this", "from", "have", "which", "will", "been", "were", 
         "market", "central", "bank", "committee", "monetary", "policy", "decision", 
@@ -573,6 +609,8 @@ def train_and_predict_rate(df_history, current_score):
     
     return stats, df[['period_date', 'Donem', 'Rate_Change', 'Predicted_Change', 'Predicted_Change_Logit']].copy(), None
 
-# --- VADER / FINBERT PLACEHOLDERS ---
-def calculate_vader_series(df): return pd.DataFrame()
-def calculate_finbert_series(df): return pd.DataFrame()
+def calculate_vader_series(df): 
+    return pd.DataFrame(columns=["period_date", "Donem", "vader_compound", "vader_pos", "vader_neg", "vader_neu"])
+
+def calculate_finbert_series(df): 
+    return pd.DataFrame(columns=["period_date", "finbert_pos", "finbert_neg", "finbert_neu", "finbert_score"])

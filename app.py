@@ -67,7 +67,7 @@ with c_head1: st.title("🦅 Şahin/Güvercin Paneli")
 with c_head2: 
     if st.button("Çıkış"): st.session_state['logged_in'] = False; st.rerun()
 
-# SEKME YAPILANDIRMASI GÜNCELLENDİ (VADER ve FINBERT Eklendi)
+# SEKME YAPILANDIRMASI
 tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab_imp, tab_vader, tab_finbert = st.tabs([
     "📈 Dashboard", "📝 Veri Girişi", "📊 Veriler", "🔍 Frekans ve Diff Analizi", "🤖 Faiz Tahmini", "☁️ WordCloud", "📜 ABF (2019)", "📅 Önemli Tarihler", "😊 VADER", "💰 FinBERT"
 ])
@@ -102,9 +102,14 @@ with tab1:
         if 'PPK Faizi' in merged.columns: merged['PPK Faizi'] = pd.to_numeric(merged['PPK Faizi'], errors='coerce')
         
         fig = make_subplots(specs=[[{"secondary_y": True}]])
+        
+        # Word Count
         fig.add_trace(go.Bar(x=merged['period_date'], y=merged['word_count'], name="Metin Uzunluğu", marker=dict(color='gray'), opacity=0.10, yaxis="y3", hoverinfo="x+y+name"))
-        fig.add_trace(go.Scatter(x=merged['period_date'], y=merged['score_abg_scaled'], name="Şahin/Güvercin Skoru (Klasik)", line=dict(color='black', width=2, dash='dot'), marker=dict(size=6, color='black'), yaxis="y"))
-        fig.add_trace(go.Scatter(x=merged['period_date'], y=merged['abg_dashboard_val'], name="ABG 2019", line=dict(color='navy', width=4), yaxis="y"))
+        
+        # --- İSİM DEĞİŞİKLİĞİ YAPILAN SATIRLAR ---
+        fig.add_trace(go.Scatter(x=merged['period_date'], y=merged['score_abg_scaled'], name="Şahin/Güvercin-Hibrit", line=dict(color='black', width=2, dash='dot'), marker=dict(size=6, color='black'), yaxis="y"))
+        fig.add_trace(go.Scatter(x=merged['period_date'], y=merged['abg_dashboard_val'], name="Şahin/Güvercin ABG 2019", line=dict(color='navy', width=4), yaxis="y"))
+        # ----------------------------------------
         
         if 'Yıllık TÜFE' in merged.columns: fig.add_trace(go.Scatter(x=merged['period_date'], y=merged['Yıllık TÜFE'], name="Yıllık TÜFE (%)", line=dict(color='red', dash='dot'), yaxis="y"))
         if 'PPK Faizi' in merged.columns: fig.add_trace(go.Scatter(x=merged['period_date'], y=merged['PPK Faizi'], name="Faiz (%)", line=dict(color='orange', dash='dot'), yaxis="y"))

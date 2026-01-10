@@ -67,9 +67,9 @@ with c_head1: st.title("🦅 Şahin/Güvercin Paneli")
 with c_head2: 
     if st.button("Çıkış"): st.session_state['logged_in'] = False; st.rerun()
 
-# SEKME YAPILANDIRMASI GÜNCELLENDİ (Yeni Algoritma kaldırıldı, Tab 4 ismi değişti, Önemli Tarihler eklendi)
-tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab_imp = st.tabs([
-    "📈 Dashboard", "📝 Veri Girişi", "📊 Veriler", "🔍 Frekans ve Diff Analizi", "🤖 Faiz Tahmini", "☁️ WordCloud", "📜 ABF (2019)", "📅 Önemli Tarihler"
+# SEKME YAPILANDIRMASI GÜNCELLENDİ (VADER Eklendi)
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab_imp, tab_vader = st.tabs([
+    "📈 Dashboard", "📝 Veri Girişi", "📊 Veriler", "🔍 Frekans ve Diff Analizi", "🤖 Faiz Tahmini", "☁️ WordCloud", "📜 ABF (2019)", "📅 Önemli Tarihler", "😊 VADER Analizi"
 ])
 
 # ==============================================================================
@@ -78,7 +78,7 @@ tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab_imp = st.tabs([
 with tab1:
     with st.spinner("Veriler Yükleniyor..."):
         df_logs = utils.fetch_all_data()
-        df_events = utils.fetch_events() # Önemli olayları çek
+        df_events = utils.fetch_events() 
     
     if not df_logs.empty:
         df_logs['period_date'] = pd.to_datetime(df_logs['period_date'])
@@ -124,22 +124,16 @@ with tab1:
             layout_shapes.append(dict(type="line", xref="x", yref="paper", x0=start_date, x1=start_date, y0=0, y1=1, line=dict(color="gray", width=1, dash="longdash"), layer="below"))
             layout_annotations.append(dict(x=start_date, y=1.02, xref="x", yref="paper", text=f" <b>{name.split()[0][0]}.{name.split()[-1]}</b>", showarrow=False, xanchor="left", font=dict(size=9, color="#555")))
 
-        # --- YENİ EKLENTİ: ÖNEMLİ OLAYLAR ---
         event_links_display = []
         if not df_events.empty:
             for _, ev in df_events.iterrows():
                 ev_date = pd.to_datetime(ev['event_date']).strftime('%Y-%m-%d')
-                
-                # 1. Dikey Çizgi
                 layout_shapes.append(dict(
                     type="line", xref="x", yref="paper",
                     x0=ev_date, x1=ev_date, y0=0, y1=1,
                     line=dict(color="purple", width=2, dash="dot")
                 ))
-                
-                # 2. Etiket (HTML linkler Plotly'de her zaman düzgün çalışmayabilir, o yüzden aşağıya liste de ekliyoruz)
                 first_link = ev['links'].split('\n')[0] if ev['links'] else ""
-                
                 layout_annotations.append(dict(
                     x=ev_date, y=0.05, xref="x", yref="paper",
                     text=f"ℹ️ <a href='{first_link}' target='_blank'>Haber</a>",
@@ -147,8 +141,6 @@ with tab1:
                     font=dict(size=10, color="purple"),
                     bgcolor="rgba(255,255,255,0.7)"
                 ))
-                
-                # Aşağıdaki liste için veri hazırla
                 if ev['links']:
                     links_list = [l.strip() for l in ev['links'].split('\n') if l.strip()]
                     event_links_display.append({"Tarih": ev_date, "Linkler": links_list})
@@ -163,7 +155,6 @@ with tab1:
         )
         st.plotly_chart(fig, use_container_width=True)
         
-        # Grafiğin Altında Linkleri Listele (Garantili Erişim İçin)
         if event_links_display:
             with st.expander("📅 Grafikteki Önemli Tarihler ve Haber Linkleri", expanded=False):
                 for item in event_links_display:
@@ -350,47 +341,35 @@ with tab5:
         df_logs = df_logs.dropna(subset=['period_date'])
         
         if not df_logs.empty:
-            # Tarih aralığı seçicisi için min/max
             min_avail_date = df_logs['period_date'].min().date()
             max_avail_date = df_logs['period_date'].max().date()
             
-            # Min_d, market verisi çekmek için
             min_val = df_logs['period_date'].min()
             if isinstance(min_val, pd.Timestamp): min_d = min_val.date()
             elif isinstance(min_val, str): min_d = pd.to_datetime(min_val).date()
             elif isinstance(min_val, datetime.date): min_d = min_val
 
-    # Market Verisi (Eğitim için geniş aralık tutuyoruz)
     df_market, err = utils.fetch_market_data_adapter(min_d, datetime.date.today())
     ml_df = utils.prepare_ml_dataset(df_logs, df_market)
 
     if not ml_df.empty and len(ml_df) > 10:
-        # 2. Modeli Eğit (Arka Planda Tüm Tarihçe ile)
         predictor = utils.AdvancedMLPredictor()
         status = predictor.train(ml_df)
         
         if status == "OK":
-            # 3. KULLANICI SEÇİMİ: Metinleri Filtreleme
             st.markdown("### 📅 Analiz İçin Dönem Seçimi")
-            
-            # Tarih Aralığı Seçicisi
             c_d1, c_d2 = st.columns(2)
             start_date_sel = c_d1.date_input("Başlangıç", value=min_avail_date, min_value=min_avail_date, max_value=max_avail_date)
             end_date_sel = c_d2.date_input("Bitiş", value=max_avail_date, min_value=min_avail_date, max_value=max_avail_date)
             
-            # Filtreleme
             filtered_logs = df_logs[(df_logs['period_date'].dt.date >= start_date_sel) & (df_logs['period_date'].dt.date <= end_date_sel)].copy()
             filtered_logs = filtered_logs.sort_values("period_date", ascending=False)
             filtered_logs['Dönem'] = filtered_logs['period_date'].dt.strftime('%Y-%m')
             
-            # --- TABLO YERİNE SEÇİM KUTUSU ---
-            # Kullanıcıya seçtirmek için dönem listesi
             period_options = filtered_logs['Dönem'].tolist()
             
             if period_options:
                 selected_period = st.selectbox("Analiz Edilecek Toplantıyı Seçin:", period_options, index=0)
-                
-                # Seçilen satırı bul
                 target_row = filtered_logs[filtered_logs['Dönem'] == selected_period].iloc[0]
                 target_text = target_row['text_content']
                 target_source = f"Seçilen Kayıt: {target_row['Dönem']}"
@@ -398,8 +377,6 @@ with tab5:
                 
                 st.divider()
                 st.subheader(f"Analiz Edilen Metin: {target_source}")
-                
-                # 4. Tahmin Yap
                 prediction = predictor.predict(target_text)
                 
                 if prediction:
@@ -416,28 +393,22 @@ with tab5:
                     with c3: st.metric("Tahmin Aralığı", f"{lo:.0f} / {hi:.0f} bps")
                     
                     st.divider()
-                    
-                    # 5. Grafik (Filtrelenmiş Aralığa Zoom Yapılmış)
                     st.subheader("📊 Model Performansı (Geçmiş)")
                     
                     if predictor.df_hist is not None:
                         hist = predictor.df_hist.copy()
                         hist['date'] = pd.to_datetime(hist['date'])
                         
-                        # Grafiği de seçilen tarih aralığına göre (biraz genişleterek) filtreleyelim
                         chart_start = pd.to_datetime(start_date_sel) - pd.Timedelta(days=90)
                         chart_end = pd.to_datetime(end_date_sel) + pd.Timedelta(days=90)
-                        
                         hist_view = hist[(hist['date'] >= chart_start) & (hist['date'] <= chart_end)]
                         
                         if not hist_view.empty:
                             fig = go.Figure()
-                            # Gerçekleşen
                             fig.add_trace(go.Bar(
                                 x=hist_view['date'], y=hist_view['y_bps'],
                                 name="Gerçekleşen Değişim", marker_color='gray', opacity=0.5
                             ))
-                            # Geçmiş Tahminler
                             if 'predicted_bps' in hist_view.columns:
                                 hist_pred = hist_view.dropna(subset=['predicted_bps'])
                                 fig.add_trace(go.Scatter(
@@ -445,8 +416,6 @@ with tab5:
                                     name="Model Geçmiş Tahminleri", 
                                     line=dict(color='blue', width=2, dash='dot')
                                 ))
-                            
-                            # Şu anki tahmin noktası (Eğer seçilen tarih grafik aralığındaysa)
                             if chart_start <= selected_date_for_chart <= chart_end:
                                 fig.add_trace(go.Scatter(
                                     x=[selected_date_for_chart], 
@@ -455,7 +424,6 @@ with tab5:
                                     marker=dict(color=color, size=15, symbol='star'),
                                     name=f"Seçilen ({target_source}) Tahmini"
                                 ))
-                            
                             fig.update_layout(hovermode="x unified", title="Faiz Değişimleri ve Tahminler")
                             st.plotly_chart(fig, use_container_width=True)
                         else:
@@ -554,7 +522,6 @@ with tab_imp:
     events = utils.fetch_events()
     
     if not events.empty:
-        # Tabloyu göster ve silme işlemi
         for idx, row in events.iterrows():
             with st.container(border=True):
                 col1, col2, col3 = st.columns([2, 5, 1])
@@ -570,3 +537,40 @@ with tab_imp:
                         st.rerun()
     else:
         st.info("Henüz kayıtlı bir olay yok.")
+
+# YENİ EKLENEN VADER SEKMESİ
+with tab_vader:
+    st.header("😊 VADER Duygu Analizi")
+    st.info("VADER, metinlerdeki duygu yoğunluğunu ölçer. (Not: Kütüphane İngilizce odaklıdır, Türkçe metinlerde skorlar düşük kalabilir)")
+    
+    if not utils.HAS_VADER:
+        st.error("vaderSentiment kütüphanesi eksik. Lütfen `pip install vaderSentiment` çalıştırın.")
+    else:
+        df_logs = utils.fetch_all_data()
+        if not df_logs.empty:
+            df_logs['period_date'] = pd.to_datetime(df_logs['period_date'])
+            df_logs['Donem'] = df_logs['period_date'].dt.strftime('%Y-%m')
+            
+            # Analizi çalıştır
+            vader_df = utils.calculate_vader_series(df_logs)
+            
+            # Zaman Serisi Grafiği
+            st.subheader("📈 Duygu Tonu Zaman Serisi (Compound Skor)")
+            fig_v = go.Figure()
+            fig_v.add_trace(go.Scatter(x=vader_df['period_date'], y=vader_df['vader_compound'], mode='lines+markers', name='Compound', line=dict(color='blue')))
+            fig_v.add_hline(y=0, line_dash="dash", line_color="gray")
+            fig_v.update_layout(title="VADER Compound Skoru (-1: Negatif, +1: Pozitif)", hovermode="x unified")
+            st.plotly_chart(fig_v, use_container_width=True)
+            
+            # Bar Grafiği
+            st.subheader("📊 Pozitif ve Negatif Skorlar")
+            fig_pn = go.Figure()
+            fig_pn.add_trace(go.Bar(x=vader_df['period_date'], y=vader_df['vader_pos'], name='Pozitif', marker_color='green'))
+            fig_pn.add_trace(go.Bar(x=vader_df['period_date'], y=vader_df['vader_neg'], name='Negatif', marker_color='red'))
+            fig_pn.update_layout(title="Pozitif ve Negatif Bileşenler", barmode='group', hovermode="x unified")
+            st.plotly_chart(fig_pn, use_container_width=True)
+
+            # Tablo
+            st.dataframe(vader_df, use_container_width=True)
+        else:
+            st.info("Veri yok.")

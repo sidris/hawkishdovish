@@ -538,7 +538,7 @@ def calculate_abg_scores(df):
     return pd.DataFrame(rows)
 
 # =============================================================================
-# 7. ML ALGORİTMASI (Ridge + Logistic, Colab ile Eşitlendi)
+# 7. ML ALGORİTMASI (Ridge + Logistic)
 # =============================================================================
 
 @dataclass
@@ -847,13 +847,16 @@ def prepare_ml_dataset(df_logs, df_market):
     # Colab mantığına uygun text clean
     df['text'] = df['text_content'].fillna("").apply(normalize_tr_text)
     
+    # FAİZ DEĞİŞİMİ HESAPLAMA (PPK Faizi'nden otomatik)
     if 'PPK Faizi' in df.columns:
         df['rate_change_bps'] = df['PPK Faizi'].diff().fillna(0.0) * 100
+        # Colab'da kullanılan kolon isimleri: date, text, rate_change_bps
         return pd.DataFrame({
             "date": df['period_date'],
             "text": df['text'],
             "rate_change_bps": df['rate_change_bps']
         }).dropna()
+    
     return pd.DataFrame()
 
 class AdvancedMLPredictor:

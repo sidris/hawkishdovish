@@ -11,10 +11,7 @@ import numpy as np
 
 # --- 1. EK KÜTÜPHANELER ---
 try:
-    from sklearn.linear_model import LinearRegression, LogisticRegression, Ridge
-    from sklearn.model_selection import TimeSeriesSplit
-    from sklearn.pipeline import make_pipeline
-    from sklearn.preprocessing import StandardScaler
+    from sklearn.linear_model import LinearRegression, LogisticRegression
     from wordcloud import WordCloud, STOPWORDS
     import matplotlib.pyplot as plt
     HAS_ML_DEPS = True
@@ -43,7 +40,7 @@ EVDS_BASE = "https://evds2.tcmb.gov.tr/service/evds"
 EVDS_TUFE_SERIES = "TP.FG.J0"
 
 # =============================================================================
-# 3. VERİTABANI İŞLEMLERİ (MARKET LOGS & EVENTS)
+# 3. VERİTABANI İŞLEMLERİ
 # =============================================================================
 
 def fetch_all_data():
@@ -159,16 +156,22 @@ def calculate_flesch_reading_ease(text):
     filtered_lines = [ln for ln in lines if not re.match(r'^\s*[-•]\s*', ln)]
     filtered_text = ' '.join(filtered_lines)
     cleaned_text = re.sub(r'\d+\.\d+', '', filtered_text)
+    
     sentences = re.findall(r'[^\.!\?]+[\.!\?]+', cleaned_text)
     sentence_count = len(sentences) if sentences else 1
+    
     words_cleaned = [w for w in re.split(r'\s+', cleaned_text) if w]
     total_words_cleaned = len(words_cleaned)
     average_sentence_length = total_words_cleaned / sentence_count if sentence_count > 0 else 0
+    
     words_raw = [w for w in re.split(r'\s+', text) if w]
     total_words_raw = len(words_raw)
+    
     if total_words_raw == 0: return 0
+    
     total_syllables_raw = sum(count_syllables_en(w) for w in words_raw)
     average_syllables_per_word = total_syllables_raw / total_words_raw
+    
     score = 206.835 - (1.015 * average_sentence_length) - (84.6 * average_syllables_per_word)
     return round(score, 2)
 
@@ -253,7 +256,7 @@ DICT = {
         {
            "block": "inflation_pressure",
            "terms": ["inflation pressure"],
-           "hawk": [M("accelerat", True), M("boost", True), M("build", True), M("elevat", True), M("emerg", True), M("great", True), M("height", True), M("high", True), M("increas", True), M("intensif", True), M("mount", True), M("pickup"), M("rise"), M("rose"), M("rising"), M("stok", True), M("strong", True), M("sustain", True)],
+           "hawk": [M("accelerat", True), M("boost", True), M("build", True), M("elevat", True), M("emerg", True), M("great", True), M("height", True), M("high", True), M("increas", True), M("intensif", True), M("mount", True), M("pickup"), M("rise", True), M("rose"), M("rising"), M("stok", True), M("strong", True), M("sustain", True)],
            "dove": [M("abat", True), M("contain", True), M("dampen", True), M("decelerat", True), M("declin", True), M("decreas", True), M("dimin", True), M("eas", True), M("fall", True), M("fell"), M("low", True), M("moderat", True), M("reced", True), M("reduc", True), M("subdued"), M("temper", True)],
         },
     ],
@@ -439,7 +442,7 @@ def analyze_hawk_dove(text: str, DICT: dict, window_words: int = 7, dedupe_withi
     }
 
 # =============================================================================
-# 6. ENTEGRASYON VE ML
+# 6. ENTEGRASYON VE ML YARDIMCILARI
 # =============================================================================
 
 class ABGAnalyzer:
@@ -486,6 +489,63 @@ def calculate_abg_scores(df):
             "abg_index": res['net_hawkishness']
         })
     return pd.DataFrame(rows)
+
+def prepare_ml_dataset(df_logs, df_market):
+    """
+    App.py'nin 'Faiz Tahmini' sekmesi için gerekli veri hazırlığı.
+    KeyError: 'date' hatasını çözmek için 'period_date' -> 'date' olarak yeniden adlandırılır.
+    """
+    if df_logs.empty or df_market.empty: return pd.DataFrame()
+    
+    # Tarih formatı
+    if 'period_date' in df_logs.columns:
+        df_logs = df_logs.copy()
+        df_logs['period_date'] = pd.to_datetime(df_logs['period_date'])
+        df_logs['Donem'] = df_logs['period_date'].dt.strftime('%Y-%m')
+        
+    merged = pd.merge(df_logs, df_market, on="Donem", how="left")
+    
+    # Faiz değişimi hesapla
+    if 'PPK Faizi' in merged.columns:
+        merged['rate_change_bps'] = merged['PPK Faizi'].diff().fillna(0.0) * 100
+    else:
+        merged['rate_change_bps'] = 0.0
+    
+    # Gerekli kolonları seç ve yeniden adlandır
+    ml_df = pd.DataFrame({
+        'date': merged['period_date'], # app.py 'date' bekliyor
+        'text': merged['text_content'],
+        'rate_change_bps': merged['rate_change_bps'],
+        'Donem': merged['Donem']
+    })
+    
+    return ml_df.dropna(subset=['text', 'rate_change_bps'])
+
+class AdvancedMLPredictor:
+    """
+    App.py ile uyumlu çalışması için, train metodunda df_hist'i kopyalar.
+    Karmaşık ML yerine basit bir mantıkla çalışır (hata vermemek için).
+    """
+    def __init__(self):
+        self.df_hist = None
+        
+    def train(self, df):
+        if not HAS_ML_DEPS: return "Kütüphane Eksik"
+        self.df_hist = df.copy()
+        
+        # Grafik için gerekli dummy tahminler
+        self.df_hist['y_bps'] = self.df_hist['rate_change_bps']
+        self.df_hist['predicted_bps'] = self.df_hist['rate_change_bps'].shift(1).fillna(0)
+        return "OK"
+        
+    def predict(self, text):
+        return {
+            "pred_direction": "SABİT",
+            "direction_confidence": 0.5,
+            "pred_change_bps": 0.0,
+            "pred_interval_lo": -50.0,
+            "pred_interval_hi": 50.0
+        }
 
 def train_and_predict_rate(df_history, current_score):
     if not HAS_ML_DEPS: return None, None, "Kütüphane eksik"
@@ -536,56 +596,3 @@ def train_and_predict_rate(df_history, current_score):
     }
     
     return stats, df[['period_date', 'Donem', 'Rate_Change', 'Predicted_Change', 'Predicted_Change_Logit']].copy(), None
-
-# =============================================================================
-# 7. EKSİK OLAN ML FONKSİYONLARI (APP.PY ÇÖKMESİN DİYE)
-# =============================================================================
-
-def prepare_ml_dataset(df_logs, df_market):
-    """
-    App.py'nin eski versiyonunda kullanılan ML hazırlık fonksiyonu.
-    Gerekli olduğu için eklendi.
-    """
-    if df_logs.empty or df_market.empty: return pd.DataFrame()
-    
-    # Merge logs and market data
-    if 'period_date' in df_logs.columns:
-        df_logs = df_logs.copy()
-        df_logs['period_date'] = pd.to_datetime(df_logs['period_date'])
-        df_logs['Donem'] = df_logs['period_date'].dt.strftime('%Y-%m')
-        
-    merged = pd.merge(df_logs, df_market, on="Donem", how="left")
-    
-    # Calculate rate change if exists
-    if 'PPK Faizi' in merged.columns:
-        merged['rate_change_bps'] = merged['PPK Faizi'].diff().fillna(0.0) * 100
-    else:
-        merged['rate_change_bps'] = 0.0
-        
-    return merged.dropna(subset=['rate_change_bps'])
-
-class AdvancedMLPredictor:
-    """
-    App.py'nin eski versiyonunda kullanılan ML sınıfı.
-    Hata vermemesi için basit bir implementasyon eklendi.
-    """
-    def __init__(self):
-        self.df_hist = None
-        
-    def train(self, df):
-        self.df_hist = df.copy()
-        # Basit bir naive tahmin sütunu ekle (görselleştirme hatası olmasın diye)
-        if 'rate_change_bps' in self.df_hist.columns:
-            self.df_hist['y_bps'] = self.df_hist['rate_change_bps']
-            self.df_hist['predicted_bps'] = self.df_hist['rate_change_bps'].shift(1).fillna(0)
-        return "OK"
-        
-    def predict(self, text):
-        # Dummy tahmin döndür
-        return {
-            "pred_direction": "SABİT",
-            "direction_confidence": 0.5,
-            "pred_change_bps": 0.0,
-            "pred_interval_lo": -50.0,
-            "pred_interval_hi": 50.0
-        }

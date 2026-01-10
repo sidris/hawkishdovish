@@ -102,7 +102,6 @@ def delete_entry(rid):
             supabase.table("market_logs").delete().eq("id", rid).execute()
         except Exception as e: st.error(f"Silme hatası: {e}")
 
-# --- EKLENEN FONKSİYONLAR (EVENT LOGS) ---
 def fetch_events():
     if not supabase: return pd.DataFrame()
     try:
@@ -171,7 +170,7 @@ def fetch_market_data_adapter(start_date, end_date):
     return master_df.sort_values("SortDate"), None
 
 # =============================================================================
-# 4. METİN ANALİZİ (JS REFERANSLI FLESCH ALGORİTMASI)
+# 4. METİN ANALİZİ (GENEL)
 # =============================================================================
 
 NOUNS = {
@@ -246,6 +245,7 @@ def make_ngrams(tokens, n):
     return [" ".join(tokens[i:i+n]) for i in range(len(tokens) - n + 1)]
 
 def run_full_analysis(text):
+    """APP.PY İÇİN GENEL ANALİZ FONKSİYONU"""
     if not text: return 0, 0, 0, [], [], {}, {}, 0
     clean_text = text.lower()
     tokens = re.findall(r"[a-z']+", clean_text)
@@ -636,6 +636,97 @@ def predict_next(df_hist, next_text, clf_pipe, reg_cut_pipe, reg_hike_pipe, reg_
         "pred_interval_hi": float(clip_bps(pred + hi_w))
     }
 
+# --- VERİ HAZIRLAMA & ANA MOTOR ---
+def prepare_ml_dataset(df_logs, df_market):
+    """DB verilerini ML motorunun beklediği formata sokar."""
+    if df_logs.empty or df_market.empty: return pd.DataFrame()
+    
+    if 'Donem' not in df_logs.columns and 'period_date' in df_logs.columns:
+        df_logs = df_logs.copy()
+        df_logs['period_date'] = pd.to_datetime(df_logs['period_date'])
+        df_logs['Donem'] = df_logs['period_date'].dt.strftime('%Y-%m')
+    
+    if 'Donem' not in df_market.columns:
+        return pd.DataFrame()
+
+    # 1. Merge
+    df = pd.merge(df_logs, df_market, on="Donem", how="left")
+    df = df.sort_values("period_date").reset_index(drop=True)
+    
+    # 2. Rate Change Calculation (Current - Previous)
+    df['rate_change_bps'] = df['PPK Faizi'].diff().fillna(0.0) * 100
+    
+    # 3. Columns mapping
+    ml_df = pd.DataFrame({
+        "date": df['period_date'],
+        "text": df['text_content'],
+        "rate_change_bps": df['rate_change_bps']
+    })
+    
+    # NaN temizliği
+    ml_df = ml_df.dropna(subset=['text', 'rate_change_bps'])
+    return ml_df
+
+class AdvancedMLPredictor:
+    def __init__(self):
+        self.clf_pipe = None
+        self.reg_pipes = {}
+        self.intervals = {}
+        self.df_hist = None
+        self.metrics = {}
+        
+    def train(self, ml_df):
+        if not HAS_ML_DEPS: return "Kütüphane eksik"
+        
+        df = add_features(ml_df, trend_window=cfg.trend_window)
+        self.df_hist = df # Tahmin için lazım
+        
+        numeric_cols = [
+            "prev_change_bps", "prev_abs_change", "prev_sign",
+            "hold_streak", "mean_abs_last3", "days_since_prev",
+            "roll_mean_bps", "roll_std_bps", "roll_slope_bps", "momentum_bps", "vol_ratio"
+        ]
+        
+        X = df[["text"] + numeric_cols]
+        y_bps = df["y_bps"].values.astype(float)
+        y_dir = df["y_dir"].values.astype(int)
+        dates = df["date"]
+        
+        preprocess = build_preprocess(numeric_cols)
+        clf, r_cut, r_hike, r_all = build_models(preprocess)
+        
+        # Walk Forward Validation
+        n_splits = choose_splits(len(df))
+        y_p, d_p, c_p, res, res_dir = walk_forward_fast(X, y_bps, y_dir, dates, clf, r_cut, r_hike, r_all, n_splits)
+        
+        # Store predictions in df_hist for visualization
+        self.df_hist['predicted_bps'] = y_p
+
+        # Metrics
+        mask = ~np.isnan(y_p)
+        if np.any(mask):
+            self.metrics['mae'] = mean_absolute_error(y_bps[mask], y_p[mask])
+            self.metrics['rmse'] = rmse_metric(y_bps[mask], y_p[mask])
+            self.metrics['acc'] = np.mean(y_dir[mask] == d_p[mask].astype(int))
+        
+        # Fit Final Models
+        overall_q, by_dir_q = compute_interval(res, res_dir)
+        self.intervals = {'overall': overall_q, 'by_dir': by_dir_q}
+        
+        fit_final(X, y_bps, y_dir, dates, clf, r_cut, r_hike, r_all)
+        
+        self.clf_pipe = clf
+        self.reg_pipes = {'cut': r_cut, 'hike': r_hike, 'all': r_all}
+        return "OK"
+
+    def predict(self, text):
+        if self.df_hist is None or self.clf_pipe is None: return None
+        return predict_next(
+            self.df_hist, text, 
+            self.clf_pipe, self.reg_pipes['cut'], self.reg_pipes['hike'], self.reg_pipes['all'],
+            self.intervals['overall'], self.intervals['by_dir']
+        )
+
 # =============================================================================
 # 6. ABG (APEL, BLIX, GRIMALDI - 2019) ANALYZER (GÜNCELLENMİŞ VERSİYON)
 # =============================================================================
@@ -699,83 +790,45 @@ DICT = {
             "block": "consumer_spending",
             "terms": ["consumer spending"],
             "hawk": [
-                M("accelerat", True),
-                M("edg up", True),
-                M("expan", True),
-                M("increas", True),
-                M("pick up", True),
-                M("pickup"),
-                M("soft", True),
-                M("strength", True),
-                M("strong", True),
+                M("accelerat", True), M("edg up", True), M("expan", True),
+                M("increas", True), M("pick up", True), M("pickup"),
+                M("soft", True), M("strength", True), M("strong", True),
                 M("weak", True),
             ],
             "dove": [
-                M("contract", True),
-                M("decelerat", True),
-                M("decreas", True),
-                M("drop", True),
-                M("retrench", True),
-                M("slow", True),
-                M("slugg", True),
-                M("soft", True),
-                M("subdued"),
+                M("contract", True), M("decelerat", True), M("decreas", True),
+                M("drop", True), M("retrench", True), M("slow", True),
+                M("slugg", True), M("soft", True), M("subdued"),
             ],
         },
         {
             "block": "economic_activity_growth",
             "terms": ["economic activity", "economic growth"],
             "hawk": [
-                M("accelerat", True),
-                M("buoyant"),
-                M("edg up", True),
-                M("expan", True),
-                M("increas", True),
-                M("high", True),
-                M("pick up", True),
-                M("pickup"),
-                M("rise", True),
-                M("rose"),
-                M("rising"),
-                M("step up", True),
-                M("strength", True),
-                M("strong", True),
-                M("upside"),
+                M("accelerat", True), M("buoyant"), M("edg up", True),
+                M("expan", True), M("increas", True), M("high", True),
+                M("pick up", True), M("pickup"), M("rise", True),
+                M("rose"), M("rising"), M("step up", True),
+                M("strength", True), M("strong", True), M("upside"),
             ],
             "dove": [
-                M("contract", True),
-                M("curtail", True),
-                M("decelerat", True),
-                M("declin", True),
-                M("decreas", True),
-                M("downside"),
-                M("drop"),
-                M("fall", True),
-                M("fell"),
-                M("low", True),
-                M("moderat", True),
-                M("slow", True),
-                M("slugg", True),
-                M("weak", True),
+                M("contract", True), M("curtail", True), M("decelerat", True),
+                M("declin", True), M("decreas", True), M("downside"),
+                M("drop"), M("fall", True), M("fell"),
+                M("low", True), M("moderat", True), M("slow", True),
+                M("slugg", True), M("weak", True),
             ],
         },
         {
             "block": "resource_utilization",
             "terms": ["resource utilization"],
             "hawk": [
-                M("high", True),
-                M("increas", True),
-                M("rise"),
-                M("rising"),
-                M("rose"),
-                M("tight", True),
+                M("high", True), M("increas", True), M("rise"),
+                M("rising"), M("rose"), M("tight", True),
             ],
             "dove": [
-                M("declin", True),
-                M("fall", True),
-                M("fell"),
-                M("loose", True),
-                M("low", True),
+                M("declin", True), M("fall", True), M("fell"),
+                M("loose", True), M("low", True),
             ],
         },
     ],
@@ -785,32 +838,16 @@ DICT = {
             "block": "employment",
             "terms": ["employment"],
             "hawk": [
-                M("expand", True),
-                M("gain", True),
-                M("improv", True),
-                M("increas", True),
-                M("pick up", True),
-                M("pickup"),
-                M("rais", True),
-                M("rise", True),
-                M("rising"),
-                M("rose"),
-                M("strength", True),
-                M("turn up", True),
+                M("expand", True), M("gain", True), M("improv", True),
+                M("increas", True), M("pick up", True), M("pickup"),
+                M("rais", True), M("rise", True), M("rising"),
+                M("rose"), M("strength", True), M("turn up", True),
             ],
             "dove": [
-                M("slow", True),
-                M("declin", True),
-                M("reduc", True),
-                M("weak", True),
-                M("deteriorat", True),
-                M("shrink", True),
-                M("shrank"),
-                M("fall", True),
-                M("fell"),
-                M("drop", True),
-                M("contract", True),
-                M("sluggish"),
+                M("slow", True), M("declin", True), M("reduc", True),
+                M("weak", True), M("deteriorat", True), M("shrink", True),
+                M("shrank"), M("fall", True), M("fell"),
+                M("drop", True), M("contract", True), M("sluggish"),
             ],
         },
         {
@@ -897,10 +934,14 @@ def _select_non_overlapping_terms(tokens, term_infos):
 def analyze_hawk_dove(
     text: str,
     DICT: dict = DICT,
-    window_words: int = 7,
+    window_words: int = 10,
     dedupe_within_term_window: bool = True,
-    nearest_only: bool = False
+    nearest_only: bool = True
 ):
+    """
+    Colab'da doğrulanan, Policy Rate ve Domestic Demand eklenmiş algoritma.
+    Streamlit uyumludur.
+    """
     text_n = _normalize_text(text)
     sentences = _split_sentences(text_n)
 
@@ -913,10 +954,8 @@ def analyze_hawk_dove(
         topic_term_infos[topic] = infos
 
     topic_counts = {topic: {"hawk": 0, "dove": 0} for topic in DICT.keys()}
-    
-    # APP.PY UYUMLULUK: Detay listesini başlatıyoruz
     matches = []
-    
+
     for sent in sentences:
         tokens = _tokenize(sent)
         if not tokens:
@@ -965,21 +1004,18 @@ def analyze_hawk_dove(
                     if dedupe_within_term_window and key in seen:
                         return
                     seen.add(key)
-                    
                     topic_counts[topic][direction] += 1
-                    
-                    # APP.PY UYUMLULUK: Listeye ekleme yapıyoruz
                     matches.append({
                         "topic": topic,
                         "block": block["block"],
                         "direction": direction,
-                        "term": tinfo["term"], # app.py "term" bekleyebilir
+                        "term": tinfo["term"],
                         "term_found": term_found,
                         "modifier_pattern": m["pattern"],
                         "modifier_found": mod_found,
                         "distance": dist,
                         "sentence": sent,
-                        "type": "HAWK" if direction == "hawk" else "DOVE" # app.py için kolaylık
+                        "type": "HAWK" if direction == "hawk" else "DOVE"
                     })
 
                 for (dist, m, ms, me) in hawk_hits:
@@ -998,33 +1034,27 @@ def analyze_hawk_dove(
         "hawk_count": hawk_total,
         "dove_count": dove_total,
         "topic_counts": topic_counts,
-        "match_details": matches # APP.PY'NİN İSTEDİĞİ ANAHTAR
+        "match_details": matches
     }
 
 # --- 6.5. WRAPPER FONKSİYON (UYGULAMA İÇİN) ---
 
 def calculate_abg_scores(df: pd.DataFrame) -> pd.DataFrame:
-    """Streamlit uygulamasının çağırdığı ana fonksiyon."""
     if df is None or df.empty: return pd.DataFrame()
-    
     rows = []
     for _, row in df.iterrows():
         text_content = str(row.get("text_content", ""))
-        
-        # YENİ ALGORİTMAYI ÇAĞIR
         res = analyze_hawk_dove(
             text_content,
             DICT=DICT,
-            window_words=7,              # Verdiğin kodda 7 idi
-            dedupe_within_term_window=True, 
-            nearest_only=False           # Verdiğin kodda False idi
+            window_words=10,
+            dedupe_within_term_window=True,
+            nearest_only=True
         )
-        
         donem_val = row.get("Donem")
         if (donem_val is None or donem_val == "") and ("period_date" in row):
             try: donem_val = pd.to_datetime(row["period_date"]).strftime("%Y-%m")
             except Exception: donem_val = ""
-            
         rows.append({
             "period_date": row.get("period_date"),
             "Donem": donem_val,
@@ -1032,8 +1062,8 @@ def calculate_abg_scores(df: pd.DataFrame) -> pd.DataFrame:
             "abg_hawk": res["hawk_count"],
             "abg_dove": res["dove_count"]
         })
-        
     return pd.DataFrame(rows).sort_values("period_date", ascending=False)
+
 # =============================================================================
 # 7. VADER ANALİZİ
 # =============================================================================
@@ -1065,72 +1095,42 @@ def calculate_vader_series(df: pd.DataFrame) -> pd.DataFrame:
 
 @st.cache_resource
 def load_finbert_model():
-    """FinBERT modelini ve tokenizer'ı önbelleğe alır."""
     if not HAS_FINBERT: return None, None
     try:
         model_name = "ProsusAI/finbert"
         tokenizer = AutoTokenizer.from_pretrained(model_name)
         model = AutoModelForSequenceClassification.from_pretrained(model_name)
-        model.eval() # Inference mode
+        model.eval()
         return tokenizer, model
     except Exception as e:
         st.error(f"FinBERT yüklenirken hata: {e}")
         return None, None
 
 def calculate_finbert_series(df: pd.DataFrame) -> pd.DataFrame:
-    """Verilen DataFrame'deki metinleri FinBERT ile analiz eder."""
     if not HAS_FINBERT or df is None or df.empty: return pd.DataFrame()
-    
     tokenizer, model = load_finbert_model()
     if not tokenizer or not model: return pd.DataFrame()
-    
-    # Cihaz seçimi (GPU varsa)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device)
-    
-    labels = ["positive", "negative", "neutral"] # FinBERT output order: Pos, Neg, Neu (genelde, kontrol etmek lazım)
-    # ProsusAI/finbert config: 0: positive, 1: negative, 2: neutral (GENELLİKLE)
-    # Ancak model config'den okumak daha güvenli olurdu ama standart sıra budur.
-    # DÜZELTME: ProsusAI FinBERT genellikle şu sırayı kullanır: [Positive, Negative, Neutral]
-    # Fakat HuggingFace inference API output'u bazen farklı olabilir.
-    # Standart: id2label = {0: 'positive', 1: 'negative', 2: 'neutral'}
-    
     results = []
-    
-    # Progress bar için
     progress_bar = st.progress(0)
     total_rows = len(df)
-    
     for i, (idx, row) in enumerate(df.iterrows()):
         text = str(row.get("text_content", ""))
-        
-        # Cümlelere böl
         sentences = [s.strip() for s in re.split(r'(?<=[.!?])\s+', text) if s.strip()]
         if not sentences:
             results.append({"period_date": row.get("period_date"), "finbert_pos":0, "finbert_neg":0, "finbert_neu":0, "finbert_score": 0})
             continue
-            
-        # Batch inference yapmak daha hızlı olur ama basitlik için loop
-        # Uzun metinlerde bellek sorunu olmaması için tek tek
-        
         sent_scores = {"positive": [], "negative": [], "neutral": [], "len": []}
-        
         with torch.no_grad():
             for s in sentences:
                 inputs = tokenizer(s, return_tensors="pt", truncation=True, max_length=256).to(device)
                 outputs = model(**inputs)
                 probs = F.softmax(outputs.logits, dim=-1).squeeze().cpu().numpy()
-                
-                # Modelin etiket sırasını config'den alalım (veya varsayılan)
-                # Config'e erişimimiz yoksa standart varsayım:
-                # ProsusAI/finbert genellikle: 0: Positive, 1: Negative, 2: Neutral
-                
                 sent_scores["positive"].append(float(probs[0]))
                 sent_scores["negative"].append(float(probs[1]))
                 sent_scores["neutral"].append(float(probs[2]))
                 sent_scores["len"].append(len(s))
-        
-        # Ağırlıklı Ortalama
         weights = np.array(sent_scores["len"])
         if weights.sum() == 0:
             w_pos, w_neg, w_neu = 0, 0, 0
@@ -1138,11 +1138,7 @@ def calculate_finbert_series(df: pd.DataFrame) -> pd.DataFrame:
             w_pos = np.average(sent_scores["positive"], weights=weights)
             w_neg = np.average(sent_scores["negative"], weights=weights)
             w_neu = np.average(sent_scores["neutral"], weights=weights)
-            
-        # Net Skor (Positive - Negative) veya Compound benzeri bir şey
-        # Basitçe: Positive - Negative
         net_score = w_pos - w_neg
-        
         results.append({
             "period_date": row.get("period_date"),
             "finbert_pos": w_pos,
@@ -1150,9 +1146,6 @@ def calculate_finbert_series(df: pd.DataFrame) -> pd.DataFrame:
             "finbert_neu": w_neu,
             "finbert_score": net_score
         })
-        
-        # Update progress
         progress_bar.progress((i + 1) / total_rows)
-        
     progress_bar.empty()
     return pd.DataFrame(results).sort_values("period_date", ascending=True)

@@ -106,10 +106,9 @@ with tab1:
         # Word Count
         fig.add_trace(go.Bar(x=merged['period_date'], y=merged['word_count'], name="Metin Uzunluğu", marker=dict(color='gray'), opacity=0.10, yaxis="y3", hoverinfo="x+y+name"))
         
-        # --- İSİM DEĞİŞİKLİĞİ YAPILAN SATIRLAR ---
+        # --- SKORLAR ---
         fig.add_trace(go.Scatter(x=merged['period_date'], y=merged['score_abg_scaled'], name="Şahin/Güvercin-Hibrit", line=dict(color='black', width=2, dash='dot'), marker=dict(size=6, color='black'), yaxis="y"))
         fig.add_trace(go.Scatter(x=merged['period_date'], y=merged['abg_dashboard_val'], name="Şahin/Güvercin ABG 2019", line=dict(color='navy', width=4), yaxis="y"))
-        # ----------------------------------------
         
         if 'Yıllık TÜFE' in merged.columns: fig.add_trace(go.Scatter(x=merged['period_date'], y=merged['Yıllık TÜFE'], name="Yıllık TÜFE (%)", line=dict(color='red', dash='dot'), yaxis="y"))
         if 'PPK Faizi' in merged.columns: fig.add_trace(go.Scatter(x=merged['period_date'], y=merged['PPK Faizi'], name="Faiz (%)", line=dict(color='orange', dash='dot'), yaxis="y"))
@@ -287,7 +286,6 @@ with tab3:
         else: st.error(f"Hata: {err}")
 
 with tab4:
-    # BAŞLIK GÜNCELLENDİ
     st.header("🔍 Frekans ve Diff Analizi")
     df_all = utils.fetch_all_data()
     if not df_all.empty:
@@ -356,37 +354,31 @@ with tab5:
             elif isinstance(min_val, str): min_d = pd.to_datetime(min_val).date()
             elif isinstance(min_val, datetime.date): min_d = min_val
 
-    # Market Verisi (Eğitim için geniş aralık tutuyoruz)
+    # Market Verisi
     df_market, err = utils.fetch_market_data_adapter(min_d, datetime.date.today())
     ml_df = utils.prepare_ml_dataset(df_logs, df_market)
 
     if not ml_df.empty and len(ml_df) > 10:
-        # 2. Modeli Eğit (Arka Planda Tüm Tarihçe ile)
+        # 2. Modeli Eğit
         predictor = utils.AdvancedMLPredictor()
         status = predictor.train(ml_df)
         
         if status == "OK":
-            # 3. KULLANICI SEÇİMİ: Metinleri Filtreleme
+            # 3. KULLANICI SEÇİMİ
             st.markdown("### 📅 Analiz İçin Dönem Seçimi")
-            
-            # Tarih Aralığı Seçicisi
             c_d1, c_d2 = st.columns(2)
             start_date_sel = c_d1.date_input("Başlangıç", value=min_avail_date, min_value=min_avail_date, max_value=max_avail_date)
             end_date_sel = c_d2.date_input("Bitiş", value=max_avail_date, min_value=min_avail_date, max_value=max_avail_date)
             
-            # Filtreleme
             filtered_logs = df_logs[(df_logs['period_date'].dt.date >= start_date_sel) & (df_logs['period_date'].dt.date <= end_date_sel)].copy()
             filtered_logs = filtered_logs.sort_values("period_date", ascending=False)
             filtered_logs['Dönem'] = filtered_logs['period_date'].dt.strftime('%Y-%m')
             
-            # --- TABLO YERİNE SEÇİM KUTUSU ---
-            # Kullanıcıya seçtirmek için dönem listesi
             period_options = filtered_logs['Dönem'].tolist()
             
             if period_options:
                 selected_period = st.selectbox("Analiz Edilecek Toplantıyı Seçin:", period_options, index=0)
                 
-                # Seçilen satırı bul
                 target_row = filtered_logs[filtered_logs['Dönem'] == selected_period].iloc[0]
                 target_text = target_row['text_content']
                 target_source = f"Seçilen Kayıt: {target_row['Dönem']}"
@@ -413,14 +405,13 @@ with tab5:
                     
                     st.divider()
                     
-                    # 5. Grafik (Filtrelenmiş Aralığa Zoom Yapılmış)
+                    # 5. Grafik
                     st.subheader("📊 Model Performansı (Geçmiş)")
                     
                     if predictor.df_hist is not None:
                         hist = predictor.df_hist.copy()
                         hist['date'] = pd.to_datetime(hist['date'])
                         
-                        # Grafiği de seçilen tarih aralığına göre (biraz genişleterek) filtreleyelim
                         chart_start = pd.to_datetime(start_date_sel) - pd.Timedelta(days=90)
                         chart_end = pd.to_datetime(end_date_sel) + pd.Timedelta(days=90)
                         
@@ -442,7 +433,7 @@ with tab5:
                                     line=dict(color='blue', width=2, dash='dot')
                                 ))
                             
-                            # Şu anki tahmin noktası (Eğer seçilen tarih grafik aralığındaysa)
+                            # Şu anki tahmin noktası
                             if chart_start <= selected_date_for_chart <= chart_end:
                                 fig.add_trace(go.Scatter(
                                     x=[selected_date_for_chart], 
@@ -509,28 +500,24 @@ with tab7:
             if not subset.empty:
                 text_abg = subset.iloc[0]['text_content']
                 
-res = utils.analyze_hawk_dove(
-    txt_input, 
-    DICT=utils.DICT, 
-    window_words=10, 
-    dedupe_within_term_window=True, 
-    nearest_only=True
-)
-
-# Sonuçları ekrana basma kısmı (değişken isimleri yeni yapıya göre)
-st.metric("Net Hawkishness", f"{res['net_hawkishness']:.4f}")
-col1, col2 = st.columns(2)
-col1.metric("Hawk Sayısı", res['hawk_count'])
-col2.metric("Dove Sayısı", res['dove_count'])
-
-# Detayları gösterme (Opsiyonel, eğer eski kodda detay tablosu varsa)
-if "topic_counts" in res:
-    st.write("Detaylı Kırılım:")
-    st.json(res["topic_counts"])
+                # --- DÜZELTİLEN KISIM BAŞLANGICI ---
+                res = utils.analyze_hawk_dove(
+                    text_abg, 
+                    DICT=utils.DICT, 
+                    window_words=10, 
+                    dedupe_within_term_window=True, 
+                    nearest_only=True
+                )
+                
                 c1, c2, c3 = st.columns(3)
-                c1.metric("Net Endeks", f"{res['net_hawkishness']:.2f}")
-                c2.metric("Şahin Eşleşme", res['hawk_count'])
-                c3.metric("Güvercin Eşleşme", res['dove_count'])
+                c1.metric("Net Endeks", f"{res['net_hawkishness']:.4f}")
+                c2.metric("🦅 Şahin Eşleşme", res['hawk_count'])
+                c3.metric("🕊️ Güvercin Eşleşme", res['dove_count'])
+                
+                if "topic_counts" in res:
+                     with st.expander("Detaylı Kırılım (Topic Counts)"):
+                         st.json(res["topic_counts"])
+
                 with st.expander("📝 Detaylı Eşleşme Tablosu (Cümle Bağlamı)", expanded=True):
                     if res['match_details']:
                         detail_data = []
@@ -539,6 +526,7 @@ if "topic_counts" in res:
                         st.dataframe(pd.DataFrame(detail_data), use_container_width=True, hide_index=True)
                     else: st.info("Bu metinde herhangi bir ABF sözlük eşleşmesi bulunamadı.")
                 with st.expander("Metin Önizleme"): st.write(text_abg)
+                # --- DÜZELTİLEN KISIM SONU ---
             else: st.error("Seçilen dönem için metin bulunamadı.")
     else: st.info("Analiz için veri yok.")
 

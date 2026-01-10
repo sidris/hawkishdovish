@@ -538,7 +538,7 @@ def calculate_abg_scores(df):
     return pd.DataFrame(rows)
 
 # =============================================================================
-# 7. ML ALGORİTMASI
+# 7. ML ALGORİTMASI (Ridge + Logistic)
 # =============================================================================
 
 @dataclass

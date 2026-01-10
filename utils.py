@@ -538,7 +538,7 @@ def calculate_abg_scores(df):
     return pd.DataFrame(rows)
 
 # =============================================================================
-# 7. ML ALGORİTMASI (Ridge + Logistic)
+# 7. ML ALGORİTMASI (Ridge + Logistic, Colab ile Eşitlendi)
 # =============================================================================
 
 @dataclass
@@ -841,12 +841,17 @@ def prepare_ml_dataset(df_logs, df_market):
         df_logs['period_date'] = pd.to_datetime(df_logs['period_date'])
         df_logs['Donem'] = df_logs['period_date'].dt.strftime('%Y-%m')
     if 'Donem' not in df_market.columns: return pd.DataFrame()
+    
     df = pd.merge(df_logs, df_market, on="Donem", how="left")
+    
+    # Colab mantığına uygun text clean
+    df['text'] = df['text_content'].fillna("").apply(normalize_tr_text)
+    
     if 'PPK Faizi' in df.columns:
         df['rate_change_bps'] = df['PPK Faizi'].diff().fillna(0.0) * 100
         return pd.DataFrame({
             "date": df['period_date'],
-            "text": df['text_content'],
+            "text": df['text'],
             "rate_change_bps": df['rate_change_bps']
         }).dropna()
     return pd.DataFrame()

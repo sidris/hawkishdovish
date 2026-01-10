@@ -500,7 +500,7 @@ with tab7:
             if not subset.empty:
                 text_abg = subset.iloc[0]['text_content']
                 
-                # --- DÜZELTİLEN KISIM BAŞLANGICI ---
+                # Analiz fonksiyonunu çağır
                 res = utils.analyze_hawk_dove(
                     text_abg, 
                     DICT=utils.DICT, 
@@ -509,24 +509,34 @@ with tab7:
                     nearest_only=True
                 )
                 
+                # --- GÜVENLİ VERİ OKUMA (FIX) ---
+                net_h = res.get('net_hawkishness', 0)
+                h_cnt = res.get('hawk_count', 0)
+                d_cnt = res.get('dove_count', 0)
+                details = res.get('match_details', []) # Hata veren kısım burasıydı, .get ile güvenli hale getirildi.
+                
                 c1, c2, c3 = st.columns(3)
-                c1.metric("Net Endeks", f"{res['net_hawkishness']:.4f}")
-                c2.metric("🦅 Şahin Eşleşme", res['hawk_count'])
-                c3.metric("🕊️ Güvercin Eşleşme", res['dove_count'])
+                c1.metric("Net Endeks", f"{net_h:.4f}")
+                c2.metric("🦅 Şahin Eşleşme", h_cnt)
+                c3.metric("🕊️ Güvercin Eşleşme", d_cnt)
                 
                 if "topic_counts" in res:
                      with st.expander("Detaylı Kırılım (Topic Counts)"):
                          st.json(res["topic_counts"])
 
                 with st.expander("📝 Detaylı Eşleşme Tablosu (Cümle Bağlamı)", expanded=True):
-                    if res['match_details']:
+                    if details:
                         detail_data = []
-                        for m in res['match_details']:
+                        for m in details:
                             detail_data.append({"Tip": "🦅 ŞAHİN" if m['type'] == "HAWK" else "🕊️ GÜVERCİN", "Eşleşen Terim": m['term'], "Cümle": m['sentence']})
                         st.dataframe(pd.DataFrame(detail_data), use_container_width=True, hide_index=True)
-                    else: st.info("Bu metinde herhangi bir ABF sözlük eşleşmesi bulunamadı.")
+                    else: 
+                        if h_cnt + d_cnt > 0:
+                            st.warning("Eşleşme bulundu ancak 'match_details' verisi utils.py dosyasından dönmedi. utils.py dosyanızı güncellediğinizden emin olun.")
+                        else:
+                            st.info("Bu metinde herhangi bir ABF sözlük eşleşmesi bulunamadı.")
+                
                 with st.expander("Metin Önizleme"): st.write(text_abg)
-                # --- DÜZELTİLEN KISIM SONU ---
             else: st.error("Seçilen dönem için metin bulunamadı.")
     else: st.info("Analiz için veri yok.")
 

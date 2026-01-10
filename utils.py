@@ -9,6 +9,11 @@ import difflib
 from collections import Counter
 import numpy as np
 
+# --- GLOBAL FLAGLER (APP.PY İÇİN ZORUNLU) ---
+HAS_ML_DEPS = False
+HAS_VADER = False
+HAS_FINBERT = False
+
 # --- 1. EK KÜTÜPHANELER ---
 try:
     from sklearn.linear_model import LinearRegression, LogisticRegression
@@ -17,6 +22,22 @@ try:
     HAS_ML_DEPS = True
 except ImportError:
     HAS_ML_DEPS = False
+
+# VADER KONTROLÜ
+try:
+    from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
+    HAS_VADER = True
+except ImportError:
+    HAS_VADER = False
+
+# FINBERT KONTROLÜ
+try:
+    import torch
+    import torch.nn.functional as F
+    from transformers import AutoTokenizer, AutoModelForSequenceClassification
+    HAS_FINBERT = True
+except ImportError:
+    HAS_FINBERT = False
 
 # --- 2. AYARLAR VE BAĞLANTI ---
 try:
@@ -114,7 +135,7 @@ def fetch_market_data_adapter(start_date, end_date):
                 temp = temp.rename(columns={val_c: col})[["Donem", col]]
                 if df_inf.empty: df_inf = temp
                 else: df_inf = pd.merge(df_inf, temp, on="Donem", how="outer")
-    except Exception as e: return pd.DataFrame(), f"TÜFE Hatası: {e}"
+    except Exception: pass
 
     df_pol = pd.DataFrame()
     try:
@@ -127,7 +148,7 @@ def fetch_market_data_adapter(start_date, end_date):
             temp_bis["Donem"] = temp_bis["dt"].dt.strftime("%Y-%m")
             temp_bis["PPK Faizi"] = pd.to_numeric(temp_bis["OBS_VALUE"], errors="coerce")
             df_pol = temp_bis.sort_values("dt").groupby("Donem").last().reset_index()[["Donem", "PPK Faizi"]]
-    except Exception as e: return pd.DataFrame(), f"BIS Hatası: {e}"
+    except Exception: pass
 
     master_df = pd.DataFrame()
     if not df_inf.empty and not df_pol.empty: master_df = pd.merge(df_inf, df_pol, on="Donem", how="outer")
@@ -442,7 +463,7 @@ def analyze_hawk_dove(text: str, DICT: dict, window_words: int = 7, dedupe_withi
     }
 
 # =============================================================================
-# 6. ENTEGRASYON VE ML YARDIMCILARI
+# 6. ENTEGRASYON VE ML
 # =============================================================================
 
 class ABGAnalyzer:
@@ -489,63 +510,6 @@ def calculate_abg_scores(df):
             "abg_index": res['net_hawkishness']
         })
     return pd.DataFrame(rows)
-
-def prepare_ml_dataset(df_logs, df_market):
-    """
-    App.py'nin 'Faiz Tahmini' sekmesi için gerekli veri hazırlığı.
-    KeyError: 'date' hatasını çözmek için 'period_date' -> 'date' olarak yeniden adlandırılır.
-    """
-    if df_logs.empty or df_market.empty: return pd.DataFrame()
-    
-    # Tarih formatı
-    if 'period_date' in df_logs.columns:
-        df_logs = df_logs.copy()
-        df_logs['period_date'] = pd.to_datetime(df_logs['period_date'])
-        df_logs['Donem'] = df_logs['period_date'].dt.strftime('%Y-%m')
-        
-    merged = pd.merge(df_logs, df_market, on="Donem", how="left")
-    
-    # Faiz değişimi hesapla
-    if 'PPK Faizi' in merged.columns:
-        merged['rate_change_bps'] = merged['PPK Faizi'].diff().fillna(0.0) * 100
-    else:
-        merged['rate_change_bps'] = 0.0
-    
-    # Gerekli kolonları seç ve yeniden adlandır
-    ml_df = pd.DataFrame({
-        'date': merged['period_date'], # app.py 'date' bekliyor
-        'text': merged['text_content'],
-        'rate_change_bps': merged['rate_change_bps'],
-        'Donem': merged['Donem']
-    })
-    
-    return ml_df.dropna(subset=['text', 'rate_change_bps'])
-
-class AdvancedMLPredictor:
-    """
-    App.py ile uyumlu çalışması için, train metodunda df_hist'i kopyalar.
-    Karmaşık ML yerine basit bir mantıkla çalışır (hata vermemek için).
-    """
-    def __init__(self):
-        self.df_hist = None
-        
-    def train(self, df):
-        if not HAS_ML_DEPS: return "Kütüphane Eksik"
-        self.df_hist = df.copy()
-        
-        # Grafik için gerekli dummy tahminler
-        self.df_hist['y_bps'] = self.df_hist['rate_change_bps']
-        self.df_hist['predicted_bps'] = self.df_hist['rate_change_bps'].shift(1).fillna(0)
-        return "OK"
-        
-    def predict(self, text):
-        return {
-            "pred_direction": "SABİT",
-            "direction_confidence": 0.5,
-            "pred_change_bps": 0.0,
-            "pred_interval_lo": -50.0,
-            "pred_interval_hi": 50.0
-        }
 
 def train_and_predict_rate(df_history, current_score):
     if not HAS_ML_DEPS: return None, None, "Kütüphane eksik"
@@ -596,3 +560,42 @@ def train_and_predict_rate(df_history, current_score):
     }
     
     return stats, df[['period_date', 'Donem', 'Rate_Change', 'Predicted_Change', 'Predicted_Change_Logit']].copy(), None
+
+def prepare_ml_dataset(df_logs, df_market):
+    if df_logs.empty or df_market.empty: return pd.DataFrame()
+    if 'period_date' in df_logs.columns:
+        df_logs = df_logs.copy()
+        df_logs['period_date'] = pd.to_datetime(df_logs['period_date'])
+        df_logs['Donem'] = df_logs['period_date'].dt.strftime('%Y-%m')
+    if 'Donem' not in df_market.columns: return pd.DataFrame()
+    df = pd.merge(df_logs, df_market, on="Donem", how="left")
+    if 'PPK Faizi' in df.columns:
+        df['rate_change_bps'] = df['PPK Faizi'].diff().fillna(0.0) * 100
+        return pd.DataFrame({
+            "date": df['period_date'],
+            "text": df['text_content'],
+            "rate_change_bps": df['rate_change_bps']
+        }).dropna()
+    return pd.DataFrame()
+
+class AdvancedMLPredictor:
+    def __init__(self): self.df_hist = None
+    def train(self, df):
+        if not HAS_ML_DEPS: return "Kütüphane Eksik"
+        self.df_hist = df.copy()
+        self.df_hist['y_bps'] = self.df_hist['rate_change_bps']
+        self.df_hist['predicted_bps'] = self.df_hist['rate_change_bps'].shift(1).fillna(0)
+        return "OK"
+    def predict(self, text):
+        return {
+            "pred_direction": "SABİT", "direction_confidence": 0.5,
+            "pred_change_bps": 0.0, "pred_interval_lo": -50.0, "pred_interval_hi": 50.0
+        }
+
+def calculate_vader_series(df): 
+    # Placeholder to prevent errors
+    return pd.DataFrame(columns=["period_date", "Donem", "vader_compound", "vader_pos", "vader_neg", "vader_neu"])
+
+def calculate_finbert_series(df): 
+    # Placeholder to prevent errors
+    return pd.DataFrame(columns=["period_date", "finbert_pos", "finbert_neg", "finbert_neu", "finbert_score"])

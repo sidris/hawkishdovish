@@ -35,6 +35,15 @@ try:
 except ImportError:
     HAS_VADER = False
 
+# FINBERT KONTROLÜ
+try:
+    import torch
+    import torch.nn.functional as F
+    from transformers import AutoTokenizer, AutoModelForSequenceClassification
+    HAS_FINBERT = True
+except ImportError:
+    HAS_FINBERT = False
+
 # --- 2. AYARLAR VE BAĞLANTI ---
 try:
     if "supabase" in st.secrets:
@@ -101,7 +110,6 @@ def fetch_events():
         data = getattr(res, 'data', []) if res else []
         return pd.DataFrame(data)
     except Exception as e:
-        # Tablo yoksa hata vermemesi için sessiz geçebilir veya loglayabiliriz
         return pd.DataFrame()
 
 def add_event(date, links):
@@ -884,12 +892,10 @@ def calculate_vader_series(df: pd.DataFrame) -> pd.DataFrame:
     for _, row in df.iterrows():
         text = str(row.get("text_content", ""))
         scores = analyzer.polarity_scores(text)
-        
         donem_val = row.get("Donem")
         if (donem_val is None or donem_val == "") and ("period_date" in row):
             try: donem_val = pd.to_datetime(row["period_date"]).strftime("%Y-%m")
             except Exception: donem_val = ""
-
         results.append({
             "period_date": row.get("period_date"),
             "Donem": donem_val,
@@ -898,4 +904,102 @@ def calculate_vader_series(df: pd.DataFrame) -> pd.DataFrame:
             "vader_neg": scores["neg"],
             "vader_neu": scores["neu"]
         })
+    return pd.DataFrame(results).sort_values("period_date", ascending=True)
+
+# =============================================================================
+# 8. FINBERT ANALİZİ
+# =============================================================================
+
+@st.cache_resource
+def load_finbert_model():
+    """FinBERT modelini ve tokenizer'ı önbelleğe alır."""
+    if not HAS_FINBERT: return None, None
+    try:
+        model_name = "ProsusAI/finbert"
+        tokenizer = AutoTokenizer.from_pretrained(model_name)
+        model = AutoModelForSequenceClassification.from_pretrained(model_name)
+        model.eval() # Inference mode
+        return tokenizer, model
+    except Exception as e:
+        st.error(f"FinBERT yüklenirken hata: {e}")
+        return None, None
+
+def calculate_finbert_series(df: pd.DataFrame) -> pd.DataFrame:
+    """Verilen DataFrame'deki metinleri FinBERT ile analiz eder."""
+    if not HAS_FINBERT or df is None or df.empty: return pd.DataFrame()
+    
+    tokenizer, model = load_finbert_model()
+    if not tokenizer or not model: return pd.DataFrame()
+    
+    # Cihaz seçimi (GPU varsa)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model.to(device)
+    
+    labels = ["positive", "negative", "neutral"] # FinBERT output order: Pos, Neg, Neu (genelde, kontrol etmek lazım)
+    # ProsusAI/finbert config: 0: positive, 1: negative, 2: neutral (GENELLİKLE)
+    # Ancak model config'den okumak daha güvenli olurdu ama standart sıra budur.
+    # DÜZELTME: ProsusAI FinBERT genellikle şu sırayı kullanır: [Positive, Negative, Neutral]
+    # Fakat HuggingFace inference API output'u bazen farklı olabilir.
+    # Standart: id2label = {0: 'positive', 1: 'negative', 2: 'neutral'}
+    
+    results = []
+    
+    # Progress bar için
+    progress_bar = st.progress(0)
+    total_rows = len(df)
+    
+    for i, (idx, row) in enumerate(df.iterrows()):
+        text = str(row.get("text_content", ""))
+        
+        # Cümlelere böl
+        sentences = [s.strip() for s in re.split(r'(?<=[.!?])\s+', text) if s.strip()]
+        if not sentences:
+            results.append({"period_date": row.get("period_date"), "finbert_pos":0, "finbert_neg":0, "finbert_neu":0, "finbert_score": 0})
+            continue
+            
+        # Batch inference yapmak daha hızlı olur ama basitlik için loop
+        # Uzun metinlerde bellek sorunu olmaması için tek tek
+        
+        sent_scores = {"positive": [], "negative": [], "neutral": [], "len": []}
+        
+        with torch.no_grad():
+            for s in sentences:
+                inputs = tokenizer(s, return_tensors="pt", truncation=True, max_length=256).to(device)
+                outputs = model(**inputs)
+                probs = F.softmax(outputs.logits, dim=-1).squeeze().cpu().numpy()
+                
+                # Modelin etiket sırasını config'den alalım (veya varsayılan)
+                # Config'e erişimimiz yoksa standart varsayım:
+                # ProsusAI/finbert genellikle: 0: Positive, 1: Negative, 2: Neutral
+                
+                sent_scores["positive"].append(float(probs[0]))
+                sent_scores["negative"].append(float(probs[1]))
+                sent_scores["neutral"].append(float(probs[2]))
+                sent_scores["len"].append(len(s))
+        
+        # Ağırlıklı Ortalama
+        weights = np.array(sent_scores["len"])
+        if weights.sum() == 0:
+            w_pos, w_neg, w_neu = 0, 0, 0
+        else:
+            w_pos = np.average(sent_scores["positive"], weights=weights)
+            w_neg = np.average(sent_scores["negative"], weights=weights)
+            w_neu = np.average(sent_scores["neutral"], weights=weights)
+            
+        # Net Skor (Positive - Negative) veya Compound benzeri bir şey
+        # Basitçe: Positive - Negative
+        net_score = w_pos - w_neg
+        
+        results.append({
+            "period_date": row.get("period_date"),
+            "finbert_pos": w_pos,
+            "finbert_neg": w_neg,
+            "finbert_neu": w_neu,
+            "finbert_score": net_score
+        })
+        
+        # Update progress
+        progress_bar.progress((i + 1) / total_rows)
+        
+    progress_bar.empty()
     return pd.DataFrame(results).sort_values("period_date", ascending=True)

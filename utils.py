@@ -1157,21 +1157,24 @@ def analyze_hawk_dove_structural(text: str, window_words: int = 7, dedupe_within
     }
 
 # =============================================================================
-# 9. CENTRAL BANK RoBERTa ENTEGRASYONU
+# 9. CENTRAL BANK RoBERTa ENTEGRASYONU (Moritz-Pfeifer)
 # =============================================================================
 
 @st.cache_resource
 def load_roberta_pipeline():
     try:
         from transformers import pipeline
-        # Finansal metinler için popüler ve açık kaynaklı bir model
-        model_name = "mrm8488/distilroberta-finetuned-financial-news-sentiment" 
+        # Kullanıcının bulduğu TAM İSABET model:
+        model_name = "Moritz-Pfeifer/CentralBankRoBERTa-sentiment-classifier"
+        
+        # Bu model bazen "config" dosyasını geç okuyabilir, o yüzden try/except içinde:
         classifier = pipeline("text-classification", model=model_name, return_all_scores=True)
         return classifier
     except ImportError:
         return "MISSING_LIB"
     except Exception as e:
-        st.error(f"Model yükleme hatası: {e}")
+        # Hata detayını terminale yazdır, arayüzü bozma
+        print(f"Model Yükleme Hatası: {e}")
         return None
 
 def analyze_with_roberta(text):
@@ -1179,30 +1182,39 @@ def analyze_with_roberta(text):
         return None
         
     classifier = load_roberta_pipeline()
+    
     if classifier == "MISSING_LIB":
         return "MISSING_LIB"
-    if not classifier:
+    if classifier is None:
         return "ERROR"
 
+    # Token limiti (512 token ~ ortalama 1500-2000 karakter)
     truncated_text = text[:2000] 
     
     try:
         results = classifier(truncated_text)[0]
+        # Bu modelin çıktı etiketleri genelde: 'hawkish', 'dovish', 'neutral' şeklindedir.
+        
         processed = {}
-        # Etiketleri daha anlaşılır hale getiriyoruz
+        # Etiketleri Türkçeleştirme Haritası
         labels_map = {
-            "positive": "Şahin / Pozitif", 
-            "negative": "Güvercin / Risk", 
-            "neutral": "Nötr"
+            "hawkish": "🦅 Şahin (Hawkish)", 
+            "dovish": "🕊️ Güvercin (Dovish)", 
+            "neutral": "⚖️ Nötr (Neutral)",
+            # Yedek olarak (model versiyonu farklıysa diye):
+            "positive": "Şahin (Pozitif)",
+            "negative": "Güvercin (Negatif)"
         }
         
-        best_score = 0
+        best_score = -1
         best_label = ""
         
         for r in results:
-            lbl = r['label'].lower()
+            lbl = r['label'].lower() # Gelen etiketi küçült (örn: "Hawkish" -> "hawkish")
             score = r['score']
-            mapped_lbl = labels_map.get(lbl, lbl)
+            
+            # Haritadan Türkçe karşılığını bul, yoksa orijinalini kullan
+            mapped_lbl = labels_map.get(lbl, lbl.capitalize())
             processed[mapped_lbl] = score
             
             if score > best_score:
@@ -1215,4 +1227,4 @@ def analyze_with_roberta(text):
             "all_scores": processed
         }
     except Exception as e:
-        return f"Error: {e}"
+        return f"Error: {str(e)}"

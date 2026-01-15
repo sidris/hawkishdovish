@@ -739,4 +739,67 @@ with tab_vader:
         df_logs = utils.fetch_all_data()
         if not df_logs.empty:
             df_logs['period_date'] = pd.to_datetime(df_logs['period_date'])
-            df_logs['Donem'] = df_logs['period
+            df_logs['Donem'] = df_logs['period_date'].dt.strftime('%Y-%m')
+            
+            # Analizi çalıştır
+            vader_df = utils.calculate_vader_series(df_logs)
+            
+            # Zaman Serisi Grafiği
+            st.subheader("📈 Duygu Tonu Zaman Serisi (Compound Skor)")
+            fig_v = go.Figure()
+            fig_v.add_trace(go.Scatter(x=vader_df['period_date'], y=vader_df['vader_compound'], mode='lines+markers', name='Compound', line=dict(color='blue')))
+            fig_v.add_hline(y=0, line_dash="dash", line_color="gray")
+            fig_v.update_layout(title="VADER Compound Skoru (-1: Negatif, +1: Pozitif)", hovermode="x unified")
+            st.plotly_chart(fig_v, use_container_width=True)
+            
+            # Bar Grafiği
+            st.subheader("📊 Pozitif ve Negatif Skorlar")
+            fig_pn = go.Figure()
+            fig_pn.add_trace(go.Bar(x=vader_df['period_date'], y=vader_df['vader_pos'], name='Pozitif', marker_color='green'))
+            fig_pn.add_trace(go.Bar(x=vader_df['period_date'], y=vader_df['vader_neg'], name='Negatif', marker_color='red'))
+            fig_pn.update_layout(title="Pozitif ve Negatif Bileşenler", barmode='group', hovermode="x unified")
+            st.plotly_chart(fig_pn, use_container_width=True)
+
+            # Tablo
+            st.dataframe(vader_df, use_container_width=True)
+        else:
+            st.info("Veri yok.")
+
+with tab_finbert:
+    st.header("💰 FinBERT Analizi (ProsusAI)")
+    st.info("FinBERT, finansal metinler için eğitilmiş bir BERT modelidir. (Not: Bu model İngilizce metinlerde en iyi sonucu verir. Türkçe metinlerde sonuçlar nötr çıkabilir.)")
+    
+    if not utils.HAS_FINBERT:
+        st.error("Gerekli kütüphaneler (torch, transformers) eksik.")
+    else:
+        # Analizi Çalıştır Butonu (Çünkü yavaş olabilir)
+        if st.button("FinBERT Analizini Başlat (Yavaş Olabilir)", type="primary"):
+            df_logs = utils.fetch_all_data()
+            if not df_logs.empty:
+                df_logs['period_date'] = pd.to_datetime(df_logs['period_date'])
+                df_logs['Donem'] = df_logs['period_date'].dt.strftime('%Y-%m')
+                
+                with st.spinner("FinBERT modeli yükleniyor ve metinler analiz ediliyor..."):
+                    finbert_df = utils.calculate_finbert_series(df_logs)
+                
+                if not finbert_df.empty:
+                    # Zaman Serisi
+                    st.subheader("📈 FinBERT Duygu Skoru (Ağırlıklı)")
+                    fig_fb = go.Figure()
+                    fig_fb.add_trace(go.Scatter(x=finbert_df['period_date'], y=finbert_df['finbert_score'], mode='lines+markers', name='Net Skor', line=dict(color='darkblue')))
+                    fig_fb.add_hline(y=0, line_dash="dash", line_color="gray")
+                    fig_fb.update_layout(title="Net Skor (Pozitif - Negatif)", hovermode="x unified")
+                    st.plotly_chart(fig_fb, use_container_width=True)
+                    
+                    # Bileşenler
+                    st.subheader("📊 Duygu Bileşenleri")
+                    fig_comp = go.Figure()
+                    fig_comp.add_trace(go.Bar(x=finbert_df['period_date'], y=finbert_df['finbert_pos'], name='Pozitif', marker_color='green'))
+                    fig_comp.add_trace(go.Bar(x=finbert_df['period_date'], y=finbert_df['finbert_neg'], name='Negatif', marker_color='red'))
+                    fig_comp.add_trace(go.Scatter(x=finbert_df['period_date'], y=finbert_df['finbert_neu'], name='Nötr', line=dict(color='gray', dash='dot')))
+                    fig_comp.update_layout(barmode='group', hovermode="x unified")
+                    st.plotly_chart(fig_comp, use_container_width=True)
+                    
+                    st.dataframe(finbert_df, use_container_width=True)
+            else:
+                st.info("Analiz edilecek veri yok.")

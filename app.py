@@ -71,40 +71,39 @@ tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab_struct, tab_roberta, tab_imp = st.
 # ==============================================================================
 # app.py içindeki "with tab1:" bloğunu KOMPLE bununla değiştirin:
 
+# app.py dosyasındaki "with tab1:" bloğunu TAMAMEN silip bunu yapıştırın:
+
 with tab1:
-    # Verileri Çekme
-    with st.spinner("Veriler ve Yapay Zeka Analizleri Yükleniyor (İlk açılış 1-2 dk sürebilir)..."):
+    with st.spinner("Veriler ve Yapay Zeka Analizleri Yükleniyor (İlk açılışta model indirildiği için yavaş olabilir)..."):
         df_logs = utils.fetch_all_data()
         df_events = utils.fetch_events() 
     
     if not df_logs.empty:
-        # Tarih formatlamaları
+        # Tarih formatlama
         df_logs['period_date'] = pd.to_datetime(df_logs['period_date'])
         df_logs['Donem'] = df_logs['period_date'].dt.strftime('%Y-%m')
         
-        # Metrikler
+        # Metrik Hesaplamaları
         df_logs['word_count'] = df_logs['text_content'].apply(lambda x: len(str(x).split()) if x else 0)
         df_logs['flesch_score'] = df_logs['text_content'].apply(lambda x: utils.calculate_flesch_reading_ease(str(x)))
-        
-        # ABG Skoru (Klasik Sözlük)
         df_logs['score_abg_scaled'] = df_logs['score_abg'].apply(lambda x: x*100 if abs(x) <= 1 else x)
+
+        # ABG (Klasik) Verisi
         abg_df = utils.calculate_abg_scores(df_logs)
         abg_df['abg_dashboard_val'] = (abg_df['abg_index'] - 1.0) * 100
         
-        # --- RoBERTa AI Analizi (Geçmiş 5 Yıl) ---
+        # RoBERTa (AI) Verisi
         if utils.HAS_FINBERT:
-            # Hesaplama fonksiyonunu çağır (Cache sayesinde hızlı gelir)
             roberta_series = utils.calculate_roberta_series(df_logs)
         else:
             roberta_series = pd.DataFrame()
-        # -----------------------------------------
 
-        # Piyasa Verileri
+        # Piyasa Verisi
         min_d = df_logs['period_date'].min().date()
         max_d = datetime.date.today()
         df_market, err = utils.fetch_market_data_adapter(min_d, max_d)
         
-        # Verileri Birleştir (Merge)
+        # VERİLERİ BİRLEŞTİR (MERGE)
         merged = pd.merge(df_logs, df_market, on="Donem", how="left")
         merged = pd.merge(merged, abg_df[['period_date', 'abg_dashboard_val']], on='period_date', how='left')
         
@@ -114,76 +113,116 @@ with tab1:
 
         merged = merged.sort_values("period_date")
         
-        # Sayısal Dönüşümler
+        # Sayısal Dönüşümler (Hata önlemek için)
         if 'Yıllık TÜFE' in merged.columns: merged['Yıllık TÜFE'] = pd.to_numeric(merged['Yıllık TÜFE'], errors='coerce')
         if 'PPK Faizi' in merged.columns: merged['PPK Faizi'] = pd.to_numeric(merged['PPK Faizi'], errors='coerce')
         
-        # --- GRAFİK OLUŞTURMA ---
+        # --- GRAFİK OLUŞTURMA (PLOTLY) ---
         fig = make_subplots(specs=[[{"secondary_y": True}]])
         
-        # 1. Arka Plan (Kelime Sayısı)
-        fig.add_trace(go.Bar(x=merged['period_date'], y=merged['word_count'], name="Metin Uzunluğu", marker=dict(color='gray'), opacity=0.10, yaxis="y3", hoverinfo="x+y+name"))
+        # 1. Arka Plan: Metin Uzunluğu (Gri Bar) - Sağ Eksen
+        fig.add_trace(go.Bar(
+            x=merged['period_date'], 
+            y=merged['word_count'], 
+            name="Metin Uzunluğu", 
+            marker=dict(color='rgba(200, 200, 200, 0.3)'), # Şeffaf gri
+            yaxis="y3", 
+            hoverinfo="x+y+name"
+        ))
         
-        # 2. ABG Skoru (Klasik - Mavi Çizgi)
-        fig.add_trace(go.Scatter(x=merged['period_date'], y=merged['abg_dashboard_val'], name="ABF Endeksi (Klasik)", line=dict(color='navy', width=3), yaxis="y"))
+        # 2. Okunabilirlik (Flesch) - Yeşil Baloncuklar - Sağ Eksen (Y3)
+        # Not: Flesch skorunu da Y3 (Kelime sayısı ekseni) veya ayrı bir eksende gösterebiliriz.
+        # Karışıklık olmasın diye ana eksende (Y1) farklı bir skala ile gösterelim veya Y3'e koyalım.
+        # Okunabilirlik genelde 0-100 arasıdır, Word count 0-500 arasıdır. Y3 uygundur.
+        fig.add_trace(go.Scatter(
+            x=merged['period_date'], 
+            y=merged['flesch_score'], 
+            name="Okunabilirlik (Flesch)", 
+            mode='markers', 
+            marker=dict(color='#2ecc71', size=8, symbol='circle', opacity=0.9),
+            yaxis="y3" # Sağ eksenle ölçeklensin
+        ))
         
-        # 3. RoBERTa Skoru (Yapay Zeka - Kırmızı Tireli Çizgi)
+        # 3. Klasik ABG Skoru (Lacivert Çizgi)
+        fig.add_trace(go.Scatter(
+            x=merged['period_date'], 
+            y=merged['abg_dashboard_val'], 
+            name="ABF Endeksi (Klasik)", 
+            line=dict(color='#000080', width=3), # Navy Blue
+            yaxis="y"
+        ))
+        
+        # 4. RoBERTa AI Skoru (Kırmızı, Kalın, Tireli)
         if 'roberta_index' in merged.columns:
             fig.add_trace(go.Scatter(
                 x=merged['period_date'], 
                 y=merged['roberta_index'], 
                 name="AI Sentiment (RoBERTa)", 
-                line=dict(color='#e74c3c', width=4, dash='dash'), # İstenen Stil
+                line=dict(color='#FF0000', width=4, dash='dash'), # RED, THICK, DASHED
                 yaxis="y",
                 hovertemplate='%{y:.1f} (%{text})',
                 text=merged['roberta_label'] if 'roberta_label' in merged.columns else ""
             ))
 
-        # 4. Piyasa Verileri
-        if 'Yıllık TÜFE' in merged.columns: fig.add_trace(go.Scatter(x=merged['period_date'], y=merged['Yıllık TÜFE'], name="Yıllık TÜFE (%)", line=dict(color='gray', dash='dot', width=1), yaxis="y"))
-        if 'PPK Faizi' in merged.columns: fig.add_trace(go.Scatter(x=merged['period_date'], y=merged['PPK Faizi'], name="Faiz (%)", line=dict(color='orange', dash='dot', width=1), yaxis="y"))
+        # 5. Piyasa Verileri (İnce Çizgiler)
+        if 'Yıllık TÜFE' in merged.columns: 
+            fig.add_trace(go.Scatter(x=merged['period_date'], y=merged['Yıllık TÜFE'], name="Yıllık TÜFE (%)", line=dict(color='gray', dash='dot', width=1), yaxis="y"))
+        if 'PPK Faizi' in merged.columns: 
+            fig.add_trace(go.Scatter(x=merged['period_date'], y=merged['PPK Faizi'], name="Faiz (%)", line=dict(color='orange', dash='dot', width=1), yaxis="y"))
 
         # Düzen (Layout)
         layout_shapes = [
+            # 0 Çizgisi (Nötr)
             dict(type="line", xref="paper", yref="y", x0=0, x1=1, y0=0, y1=0, line=dict(color="black", width=2), layer="below"),
         ]
         
-        # Başkanların Dönemleri
-        governors = [("2020-11-01", "N.Ağbal"), ("2021-04-01", "Ş.Kavcıoğlu"), ("2023-06-01", "H.G.Erkan"), ("2024-02-01", "F.Karahan")]
         layout_annotations = [
             dict(x=0.02, y=110, xref="paper", yref="y", text="🦅 ŞAHİN BÖLGESİ", showarrow=False, font=dict(size=12, color="darkred", weight="bold"), xanchor="left"),
             dict(x=0.02, y=-110, xref="paper", yref="y", text="🕊️ GÜVERCİN BÖLGESİ", showarrow=False, font=dict(size=12, color="darkblue", weight="bold"), xanchor="left")
         ]
         
+        # Başkanlar
+        governors = [("2020-11-01", "N.Ağbal"), ("2021-04-01", "Ş.Kavcıoğlu"), ("2023-06-01", "H.G.Erkan"), ("2024-02-01", "F.Karahan")]
         for start_date, name in governors:
             layout_shapes.append(dict(type="line", xref="x", yref="paper", x0=start_date, x1=start_date, y0=0, y1=1, line=dict(color="gray", width=1, dash="longdash"), layer="below"))
             layout_annotations.append(dict(x=start_date, y=1.05, xref="x", yref="paper", text=f"<b>{name}</b>", showarrow=False, xanchor="left", font=dict(size=9, color="#555")))
 
-        # Olaylar
+        # Olaylar (Linkler)
+        event_links_display = []
         if not df_events.empty:
             for _, ev in df_events.iterrows():
                 ev_date = pd.to_datetime(ev['event_date']).strftime('%Y-%m-%d')
                 layout_shapes.append(dict(type="line", xref="x", yref="paper", x0=ev_date, x1=ev_date, y0=0, y1=1, line=dict(color="purple", width=2, dash="dot")))
-                layout_annotations.append(dict(x=ev_date, y=0.05, xref="x", yref="paper", text="ℹ️", showarrow=False, font=dict(size=14)))
+                first_link = ev['links'].split('\n')[0] if ev['links'] else ""
+                layout_annotations.append(dict(x=ev_date, y=0.05, xref="x", yref="paper", text=f"ℹ️", showarrow=False, xanchor="left", font=dict(size=14, color="purple")))
+                if ev['links']: event_links_display.append({"Tarih": ev_date, "Linkler": [l.strip() for l in ev['links'].split('\n') if l.strip()]})
 
         fig.update_layout(
-            title="Merkez Bankası Sentiment Analizi (2020-2025)", 
+            title="Merkez Bankası Sentiment Analizi (AI vs Klasik)", 
             hovermode="x unified", 
-            height=600,
+            height=650,
             shapes=layout_shapes, 
             annotations=layout_annotations, 
             showlegend=True,
             legend=dict(orientation="h", yanchor="top", y=-0.1, xanchor="center", x=0.5),
             yaxis=dict(title="Sentiment Endeksi (-100 / +100)", range=[-130, 130], zeroline=False),
             yaxis2=dict(visible=False, overlaying="y", side="right"),
-            yaxis3=dict(visible=False, overlaying="y", side="right", range=[0, merged['word_count'].max() * 3])
+            # Kelime sayısı ve Flesch için sağ eksen
+            yaxis3=dict(title="Kelime / Okunabilirlik", overlaying="y", side="right", showgrid=False, visible=False, range=[0, merged['word_count'].max() * 2])
         )
         st.plotly_chart(fig, use_container_width=True)
         
-        # Bilgilendirme Notu
-        st.info("ℹ️ **Kırmızı Çizgi (RoBERTa):** Yapay Zeka modelinin metinleri okuyarak belirlediği duygu durumudur. **Mavi Çizgi (ABF):** Kelime sayma yöntemine dayalı klasik endekstir. İki çizginin ayrıştığı noktalar (örn: Kasım 2023), metnin dili ile içeriğinin farklılaştığı (sözlü yönlendirme) anları gösterir.")
-        
-        if st.button("🔄 Verileri Yenile"): st.cache_data.clear(); st.rerun()
+        if event_links_display:
+            with st.expander("📅 Grafikteki Önemli Tarihler ve Haber Linkleri"):
+                for item in event_links_display:
+                    st.markdown(f"**{item['Tarih']}**")
+                    for link in item['Linkler']: st.markdown(f"- [Haber Linki]({link})")
+                        
+        # Cache temizleme butonu
+        if st.button("🔄 Verileri Yenile (Cache Temizle)"): 
+            st.cache_data.clear()
+            st.rerun()
+            
     else: st.info("Kayıt yok.")
 
 # ==============================================================================

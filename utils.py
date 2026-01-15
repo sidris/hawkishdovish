@@ -670,74 +670,62 @@ def analyze_sentences_with_roberta(text):
 # =============================================================================
 # 10. TARİHSEL RoBERTa HESAPLAMA (DASHBOARD - DÜZ ÇİZGİ FIX)
 # =============================================================================
-# utils.py EN ALTINA EKLENECEK / DEĞİŞTİRİLECEK
 
-@st.cache_data(show_spinner=True)
+
+
+
+@st.cache_data
 def calculate_roberta_series(df):
     """
-    Geçmişteki tüm verileri RoBERTa ile tarar.
-    Moritz-Pfeifer modelini kullanarak Şahin/Güvercin/Nötr ayrımı yapar.
-    Skor Aralığı: -100 (Güvercin) ... 0 (Nötr) ... +100 (Şahin)
+    Geçmiş verileri RoBERTa ile puanlar.
+    DÜZELTME: Dovish/Negative etiketlerinin negatif (-) puana dönüşmesi garanti altına alındı.
     """
     if df.empty: return pd.DataFrame()
     
-    # Modeli yükle
     classifier = load_roberta_pipeline()
     if not classifier or classifier == "MISSING_LIB": return pd.DataFrame()
 
     results = []
     
-    # Veriyi tarihe göre sırala ki grafik düzgün çıksın
-    df = df.sort_values("period_date")
+    # İlerlemeyi görmek için (opsiyonel)
+    print("RoBERTa Geçmiş Analizi Başlatılıyor...")
 
-    # İlerleme çubuğu (Terminalde görünür, arayüzde donmayı engeller)
-    total = len(df)
-    print(f"RoBERTa Geçmiş Analizi Başlıyor... Toplam {total} kayıt.")
-
-    for i, row in df.iterrows():
+    for _, row in df.iterrows():
         text = str(row.get('text_content', ''))
-        # Çok kısa veya boş metinleri atla
-        if len(text.split()) < 10: continue
+        # Çok kısa metinleri atla
+        if len(text.split()) < 5: continue
         
         try:
-            # Token limitine dikkat ederek metni kes
-            # Merkez bankası metinlerinde baş kısımlar genelde karar içerir, o yüzden baştan alıyoruz.
-            truncated_text = text[:1500] 
+            # Token limiti
+            res = classifier(text[:1500])[0] 
             
-            # Tahmin
-            res = classifier(truncated_text)[0] # [{'label': 'hawkish', 'score': 0.99}, ...]
-            
-            # Etiketleri ve skorları ayrıştır
+            # Tüm skorları al
             scores = {r['label'].lower(): r['score'] for r in res}
             
-            # En yüksek olasılıklı etiketi bul (Argmax)
+            # En yüksek olasılıklı etiketi bul
             best_label = max(scores, key=scores.get)
             confidence = scores[best_label]
             
-            final_index = 0.0
+            final_val = 0.0
             
-            # Puanlama Mantığı:
-            # Hawkish -> +100 * Güven
-            # Dovish  -> -100 * Güven
+            # --- KRİTİK MANTIK DÜZELTMESİ ---
+            # Hawkish veya Positive -> Pozitif Skor (+)
+            if 'hawkish' in best_label or 'positive' in best_label:
+                final_val = 100.0 * confidence
+            
+            # Dovish veya Negative -> Negatif Skor (-)
+            elif 'dovish' in best_label or 'negative' in best_label:
+                final_val = -100.0 * confidence
+            
             # Neutral -> 0
-            
-            if "hawkish" in best_label:
-                final_index = 100.0 * confidence
-            elif "dovish" in best_label:
-                final_index = -100.0 * confidence
-            elif "positive" in best_label: # Yedek
-                final_index = 100.0 * confidence
-            elif "negative" in best_label: # Yedek
-                final_index = -100.0 * confidence
             
             results.append({
                 "period_date": row.get("period_date"),
-                "roberta_index": final_index,
-                "roberta_label": best_label # Tooltip için
+                "roberta_index": final_val,
+                "roberta_label": best_label  # Kontrol için etiketi de sakla
             })
-            
         except Exception as e:
-            print(f"Hata (Satır {i}): {e}")
+            print(f"Hata: {e}")
             continue
             
     return pd.DataFrame(results)

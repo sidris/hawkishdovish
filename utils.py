@@ -925,3 +925,83 @@ def calculate_vader_series(df):
 
 def calculate_finbert_series(df): 
     return pd.DataFrame(columns=["period_date", "finbert_pos", "finbert_neg", "finbert_neu", "finbert_score"])
+
+
+# --- utils.py dosyasının EN ALTINA ekleyin ---
+
+# =============================================================================
+# 7. CENTRAL BANK RoBERTa (YAPAY ZEKA) ENTEGRASYONU
+# =============================================================================
+
+@st.cache_resource
+def load_roberta_pipeline():
+    """
+    Hugging Face'den RoBERTa modelini indirir ve Cache'e alır.
+    Böylece her analizde tekrar tekrar indirmez.
+    """
+    try:
+        from transformers import pipeline
+        # Finansal duygu analizi için en popüler RoBERTa modellerinden biri:
+        model_name = "mrm8488/distilroberta-finetuned-financial-news-sentiment"
+        
+        # Eğer yerel modeliniz varsa: model_name = "./CentralBankRoBERTa"
+        classifier = pipeline("text-classification", model=model_name, return_all_scores=True)
+        return classifier
+    except ImportError:
+        return "MISSING_LIB"
+    except Exception as e:
+        st.error(f"Model yükleme hatası: {e}")
+        return None
+
+def analyze_with_roberta(text):
+    if not text:
+        return None
+        
+    classifier = load_roberta_pipeline()
+    
+    if classifier == "MISSING_LIB":
+        return "MISSING_LIB"
+    if classifier is None:
+        return "ERROR"
+
+    # Transformer modelleri genelde 512 token sınırı ile çalışır.
+    # Metin çok uzunsa başından kesiyoruz (Truncation).
+    truncated_text = text[:2000] 
+    
+    try:
+        results = classifier(truncated_text)[0]
+        # Örnek çıktı: [{'label': 'positive', 'score': 0.9}, ...]
+        
+        # Etiketleri Türkçeleştirme ve Yorumlama
+        # Finansal Haber Modellerinde Genelde:
+        # Negative -> Kötü Haber / Risk / Güvercin (Genelleme)
+        # Positive -> İyi Haber / Büyüme / Şahin (Genelleme)
+        
+        processed = {}
+        # Etiket haritası (Modelden modele değişebilir, bu model için):
+        labels_map = {
+            "positive": "Pozitif (Şahin Eğilimli)", 
+            "negative": "Negatif (Güvercin/Risk)", 
+            "neutral": "Nötr"
+        }
+        
+        best_score = 0
+        best_label = ""
+        
+        for r in results:
+            lbl = r['label'].lower()
+            score = r['score']
+            mapped_lbl = labels_map.get(lbl, lbl)
+            processed[mapped_lbl] = score
+            
+            if score > best_score:
+                best_score = score
+                best_label = mapped_lbl
+                
+        return {
+            "best_label": best_label,
+            "best_score": best_score,
+            "all_scores": processed
+        }
+    except Exception as e:
+        return f"Error: {e}"

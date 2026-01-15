@@ -491,11 +491,39 @@ def fit_final(X, y_bps, y_dir, dates, clf, r_cut, r_hike, r_all):
     if len(hike) >= 8: r_hike.fit(X.iloc[hike], y_bps[hike], reg__sample_weight=exp_time_weights(dates.iloc[hike]))
 
 def prepare_ml_dataset(df_logs, df_market):
+    """
+    ML eğitimi için veriyi hazırlar. 
+    Eksik 'Donem' sütununu otomatik oluşturur.
+    """
     if df_logs.empty or df_market.empty: return pd.DataFrame()
-    df = pd.merge(df_logs, df_market, on="Donem", how="left").sort_values("period_date")
+    
+    # --- GÜVENLİK DÜZELTMESİ BAŞLANGICI ---
+    # Eğer df_logs içinde 'Donem' yoksa oluştur
+    if 'Donem' not in df_logs.columns and 'period_date' in df_logs.columns:
+        df_logs = df_logs.copy()
+        df_logs['period_date'] = pd.to_datetime(df_logs['period_date'])
+        df_logs['Donem'] = df_logs['period_date'].dt.strftime('%Y-%m')
+    
+    # df_market içinde 'Donem' kontrolü
+    if 'Donem' not in df_market.columns:
+        return pd.DataFrame()
+    # --- GÜVENLİK DÜZELTMESİ SONU ---
+
+    # Merge işlemi artık güvenli
+    df = pd.merge(df_logs, df_market, on="Donem", how="left")
+    
+    if 'period_date' in df.columns:
+        df = df.sort_values("period_date")
+    
+    # Faiz değişimi hesapla
     df['rate_change_bps'] = df['PPK Faizi'].diff().fillna(0.0) * 100
     df['text'] = df['text_content'].fillna("").apply(normalize_tr_text)
-    return pd.DataFrame({"date": df['period_date'], "text": df['text'], "rate_change_bps": df['rate_change_bps']}).dropna()
+    
+    return pd.DataFrame({
+        "date": df['period_date'], 
+        "text": df['text'], 
+        "rate_change_bps": df['rate_change_bps']
+    }).dropna()
 
 class AdvancedMLPredictor:
     def __init__(self): self.clf_pipe = None; self.reg_pipes = {}; self.intervals = {}; self.df_hist = None

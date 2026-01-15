@@ -671,14 +671,14 @@ def analyze_sentences_with_roberta(text):
 # 10. TARİHSEL RoBERTa HESAPLAMA (DASHBOARD - DÜZ ÇİZGİ FIX)
 # =============================================================================
 
-
-
+# utils.py EN ALT KISIM (Section 10)
 
 @st.cache_data
 def calculate_roberta_series(df):
     """
     Geçmiş verileri RoBERTa ile puanlar.
-    DÜZELTME: Dovish/Negative etiketlerinin negatif (-) puana dönüşmesi garanti altına alındı.
+    DÜZELTME: Dashboard için okunabilir metin (Tooltip) de üretir.
+    Örn: "🕊️ Güvercin %56.4"
     """
     if df.empty: return pd.DataFrame()
     
@@ -687,12 +687,11 @@ def calculate_roberta_series(df):
 
     results = []
     
-    # İlerlemeyi görmek için (opsiyonel)
-    print("RoBERTa Geçmiş Analizi Başlatılıyor...")
+    # İlerlemeyi görmek için
+    print("RoBERTa Geçmiş Analizi (Detaylı) Başlatılıyor...")
 
     for _, row in df.iterrows():
         text = str(row.get('text_content', ''))
-        # Çok kısa metinleri atla
         if len(text.split()) < 5: continue
         
         try:
@@ -707,22 +706,25 @@ def calculate_roberta_series(df):
             confidence = scores[best_label]
             
             final_val = 0.0
+            display_text = ""
             
-            # --- KRİTİK MANTIK DÜZELTMESİ ---
-            # Hawkish veya Positive -> Pozitif Skor (+)
+            # --- SKOR VE METİN OLUŞTURMA ---
             if 'hawkish' in best_label or 'positive' in best_label:
                 final_val = 100.0 * confidence
+                display_text = f"🦅 Şahin %{confidence*100:.1f}"
             
-            # Dovish veya Negative -> Negatif Skor (-)
             elif 'dovish' in best_label or 'negative' in best_label:
                 final_val = -100.0 * confidence
+                display_text = f"🕊️ Güvercin %{confidence*100:.1f}"
             
-            # Neutral -> 0
+            else: # Neutral
+                final_val = 0.0
+                display_text = f"⚖️ Nötr %{confidence*100:.1f}"
             
             results.append({
                 "period_date": row.get("period_date"),
                 "roberta_index": final_val,
-                "roberta_label": best_label  # Kontrol için etiketi de sakla
+                "roberta_desc": display_text # <--- DASHBOARD İÇİN EKLENEN METİN
             })
         except Exception as e:
             print(f"Hata: {e}")

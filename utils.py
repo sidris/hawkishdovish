@@ -579,20 +579,54 @@ def analyze_hawk_dove_structural(text: str, window_words: int = 7, dedupe_within
 def load_roberta_pipeline():
     try:
         from transformers import pipeline
-        # Moritz-Pfeifer modeli Merkez Bankası metinleri için özeldir.
+        # Bu modelin etiketleri: 'Hawkish', 'Dovish', 'Neutral'
         return pipeline("text-classification", model="Moritz-Pfeifer/CentralBankRoBERTa-sentiment-classifier", return_all_scores=True)
     except: return None
+
+def get_label_mapping(label):
+    """
+    Modelden gelen farklı etiketleri (Hawkish, Positive vb.) standart Türkçe'ye çevirir.
+    """
+    lbl = label.lower()
+    
+    # 1. Moritz-Pfeifer Modeli Etiketleri (Öncelikli)
+    if "hawkish" in lbl: return "🦅 Şahin"
+    if "dovish" in lbl: return "🕊️ Güvercin"
+    
+    # 2. Alternatif/FinBERT Etiketleri (Yedek)
+    if "positive" in lbl: return "🦅 Şahin (Pozitif)"
+    if "negative" in lbl: return "🕊️ Güvercin (Negatif)"
+    
+    # 3. Nötr Durumu
+    if "neutral" in lbl: return "⚖️ Nötr"
+    
+    return lbl.capitalize()
 
 def analyze_with_roberta(text):
     clf = load_roberta_pipeline()
     if not clf: return None
     try:
-        res = clf(text[:2000])[0]
+        # Metni modele ver
+        res = clf(text[:2000])[0] 
+        
+        # Skorları sözlüğe çevir: {'hawkish': 0.9, 'dovish': 0.05, ...}
         scores = {r['label'].lower(): r['score'] for r in res}
-        best = max(scores, key=scores.get)
-        tr_map = {"hawkish": "🦅 Şahin", "dovish": "🕊️ Güvercin", "neutral": "⚖️ Nötr"}
-        tr_scores = {tr_map.get(k, k): v for k, v in scores.items()}
-        return {"best_label": tr_map.get(best, best), "best_score": scores[best], "all_scores": tr_scores}
+        
+        # En yüksek skoru bul
+        best_label_raw = max(scores, key=scores.get)
+        best_score = scores[best_label_raw]
+        
+        # Türkçe'ye çevir
+        best_label_tr = get_label_mapping(best_label_raw)
+        
+        # Tüm skorları Türkçe anahtarlarla yeniden oluştur
+        all_scores_tr = {get_label_mapping(k): v for k, v in scores.items()}
+        
+        return {
+            "best_label": best_label_tr, 
+            "best_score": best_score, 
+            "all_scores": all_scores_tr
+        }
     except Exception as e: return f"Error: {e}"
 
 def analyze_sentences_with_roberta(text):
@@ -609,27 +643,30 @@ def analyze_sentences_with_roberta(text):
     res_list = []
     try:
         preds = clf(sents)
-        tr_map = {"hawkish": "🦅 Şahin", "dovish": "🕊️ Güvercin", "neutral": "⚖️ Nötr"}
         
         for s, p in zip(sents, preds):
-            # FIX: p bir liste olabilir [{'label':.., 'score':..}, ..]. Max score'u al.
+            # p bir liste olabilir [{'label':.., 'score':..}, ..]. Max score'u al.
             if isinstance(p, list):
                 best = max(p, key=lambda x: x['score'])
             else:
                 best = p
             
+            raw_lbl = best['label'].lower()
+            tr_lbl = get_label_mapping(raw_lbl)
+            
             res_list.append({
                 "Cümle": s, 
-                "Etiket": tr_map.get(best['label'].lower(), best['label']), 
+                "Etiket": tr_lbl, 
                 "Güven Skoru": best['score'], 
-                "Ham": best['label'].lower()
+                "Ham": raw_lbl
             })
             
         df = pd.DataFrame(res_list)
-        if not df.empty: df = df.sort_values(by=["Ham", "Güven Skoru"], ascending=[True, False])
+        if not df.empty: 
+            # Sıralama: Şahin -> Güvercin -> Nötr (Ham etikete göre string sıralaması yapıyoruz)
+            df = df.sort_values(by=["Ham", "Güven Skoru"], ascending=[False, False])
         return df
     except: return pd.DataFrame()
-
 # =============================================================================
 # 10. TARİHSEL RoBERTa HESAPLAMA (DASHBOARD - DÜZ ÇİZGİ FIX)
 # =============================================================================

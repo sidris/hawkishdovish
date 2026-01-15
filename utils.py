@@ -40,11 +40,11 @@ try:
 except ImportError:
     HAS_VADER = False
 
-# FinBERT Kontrolü
+# FinBERT / RoBERTa Kontrolü
 try:
     import torch
     import torch.nn.functional as F
-    from transformers import AutoTokenizer, AutoModelForSequenceClassification
+    from transformers import AutoTokenizer, AutoModelForSequenceClassification, pipeline
     HAS_FINBERT = True
 except ImportError:
     HAS_FINBERT = False
@@ -925,3 +925,372 @@ def calculate_vader_series(df):
 
 def calculate_finbert_series(df): 
     return pd.DataFrame(columns=["period_date", "finbert_pos", "finbert_neg", "finbert_neu", "finbert_score"])
+
+# =============================================================================
+# 8. YENİ STRUCTURAL HAWK/DOVE ALGORİTMASI (Window & Pattern Matching)
+# =============================================================================
+
+def M_struct(token_or_phrase: str, wildcard_first: bool = False):
+    toks = token_or_phrase.split()
+    wild = [False] * len(toks)
+    if wildcard_first and toks:
+        wild[0] = True
+    return {"phrase": toks, "wild": wild, "pattern": token_or_phrase}
+
+HAWK_DOVE_DICT_STRUCT = {
+   "inflation": [
+        {
+           "block": "consumer_prices_inflation",
+           "terms": ["consumer prices", "inflation"],
+           "hawk": [M_struct("accelerat", True), M_struct("boost", True), M_struct("elevated"), M_struct("escalat", True), M_struct("high", True), M_struct("increas", True), M_struct("jump", True), M_struct("pickup"), M_struct("rise", True), M_struct("rose"), M_struct("rising"), M_struct("runup"), M_struct("strong", True), M_struct("surg", True), M_struct("up", True)],
+           "dove": [M_struct("decelerat", True), M_struct("declin", True), M_struct("decreas", True), M_struct("down", True), M_struct("drop", True), M_struct("fall", True), M_struct("fell"), M_struct("low", True), M_struct("muted"), M_struct("reduc", True), M_struct("slow", True), M_struct("stable"), M_struct("subdued"), M_struct("weak", True), M_struct("contained")],
+        },
+        {
+           "block": "inflation_pressure",
+           "terms": ["inflation pressure"],
+           "hawk": [M_struct("accelerat", True), M_struct("boost", True), M_struct("build", True), M_struct("elevat", True), M_struct("emerg", True), M_struct("great", True), M_struct("height", True), M_struct("high", True), M_struct("increas", True), M_struct("intensif", True), M_struct("mount", True), M_struct("pickup"), M_struct("rise", True), M_struct("rose"), M_struct("rising"), M_struct("stok", True), M_struct("strong", True), M_struct("sustain", True)],
+           "dove": [M_struct("abat", True), M_struct("contain", True), M_struct("dampen", True), M_struct("decelerat", True), M_struct("declin", True), M_struct("decreas", True), M_struct("dimin", True), M_struct("eas", True), M_struct("fall", True), M_struct("fell"), M_struct("low", True), M_struct("moderat", True), M_struct("reced", True), M_struct("reduc", True), M_struct("subdued"), M_struct("temper", True)],
+        },
+    ],
+   "economic_activity": [
+        {
+           "block": "consumer_spending",
+           "terms": ["consumer spending"],
+           "hawk": [M_struct("accelerat", True), M_struct("edg up", True), M_struct("expan", True), M_struct("increas", True), M_struct("pick up", True), M_struct("pickup"), M_struct("soft", True), M_struct("strength", True), M_struct("strong", True), M_struct("weak", True)],
+           "dove": [M_struct("contract", True), M_struct("decelerat", True), M_struct("decreas", True), M_struct("drop", True), M_struct("retrench", True), M_struct("slow", True), M_struct("slugg", True), M_struct("soft", True), M_struct("subdued")],
+        },
+        {
+           "block": "economic_activity_growth",
+           "terms": ["economic activity", "economic growth"],
+           "hawk": [M_struct("accelerat", True), M_struct("buoyant"), M_struct("edg up", True), M_struct("expan", True), M_struct("increas", True), M_struct("high", True), M_struct("pick up", True), M_struct("pickup"), M_struct("rise", True), M_struct("rose"), M_struct("rising"), M_struct("step up", True), M_struct("strength", True), M_struct("strong", True), M_struct("upside")],
+           "dove": [M_struct("contract", True), M_struct("curtail", True), M_struct("decelerat", True), M_struct("declin", True), M_struct("decreas", True), M_struct("downside"), M_struct("drop"), M_struct("fall", True), M_struct("fell"), M_struct("low", True), M_struct("moderat", True), M_struct("slow", True), M_struct("slugg", True), M_struct("weak", True)],
+        },
+        {
+           "block": "resource_utilization",
+           "terms": ["resource utilization"],
+           "hawk": [M_struct("high", True), M_struct("increas", True), M_struct("rise"), M_struct("rising"), M_struct("rose"), M_struct("tight", True)],
+           "dove": [M_struct("declin", True), M_struct("fall", True), M_struct("fell"), M_struct("loose", True), M_struct("low", True)],
+        },
+    ],
+   "employment": [
+        {
+           "block": "employment",
+           "terms": ["employment"],
+           "hawk": [M_struct("expand", True), M_struct("gain", True), M_struct("improv", True), M_struct("increas", True), M_struct("pick up", True), M_struct("pickup"), M_struct("rais", True), M_struct("rise", True), M_struct("rising"), M_struct("rose"), M_struct("strength", True), M_struct("turn up", True)],
+           "dove": [M_struct("slow", True), M_struct("declin", True), M_struct("reduc", True), M_struct("weak", True), M_struct("deteriorat", True), M_struct("shrink", True), M_struct("shrank"), M_struct("fall", True), M_struct("fell"), M_struct("drop", True), M_struct("contract", True), M_struct("sluggish")],
+        },
+        {
+           "block": "labor_market",
+           "terms": ["labor market"],
+           "hawk": [M_struct("strain", True), M_struct("tight", True)],
+           "dove": [M_struct("eased", True), M_struct("easing", True), M_struct("loos", True), M_struct("soft", True), M_struct("weak", True)],
+        },
+        {
+           "block": "unemployment",
+           "terms": ["unemployment"],
+           "hawk": [M_struct("declin", True), M_struct("fall", True), M_struct("fell"), M_struct("low", True), M_struct("reduc", True)],
+           "dove": [M_struct("elevat", True), M_struct("high"), M_struct("increas", True), M_struct("ris", True), M_struct("rose", True)],
+        },
+    ],
+}
+
+def normalize_text_struct(text: str) -> str:
+    t = text.lower().replace("’", "'").replace("`", "'")
+    t = re.sub(r"(?<=\w)-(?=\w)", " ", t)
+    t = re.sub(r"\brun\s+up\b", "runup", t)
+    t = re.sub(r"\s+", " ", t).strip()
+    return t
+
+def split_sentences_struct(text: str):
+    text = re.sub(r"\n+", ". ", text)
+    sents = re.split(r"(?<=[\.\!\?\;])\s+", text)
+    return [s.strip() for s in sents if s.strip()]
+
+def tokenize_struct(sent: str):
+    return re.findall(r"[a-z]+", sent)
+
+def match_token_struct(tok: str, pat: str, wildcard: bool) -> bool:
+    return tok.startswith(pat) if wildcard else tok == pat
+
+def find_phrase_positions_struct(tokens, phrase_tokens, wild_flags):
+    m = len(phrase_tokens)
+    hits = []
+    for i in range(0, len(tokens) - m + 1):
+        ok = True
+        for j in range(m):
+            if not match_token_struct(tokens[i + j], phrase_tokens[j], wild_flags[j]):
+                ok = False
+                break
+        if ok:
+           hits.append((i, i + m - 1))
+    return hits
+
+def find_term_positions_flex_struct(tokens, term: str):
+    tt = term.split()
+    m = len(tt)
+    hits = []
+    for i in range(0, len(tokens) - m + 1):
+        window = tokens[i:i+m]
+        ok = True
+        for j in range(m):
+            if window[j] == tt[j]: continue
+            if window[j] == tt[j] + "s" or tt[j] == window[j] + "s": continue
+            ok = False
+            break
+        if ok:
+           hits.append((i, i + m - 1))
+    return hits
+
+def select_non_overlapping_terms_struct(tokens, term_infos):
+    term_infos_sorted = sorted(term_infos, key=lambda x: len(x["term"].split()), reverse=True)
+    occupied = set()
+    selected = []
+    for info in term_infos_sorted:
+        for (s, e) in find_term_positions_flex_struct(tokens, info["term"]):
+            if any(k in occupied for k in range(s, e + 1)): continue
+            occupied.update(range(s, e + 1))
+            selected.append({**info, "start": s, "end": e})
+    selected.sort(key=lambda x: x["start"])
+    return selected
+
+def analyze_hawk_dove_structural(text: str, window_words: int = 7, dedupe_within_term_window: bool = True, nearest_only: bool = True):
+    if not text:
+        return {
+            "net_hawkishness": 0.0,
+            "hawk_pct": 0.0,
+            "dove_pct": 0.0,
+            "hawk_total": 0,
+            "dove_total": 0,
+            "topic_counts": {},
+            "matches_df": pd.DataFrame()
+        }
+
+    text_n = normalize_text_struct(text)
+    sentences = split_sentences_struct(text_n)
+
+    topic_term_infos = {}
+    for topic, blocks in HAWK_DOVE_DICT_STRUCT.items():
+        infos = []
+        for b in blocks:
+            for term in b["terms"]:
+                infos.append({"topic": topic, "block": b["block"], "term": term})
+        topic_term_infos[topic] = infos
+
+    topic_counts = {topic: {"hawk": 0, "dove": 0} for topic in HAWK_DOVE_DICT_STRUCT.keys()}
+    matches = []
+
+    for sent in sentences:
+        tokens = tokenize_struct(sent)
+        if not tokens: continue
+
+        for topic, term_infos in topic_term_infos.items():
+            selected_terms = select_non_overlapping_terms_struct(tokens, term_infos)
+            if not selected_terms: continue
+
+            blocks_by_name = {b["block"]: b for b in HAWK_DOVE_DICT_STRUCT[topic]}
+
+            for tinfo in selected_terms:
+                block = blocks_by_name[tinfo["block"]]
+                ts, te = tinfo["start"], tinfo["end"]
+                w0 = max(0, ts - window_words)
+                w1 = min(len(tokens) - 1, te + window_words)
+                
+                term_found = " ".join(tokens[ts:te + 1])
+
+                hawk_hits = []
+                for m in block["hawk"]:
+                    for (ms, me) in find_phrase_positions_struct(tokens, m["phrase"], m["wild"]):
+                        if me < w0 or ms > w1: continue
+                        dist = min(abs(ms - te), abs(ts - me))
+                        hawk_hits.append((dist, m, ms, me))
+
+                dove_hits = []
+                for m in block["dove"]:
+                    for (ms, me) in find_phrase_positions_struct(tokens, m["phrase"], m["wild"]):
+                        if me < w0 or ms > w1: continue
+                        dist = min(abs(ms - te), abs(ts - me))
+                        dove_hits.append((dist, m, ms, me))
+
+                if nearest_only:
+                    hawk_hits = sorted(hawk_hits, key=lambda x: x[0])[:1]
+                    dove_hits = sorted(dove_hits, key=lambda x: x[0])[:1]
+
+                seen = set()
+                
+                def add_hit(direction, dist, m, ms, me):
+                    mod_found = " ".join(tokens[ms:me+1])
+                    key = (topic, block["block"], ts, te, direction, mod_found)
+                    if dedupe_within_term_window and key in seen: return
+                    seen.add(key)
+                    topic_counts[topic][direction] += 1
+                    matches.append({
+                        "topic": topic,
+                        "block": block["block"],
+                        "direction": direction,
+                        "term_found": term_found,
+                        "modifier_found": mod_found,
+                        "distance": dist,
+                        "sentence": sent
+                    })
+
+                for (dist, m, ms, me) in hawk_hits: add_hit("hawk", dist, m, ms, me)
+                for (dist, m, ms, me) in dove_hits: add_hit("dove", dist, m, ms, me)
+
+    hawk_total = sum(v["hawk"] for v in topic_counts.values())
+    dove_total = sum(v["dove"] for v in topic_counts.values())
+    denom = hawk_total + dove_total
+
+    hawk_pct = 0.0 if denom == 0 else 100.0 * hawk_total / denom
+    dove_pct = 0.0 if denom == 0 else 100.0 * dove_total / denom
+    net_hawkishness = 1.0 if denom == 0 else (1.0 + (hawk_total - dove_total) / denom)
+
+    df_matches = pd.DataFrame(matches) if matches else pd.DataFrame()
+
+    return {
+        "net_hawkishness": net_hawkishness,
+        "hawk_pct": hawk_pct,
+        "dove_pct": dove_pct,
+        "hawk_total": hawk_total,
+        "dove_total": dove_total,
+        "topic_counts": topic_counts,
+        "matches_df": df_matches
+    }
+
+# =============================================================================
+# 9. CENTRAL BANK RoBERTa ENTEGRASYONU (Moritz-Pfeifer)
+# =============================================================================
+
+@st.cache_resource
+def load_roberta_pipeline():
+    try:
+        from transformers import pipeline
+        # Kullanıcının bulduğu TAM İSABET model:
+        model_name = "Moritz-Pfeifer/CentralBankRoBERTa-sentiment-classifier"
+        
+        # Bu model bazen "config" dosyasını geç okuyabilir, o yüzden try/except içinde:
+        classifier = pipeline("text-classification", model=model_name, return_all_scores=True)
+        return classifier
+    except ImportError:
+        return "MISSING_LIB"
+    except Exception as e:
+        # Hata detayını terminale yazdır, arayüzü bozma
+        print(f"Model Yükleme Hatası: {e}")
+        return None
+
+def analyze_with_roberta(text):
+    if not text:
+        return None
+        
+    classifier = load_roberta_pipeline()
+    
+    if classifier == "MISSING_LIB":
+        return "MISSING_LIB"
+    if classifier is None:
+        return "ERROR"
+
+    # Token limiti (512 token ~ ortalama 1500-2000 karakter)
+    truncated_text = text[:2000] 
+    
+    try:
+        results = classifier(truncated_text)[0]
+        # Bu modelin çıktı etiketleri genelde: 'hawkish', 'dovish', 'neutral' şeklindedir.
+        
+        processed = {}
+        # Etiketleri Türkçeleştirme Haritası
+        labels_map = {
+            "hawkish": "🦅 Şahin (Hawkish)", 
+            "dovish": "🕊️ Güvercin (Dovish)", 
+            "neutral": "⚖️ Nötr (Neutral)",
+            # Yedek olarak (model versiyonu farklıysa diye):
+            "positive": "Şahin (Pozitif)",
+            "negative": "Güvercin (Negatif)"
+        }
+        
+        best_score = -1
+        best_label = ""
+        
+        for r in results:
+            lbl = r['label'].lower() # Gelen etiketi küçült (örn: "Hawkish" -> "hawkish")
+            score = r['score']
+            
+            # Haritadan Türkçe karşılığını bul, yoksa orijinalini kullan
+            mapped_lbl = labels_map.get(lbl, lbl.capitalize())
+            processed[mapped_lbl] = score
+            
+            if score > best_score:
+                best_score = score
+                best_label = mapped_lbl
+                
+        return {
+            "best_label": best_label,
+            "best_score": best_score,
+            "all_scores": processed
+        }
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+# utils.py EN ALTINA EKLENECEK
+
+def analyze_sentences_with_roberta(text):
+    """
+    Metni cümlelere böler ve her bir cümleyi tek tek RoBERTa modeline sorar.
+    DÜZELTME: Modelden dönen liste yapısını (all_scores) doğru işler.
+    """
+    if not text: return pd.DataFrame()
+    
+    classifier = load_roberta_pipeline()
+    if not classifier or classifier == "MISSING_LIB": return pd.DataFrame()
+
+    # 1. Cümlelere Bölme
+    sentences = split_sentences_nlp(text)
+    # Çok kısa cümleleri filtrele
+    sentences = [s for s in sentences if len(s.split()) > 3]
+    
+    if not sentences: return pd.DataFrame()
+    
+    results_list = []
+    
+    try:
+        # Pipeline tahmini (Batch)
+        predictions = classifier(sentences)
+        
+        # Etiket Haritası
+        labels_map = {
+            "hawkish": "🦅 Şahin", 
+            "dovish": "🕊️ Güvercin", 
+            "neutral": "⚖️ Nötr",
+            "positive": "🦅 Şahin (Pozitif)",
+            "negative": "🕊️ Güvercin (Negatif)"
+        }
+
+        for sent, pred in zip(sentences, predictions):
+            # DÜZELTME: pred, [{'label': 'hawkish', 'score': 0.9}, ...] şeklinde bir LİSTE olabilir.
+            # En yüksek skora sahip olanı seçmeliyiz.
+            if isinstance(pred, list):
+                best_pred = max(pred, key=lambda x: x['score'])
+            else:
+                best_pred = pred
+
+            lbl_raw = best_pred['label'].lower()
+            score = best_pred['score']
+            
+            label_tr = labels_map.get(lbl_raw, lbl_raw.capitalize())
+            
+            results_list.append({
+                "Cümle": sent,
+                "Etiket": label_tr,
+                "Güven Skoru": score,
+                "Ham Etiket": lbl_raw
+            })
+            
+        df = pd.DataFrame(results_list)
+        
+        if not df.empty:
+            # Şahinler ve Güvercinler üstte, Nötrler altta görünsün
+            df = df.sort_values(by=["Ham Etiket", "Güven Skoru"], ascending=[True, False])
+            
+        return df
+
+    except Exception as e:
+        print(f"Cümle analizi hatası (Log): {e}") # Hata detayını terminalde görebilirsiniz
+        return pd.DataFrame()

@@ -628,6 +628,8 @@ with tab_struct:
 # ==============================================================================
 # TAB ROBERTA: CB-RoBERTa (YAPAY ZEKA)
 # ==============================================================================
+# app.py içindeki "with tab_roberta:" bloğunu TAMAMEN bununla değiştirin:
+
 with tab_roberta:
     st.header("🧠 CentralBankRoBERTa (Yapay Zeka Analizi)")
     st.markdown("Bu modül, klasik kelime sayma yöntemleri yerine, cümlenin **bağlamını (context)** anlayan Transformer tabanlı yapay zeka modelini kullanır.")
@@ -650,20 +652,22 @@ with tab_roberta:
             with st.expander("Metni Gör"): st.write(rob_text_input)
             
             if st.button("Yapay Zeka İle Analiz Et", type="primary"):
-                if not utils.HAS_FINBERT: # Transformer kütüphanesi kontrolü
+                if not utils.HAS_FINBERT: 
                      st.error("`transformers` ve `torch` kütüphaneleri yüklü değil. Terminalde `pip install transformers torch` çalıştırın.")
                 else:
-                    with st.spinner("Model yükleniyor ve analiz ediliyor (İlk seferde biraz sürebilir)..."):
+                    with st.spinner("Model yükleniyor ve genel analiz yapılıyor..."):
+                        # 1. Genel Analiz
                         roberta_res = utils.analyze_with_roberta(rob_text_input)
                     
                     if roberta_res == "MISSING_LIB":
                         st.error("Kütüphane hatası.")
-                    elif isinstance(roberta_res, str) and roberta_res.startswith("Error"):
-                        st.error(f"Hata: {roberta_res}")
-                    elif roberta_res:
-                        lbl = roberta_res['best_label']
-                        scr = roberta_res['best_score']
+                    elif roberta_res == "ERROR":
+                        st.error("Model indirilemedi.")
+                    elif isinstance(roberta_res, dict):
+                        lbl = roberta_res.get('best_label', 'Bilinmiyor')
+                        scr = roberta_res.get('best_score', 0.0)
                         
+                        # --- GENEL SKOR KARTI ---
                         c1, c2 = st.columns([1, 2])
                         with c1:
                             lbl_color = "gray"
@@ -674,18 +678,44 @@ with tab_roberta:
                             st.metric("Model Güveni", f"%{scr*100:.2f}")
                         
                         with c2:
-                            scores = roberta_res['all_scores']
-                            chart_data = pd.DataFrame(list(scores.items()), columns=['Etiket', 'Olasılık'])
-                            
-                            c = alt.Chart(chart_data).mark_bar().encode(
-                                x=alt.X('Olasılık', scale=alt.Scale(domain=[0, 1])),
-                                y=alt.Y('Etiket', sort='-x'),
-                                color=alt.Color('Etiket', legend=None),
-                                tooltip=['Etiket', alt.Tooltip('Olasılık', format='.2%')]
-                            ).properties(height=250)
-                            st.altair_chart(c, use_container_width=True)
+                            scores = roberta_res.get('all_scores', {})
+                            if scores:
+                                chart_data = pd.DataFrame(list(scores.items()), columns=['Etiket', 'Olasılık'])
+                                c = alt.Chart(chart_data).mark_bar().encode(
+                                    x=alt.X('Olasılık', scale=alt.Scale(domain=[0, 1])),
+                                    y=alt.Y('Etiket', sort='-x'),
+                                    color=alt.Color('Etiket', legend=None),
+                                    tooltip=['Etiket', alt.Tooltip('Olasılık', format='.2%')]
+                                ).properties(height=200)
+                                st.altair_chart(c, use_container_width=True)
                         
-                        st.info("Not: Bu model, `distilroberta-finetuned-financial-news-sentiment` kullanılarak çalışmaktadır.")
+                        st.divider()
+                        
+                        # --- CÜMLE BAZLI TABLO ---
+                        st.subheader("📝 Cümle Bazlı Ayrıştırma")
+                        with st.spinner("Cümleler tek tek inceleniyor..."):
+                            df_sentences = utils.analyze_sentences_with_roberta(rob_text_input)
+                        
+                        if not df_sentences.empty:
+                            # Renklendirme fonksiyonu
+                            def color_coding(val):
+                                color = 'black'
+                                if 'Şahin' in val: color = 'red'
+                                elif 'Güvercin' in val: color = 'green'
+                                return f'color: {color}; font-weight: bold;'
+
+                            st.dataframe(
+                                df_sentences.style.map(color_coding, subset=['Etiket'])
+                                .format({"Güven Skoru": "{:.2%}"}),
+                                use_container_width=True,
+                                hide_index=True
+                            )
+                        else:
+                            st.info("Cümle ayrıştırması yapılamadı.")
+
+                        st.info("Not: Bu analiz **Moritz-Pfeifer/CentralBankRoBERTa** modeli kullanılarak yapılmıştır.")
+                    else:
+                        st.error("Beklenmeyen hata oluştu.")
     else: st.info("Veri yok.")
 
 with tab_imp:

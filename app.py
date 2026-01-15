@@ -69,7 +69,7 @@ tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab_struct, tab_roberta, tab_imp = st.
 # ==============================================================================
 # TAB 1: DASHBOARD
 # ==============================================================================
-# app.py içindeki "with tab1:" bloğunu KOMPLE bununla değiştirin:
+
 
 # app.py dosyasındaki "with tab1:" bloğunu TAMAMEN silip bunu yapıştırın:
 
@@ -131,16 +131,13 @@ with tab1:
         ))
         
         # 2. Okunabilirlik (Flesch) - Yeşil Baloncuklar - Sağ Eksen (Y3)
-        # Not: Flesch skorunu da Y3 (Kelime sayısı ekseni) veya ayrı bir eksende gösterebiliriz.
-        # Karışıklık olmasın diye ana eksende (Y1) farklı bir skala ile gösterelim veya Y3'e koyalım.
-        # Okunabilirlik genelde 0-100 arasıdır, Word count 0-500 arasıdır. Y3 uygundur.
         fig.add_trace(go.Scatter(
             x=merged['period_date'], 
             y=merged['flesch_score'], 
             name="Okunabilirlik (Flesch)", 
             mode='markers', 
             marker=dict(color='#2ecc71', size=8, symbol='circle', opacity=0.9),
-            yaxis="y3" # Sağ eksenle ölçeklensin
+            yaxis="y3" 
         ))
         
         # 3. Klasik ABG Skoru (Lacivert Çizgi)
@@ -153,15 +150,17 @@ with tab1:
         ))
         
         # 4. RoBERTa AI Skoru (Kırmızı, Kalın, Tireli)
+        # GÜNCELLEME: Tooltip'e doğrudan "Güvercin %56.4" gibi metni basıyoruz.
         if 'roberta_index' in merged.columns:
             fig.add_trace(go.Scatter(
                 x=merged['period_date'], 
                 y=merged['roberta_index'], 
                 name="AI Sentiment (RoBERTa)", 
-                line=dict(color='#FF0000', width=4, dash='dash'), # RED, THICK, DASHED
+                line=dict(color='#FF0000', width=4, dash='dash'), 
+                mode='lines+markers', # Noktaların üzerine gelmeyi kolaylaştırır
                 yaxis="y",
-                hovertemplate='%{y:.1f} (%{text})',
-                text=merged['roberta_label'] if 'roberta_label' in merged.columns else ""
+                text=merged['roberta_desc'], # <--- ÖZEL METİN BURADA
+                hovertemplate='<b>%{text}</b><br>Endeks: %{y:.1f}<extra></extra>' # Tooltip formatı
             ))
 
         # 5. Piyasa Verileri (İnce Çizgiler)
@@ -172,7 +171,6 @@ with tab1:
 
         # Düzen (Layout)
         layout_shapes = [
-            # 0 Çizgisi (Nötr)
             dict(type="line", xref="paper", yref="y", x0=0, x1=1, y0=0, y1=0, line=dict(color="black", width=2), layer="below"),
         ]
         
@@ -181,13 +179,11 @@ with tab1:
             dict(x=0.02, y=-110, xref="paper", yref="y", text="🕊️ GÜVERCİN BÖLGESİ", showarrow=False, font=dict(size=12, color="darkblue", weight="bold"), xanchor="left")
         ]
         
-        # Başkanlar
         governors = [("2020-11-01", "N.Ağbal"), ("2021-04-01", "Ş.Kavcıoğlu"), ("2023-06-01", "H.G.Erkan"), ("2024-02-01", "F.Karahan")]
         for start_date, name in governors:
             layout_shapes.append(dict(type="line", xref="x", yref="paper", x0=start_date, x1=start_date, y0=0, y1=1, line=dict(color="gray", width=1, dash="longdash"), layer="below"))
             layout_annotations.append(dict(x=start_date, y=1.05, xref="x", yref="paper", text=f"<b>{name}</b>", showarrow=False, xanchor="left", font=dict(size=9, color="#555")))
 
-        # Olaylar (Linkler)
         event_links_display = []
         if not df_events.empty:
             for _, ev in df_events.iterrows():
@@ -207,7 +203,6 @@ with tab1:
             legend=dict(orientation="h", yanchor="top", y=-0.1, xanchor="center", x=0.5),
             yaxis=dict(title="Sentiment Endeksi (-100 / +100)", range=[-130, 130], zeroline=False),
             yaxis2=dict(visible=False, overlaying="y", side="right"),
-            # Kelime sayısı ve Flesch için sağ eksen
             yaxis3=dict(title="Kelime / Okunabilirlik", overlaying="y", side="right", showgrid=False, visible=False, range=[0, merged['word_count'].max() * 2])
         )
         st.plotly_chart(fig, use_container_width=True)
@@ -218,13 +213,11 @@ with tab1:
                     st.markdown(f"**{item['Tarih']}**")
                     for link in item['Linkler']: st.markdown(f"- [Haber Linki]({link})")
                         
-        # Cache temizleme butonu
         if st.button("🔄 Verileri Yenile (Cache Temizle)"): 
             st.cache_data.clear()
             st.rerun()
             
     else: st.info("Kayıt yok.")
-
 # ==============================================================================
 # TAB 2: VERİ GİRİŞİ
 # ==============================================================================

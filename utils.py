@@ -1234,24 +1234,24 @@ def analyze_with_roberta(text):
 def analyze_sentences_with_roberta(text):
     """
     Metni cümlelere böler ve her bir cümleyi tek tek RoBERTa modeline sorar.
-    Sonuçları bir Pandas DataFrame olarak döndürür.
+    DÜZELTME: Modelden dönen liste yapısını (all_scores) doğru işler.
     """
     if not text: return pd.DataFrame()
     
     classifier = load_roberta_pipeline()
     if not classifier or classifier == "MISSING_LIB": return pd.DataFrame()
 
-    # 1. Cümlelere Bölme (Mevcut fonksiyonu kullanıyoruz)
+    # 1. Cümlelere Bölme
     sentences = split_sentences_nlp(text)
-    
-    # Çok kısa cümleleri (başlık vs.) filtrele
+    # Çok kısa cümleleri filtrele
     sentences = [s for s in sentences if len(s.split()) > 3]
+    
+    if not sentences: return pd.DataFrame()
     
     results_list = []
     
-    # 2. Toplu Analiz (Batch Processing daha hızlıdır)
     try:
-        # Pipeline'a listeyi veriyoruz
+        # Pipeline tahmini (Batch)
         predictions = classifier(sentences)
         
         # Etiket Haritası
@@ -1259,33 +1259,38 @@ def analyze_sentences_with_roberta(text):
             "hawkish": "🦅 Şahin", 
             "dovish": "🕊️ Güvercin", 
             "neutral": "⚖️ Nötr",
-            "positive": "🦅 Şahin (Pozitif)", # Model versiyonu farklıysa diye yedek
+            "positive": "🦅 Şahin (Pozitif)",
             "negative": "🕊️ Güvercin (Negatif)"
         }
 
         for sent, pred in zip(sentences, predictions):
-            lbl_raw = pred['label'].lower()
-            score = pred['score']
+            # DÜZELTME: pred, [{'label': 'hawkish', 'score': 0.9}, ...] şeklinde bir LİSTE olabilir.
+            # En yüksek skora sahip olanı seçmeliyiz.
+            if isinstance(pred, list):
+                best_pred = max(pred, key=lambda x: x['score'])
+            else:
+                best_pred = pred
+
+            lbl_raw = best_pred['label'].lower()
+            score = best_pred['score']
             
             label_tr = labels_map.get(lbl_raw, lbl_raw.capitalize())
             
-            # Sadece yüksek skorlu veya önemli olanları alabiliriz
-            # Amaç tablo ise hepsini ekleyelim
             results_list.append({
                 "Cümle": sent,
                 "Etiket": label_tr,
                 "Güven Skoru": score,
-                "Ham Etiket": lbl_raw # Sıralama veya renklendirme için
+                "Ham Etiket": lbl_raw
             })
             
         df = pd.DataFrame(results_list)
         
-        # Sıralama: Önce Şahinler, Sonra Güvercinler gelsin (Nötrler sona)
         if not df.empty:
+            # Şahinler ve Güvercinler üstte, Nötrler altta görünsün
             df = df.sort_values(by=["Ham Etiket", "Güven Skoru"], ascending=[True, False])
             
         return df
 
     except Exception as e:
-        print(f"Cümle analizi hatası: {e}")
+        print(f"Cümle analizi hatası (Log): {e}") # Hata detayını terminalde görebilirsiniz
         return pd.DataFrame()

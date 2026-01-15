@@ -1,1296 +1,835 @@
 import streamlit as st
-from supabase import create_client, Client
 import pandas as pd
-import requests
-import io
 import datetime
-import re
-import difflib
-from collections import Counter
-import numpy as np
-from dataclasses import dataclass
-from typing import List, Dict, Tuple, Any, Optional
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+import altair as alt # KALIN ÇİZGİ İÇİN EKLENDİ
+import utils 
+import uuid
 
-# --- 1. KÜTÜPHANE KONTROLLERİ VE GLOBAL FLAGLER ---
-HAS_ML_DEPS = False
-HAS_VADER = False
-HAS_FINBERT = False
+st.set_page_config(page_title="Piyasa Analiz", layout="wide")
 
-# ML Kütüphaneleri
-try:
-    import sklearn
-    from sklearn.base import clone
-    from sklearn.compose import ColumnTransformer
-    from sklearn.pipeline import Pipeline
-    from sklearn.preprocessing import StandardScaler, FunctionTransformer
-    from sklearn.feature_extraction.text import TfidfVectorizer
-    from sklearn.linear_model import LogisticRegression, Ridge
-    from sklearn.model_selection import TimeSeriesSplit
-    from sklearn.metrics import mean_absolute_error, mean_squared_error, classification_report, confusion_matrix
-    from wordcloud import WordCloud, STOPWORDS
-    import matplotlib.pyplot as plt
-    HAS_ML_DEPS = True
-except ImportError:
-    HAS_ML_DEPS = False
+st.markdown("""
+<style>
+    .block-container { padding-top: 1rem; padding-bottom: 5rem; }
+    h1 { font-size: 1.8rem !important; }
+    .stDataFrame { font-size: 0.8rem; }
+    .stButton button { border-radius: 20px; font-size: 0.8rem; }
+</style>
+""", unsafe_allow_html=True)
 
-# VADER Kontrolü
-try:
-    from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
-    HAS_VADER = True
-except ImportError:
-    HAS_VADER = False
+# --- GÜVENLİK ---
+APP_PWD = "SahinGuvercin34"      
+ADMIN_PWD = "SahinGuvercin06"    
 
-# FinBERT / RoBERTa Kontrolü
-try:
-    import torch
-    import torch.nn.functional as F
-    from transformers import AutoTokenizer, AutoModelForSequenceClassification, pipeline
-    HAS_FINBERT = True
-except ImportError:
-    HAS_FINBERT = False
+if 'logged_in' not in st.session_state:
+    st.session_state['logged_in'] = False
 
-# --- 2. AYARLAR VE BAĞLANTI ---
-try:
-    if "supabase" in st.secrets:
-        url = st.secrets["supabase"]["url"]
-        key = st.secrets["supabase"]["key"]
-        EVDS_API_KEY = st.secrets["supabase"].get("EVDS_KEY") or st.secrets.get("EVDS_KEY")
-    else:
-        url = st.secrets.get("SUPABASE_URL")
-        key = st.secrets.get("SUPABASE_KEY")
-        EVDS_API_KEY = st.secrets.get("EVDS_KEY")
+if not st.session_state['logged_in']:
+    col1, col2, col3 = st.columns([1, 8, 1])
+    with col2:
+        st.markdown("<br><h3 style='text-align: center;'>🔐 Güvenli Giriş</h3>", unsafe_allow_html=True)
+        pwd_input = st.text_input("Uygulama Şifresi", type="password")
+        if st.button("Giriş Yap", type="primary"):
+            if pwd_input == APP_PWD:
+                st.session_state['logged_in'] = True; st.success("Başarılı!"); st.rerun()
+            else: st.error("Hatalı!")
+    st.stop()
 
-    if url and key:
-        supabase: Client = create_client(url, key)
-    else:
-        supabase = None
-except Exception:
-    supabase = None
+# --- SESSION & STATE ---
+if 'form_data' not in st.session_state: st.session_state['form_data'] = {'id': None, 'date': datetime.date.today().replace(day=1), 'source': "TCMB", 'text': ""}
+if 'table_key' not in st.session_state: st.session_state['table_key'] = str(uuid.uuid4())
+if 'collision_state' not in st.session_state: st.session_state['collision_state'] = {'active': False, 'target_id': None, 'pending_text': None, 'target_date': None}
+if 'update_state' not in st.session_state: st.session_state['update_state'] = {'active': False, 'pending_text': None}
 
-EVDS_BASE = "https://evds2.tcmb.gov.tr/service/evds"
-EVDS_TUFE_SERIES = "TP.FG.J0"
+if 'stop_words_deep' not in st.session_state: st.session_state['stop_words_deep'] = []
+if 'stop_words_cloud' not in st.session_state: st.session_state['stop_words_cloud'] = []
 
-# =============================================================================
-# 3. VERİTABANI İŞLEMLERİ
-# =============================================================================
+def add_deep_stop():
+    word = st.session_state.get("deep_stop_in", "").strip()
+    if word and word not in st.session_state['stop_words_deep']:
+        st.session_state['stop_words_deep'].append(word)
+    st.session_state["deep_stop_in"] = ""
 
-def fetch_all_data():
-    if not supabase: return pd.DataFrame()
-    try:
-        res = supabase.table("market_logs").select("*").order("period_date", desc=True).execute()
-        data = getattr(res, 'data', []) if res else []
-        return pd.DataFrame(data)
-    except Exception:
-        return pd.DataFrame()
+def add_cloud_stop():
+    word = st.session_state.get("cloud_stop_in", "").strip()
+    if word and word not in st.session_state['stop_words_cloud']:
+        st.session_state['stop_words_cloud'].append(word)
+    st.session_state["cloud_stop_in"] = ""
 
-def insert_entry(date, text, source, s_dict, s_abg):
-    if not supabase: return
-    try:
-        data = {"period_date": str(date), "text_content": text, "source": source,
-            "score_dict": s_dict, "score_abg": s_abg}
-        supabase.table("market_logs").insert(data).execute()
-    except Exception: pass
+def reset_form():
+    st.session_state['form_data'] = {'id': None, 'date': datetime.date.today(), 'source': "TCMB", 'text': ""}
+    st.session_state['collision_state'] = {'active': False, 'target_id': None, 'pending_text': None, 'target_date': None}
+    st.session_state['update_state'] = {'active': False, 'pending_text': None}
+    st.session_state['table_key'] = str(uuid.uuid4())
 
-def update_entry(rid, date, text, source, s_dict, s_abg):
-    if not supabase: return
-    try:
-        data = {"period_date": str(date), "text_content": text, "source": source,
-            "score_dict": s_dict, "score_abg": s_abg}
-        supabase.table("market_logs").update(data).eq("id", rid).execute()
-    except Exception: pass
+c_head1, c_head2 = st.columns([6, 1])
+with c_head1: st.title("🦅 Şahin/Güvercin Paneli")
+with c_head2: 
+    if st.button("Çıkış"): st.session_state['logged_in'] = False; st.rerun()
 
-def delete_entry(rid):
-    if supabase: 
-        try:
-            supabase.table("market_logs").delete().eq("id", rid).execute()
-        except Exception: pass
+# SEKME YAPILANDIRMASI
+# "🏗️ Yapısal Analiz" ve "🧠 CB-RoBERTa" sekmeleri eklendi
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab_struct, tab_roberta, tab_imp, tab_vader, tab_finbert = st.tabs([
+    "📈 Dashboard", "📝 Veri Girişi", "📊 Veriler", "🔍 Frekans", "🤖 Faiz Tahmini", "☁️ WordCloud", "📜 ABF (2019)", 
+    "🏗️ Yapısal Analiz", "🧠 CB-RoBERTa", "📅 Haberler", "😊 VADER", "💰 FinBERT"
+])
 
-def fetch_events():
-    if not supabase: return pd.DataFrame()
-    try:
-        res = supabase.table("event_logs").select("*").order("event_date", desc=True).execute()
-        data = getattr(res, 'data', []) if res else []
-        return pd.DataFrame(data)
-    except Exception: return pd.DataFrame()
-
-def add_event(date, links):
-    if not supabase: return
-    try:
-        data = {"event_date": str(date), "links": links}
-        supabase.table("event_logs").insert(data).execute()
-    except Exception: pass
-
-def delete_event(rid):
-    if supabase:
-        try: supabase.table("event_logs").delete().eq("id", rid).execute()
-        except Exception: pass
-
-# --- MARKET DATA ---
-@st.cache_data(ttl=600)
-def fetch_market_data_adapter(start_date, end_date):
-    empty_df = pd.DataFrame(columns=["Donem", "Yıllık TÜFE", "PPK Faizi", "SortDate"])
+# ==============================================================================
+# TAB 1: DASHBOARD
+# ==============================================================================
+with tab1:
+    with st.spinner("Veriler Yükleniyor..."):
+        df_logs = utils.fetch_all_data()
+        df_events = utils.fetch_events() 
     
-    if not EVDS_API_KEY: 
-        dates = pd.date_range(start=start_date, end=end_date, freq='M')
-        if len(dates) == 0: return empty_df, "Tarih Yok"
-        return pd.DataFrame({
-            'Donem': dates.strftime('%Y-%m'),
-            'Yıllık TÜFE': [0]*len(dates),
-            'PPK Faizi': [0]*len(dates),
-            'SortDate': dates
-        }), "API Key Yok"
-
-    df_inf = pd.DataFrame()
-    try:
-        s = start_date.strftime("%d-%m-%Y"); e = end_date.strftime("%d-%m-%Y")
-        for form, col in [(1, "Aylık TÜFE"), (3, "Yıllık TÜFE")]:
-            url = f"{EVDS_BASE}/series={EVDS_TUFE_SERIES}&startDate={s}&endDate={e}&type=json&formulas={form}"
-            r = requests.get(url, headers={"key": EVDS_API_KEY}, timeout=20)
-            if r.status_code == 200 and r.json().get("items"):
-                temp = pd.DataFrame(r.json()["items"])
-                temp["dt"] = pd.to_datetime(temp["Tarih"], dayfirst=True, errors="coerce")
-                if temp["dt"].isnull().all(): temp["dt"] = pd.to_datetime(temp["Tarih"], format="%Y-%m", errors="coerce")
-                temp = temp.dropna(subset=["dt"])
-                temp["Donem"] = temp["dt"].dt.strftime("%Y-%m")
-                val_c = [c for c in temp.columns if "TP" in c][0]
-                temp = temp.rename(columns={val_c: col})[["Donem", col]]
-                if df_inf.empty: df_inf = temp
-                else: df_inf = pd.merge(df_inf, temp, on="Donem", how="outer")
-    except Exception: pass
-
-    df_pol = pd.DataFrame()
-    try:
-        s_bis = start_date.strftime("%Y-%m-%d"); e_bis = end_date.strftime("%Y-%m-%d")
-        url_bis = f"https://stats.bis.org/api/v1/data/WS_CBPOL/D.TR?format=csv&startPeriod={s_bis}&endPeriod={e_bis}"
-        r_bis = requests.get(url_bis, timeout=20)
-        if r_bis.status_code == 200:
-            temp_bis = pd.read_csv(io.StringIO(r_bis.content.decode("utf-8")), usecols=["TIME_PERIOD", "OBS_VALUE"])
-            temp_bis["dt"] = pd.to_datetime(temp_bis["TIME_PERIOD"])
-            temp_bis["Donem"] = temp_bis["dt"].dt.strftime("%Y-%m")
-            temp_bis["PPK Faizi"] = pd.to_numeric(temp_bis["OBS_VALUE"], errors="coerce")
-            df_pol = temp_bis.sort_values("dt").groupby("Donem").last().reset_index()[["Donem", "PPK Faizi"]]
-    except Exception: pass
-
-    master_df = pd.DataFrame()
-    if not df_inf.empty and not df_pol.empty: master_df = pd.merge(df_inf, df_pol, on="Donem", how="outer")
-    elif not df_inf.empty: master_df = df_inf
-    elif not df_pol.empty: master_df = df_pol
-
-    if master_df.empty: return empty_df, "Veri Bulunamadı"
-    
-    for c in ["Yıllık TÜFE", "PPK Faizi"]:
-        if c not in master_df.columns: master_df[c] = 0.0
-        
-    master_df["SortDate"] = pd.to_datetime(master_df["Donem"] + "-01")
-    return master_df.sort_values("SortDate"), None
-
-# =============================================================================
-# 4. OKUNABİLİRLİK VE FREKANS ANALİZİ
-# =============================================================================
-
-def count_syllables_en(word):
-    word = word.lower()
-    if len(word) <= 3: return 1
-    word = re.sub(r'(?:[^laeiouy]|ed|[^laeiouy]e)$', '', word, flags=re.IGNORECASE)
-    word = re.sub(r'^y', '', word, flags=re.IGNORECASE)
-    syllables = re.findall(r'[aeiouy]{1,2}', word, flags=re.IGNORECASE)
-    return len(syllables) if syllables else 1
-
-def calculate_flesch_reading_ease(text):
-    if not text: return 0
-    lines = text.split('\n')
-    filtered_lines = [ln for ln in lines if not re.match(r'^\s*[-•]\s*', ln)]
-    filtered_text = ' '.join(filtered_lines)
-    cleaned_text = re.sub(r'\d+\.\d+', '', filtered_text)
-    
-    sentences = re.findall(r'[^\.!\?]+[\.!\?]+', cleaned_text)
-    sentence_count = len(sentences) if sentences else 1
-    
-    words_cleaned = [w for w in re.split(r'\s+', cleaned_text) if w]
-    total_words_cleaned = len(words_cleaned)
-    average_sentence_length = total_words_cleaned / sentence_count if sentence_count > 0 else 0
-    
-    words_raw = [w for w in re.split(r'\s+', text) if w]
-    total_words_raw = len(words_raw)
-    
-    if total_words_raw == 0: return 0
-    
-    total_syllables_raw = sum(count_syllables_en(w) for w in words_raw)
-    average_syllables_per_word = total_syllables_raw / total_words_raw
-    
-    score = 206.835 - (1.015 * average_sentence_length) - (84.6 * average_syllables_per_word)
-    return round(score, 2)
-
-def generate_diff_html(text1, text2):
-    if not text1: text1 = ""
-    if not text2: text2 = ""
-    a = text1.split()
-    b = text2.split()
-    matcher = difflib.SequenceMatcher(None, a, b)
-    html_output = []
-    for opcode, a0, a1, b0, b1 in matcher.get_opcodes():
-        if opcode == 'equal':
-            html_output.append(" ".join(a[a0:a1]))
-        elif opcode == 'insert':
-            html_output.append(f'<span style="background-color: #d4fcbc; color: #376e37; font-weight: bold;">+ {" ".join(b[b0:b1])}</span>')
-        elif opcode == 'delete':
-            html_output.append(f'<span style="background-color: #fcd4bc; color: #9c4444; text-decoration: line-through;">- {" ".join(a[a0:a1])}</span>')
-        elif opcode == 'replace':
-            html_output.append(f'<span style="background-color: #fcd4bc; color: #9c4444; text-decoration: line-through;">- {" ".join(a[a0:a1])}</span>')
-            html_output.append(f'<span style="background-color: #d4fcbc; color: #376e37; font-weight: bold;">+ {" ".join(b[b0:b1])}</span>')
-    return " ".join(html_output)
-
-def get_top_terms_series(df, top_n=7, custom_stops=None):
-    if df.empty: return pd.DataFrame(), []
-    all_text = " ".join(df['text_content'].astype(str).tolist()).lower()
-    words = re.findall(r"\b[a-z]{4,}\b", all_text)
-    
-    stops = set([
-        "that", "with", "this", "from", "have", "which", "will", "been", "were", 
-        "market", "central", "bank", "committee", "monetary", "policy", "decision", 
-        "percent", "rates", "level", "year", "their", "over", "also", "under", 
-        "developments", "conditions", "indicators", "recent", "remain", "remains",
-        "period", "has", "are", "for", "and", "the", "decided", "keep", "constant",
-        "take", "taking", "account"
-    ])
-    
-    if custom_stops:
-        for s in custom_stops: stops.add(s.lower().strip())
-        
-    filtered_words = [w for w in words if w not in stops]
-    common = Counter(filtered_words).most_common(top_n)
-    top_terms = [t[0] for t in common]
-    
-    results = []
-    for _, row in df.iterrows():
-        txt = str(row['text_content']).lower()
-        entry = {'period_date': row['period_date'], 'Donem': row.get('Donem', '')}
-        for term in top_terms:
-            entry[term] = txt.count(term)
-        results.append(entry)
-    return pd.DataFrame(results).sort_values('period_date'), top_terms
-
-def generate_wordcloud_img(text, custom_stops=None):
-    if not HAS_ML_DEPS or not text: return None
-    stopwords = set(STOPWORDS)
-    stopwords.update(["central", "bank", "committee", "monetary", "policy", "percent", "decision", "rate", "board", "meeting"])
-    if custom_stops:
-        for s in custom_stops: stopwords.add(s.lower().strip())
-    wc = WordCloud(width=800, height=400, background_color='white', stopwords=stopwords).generate(text)
-    fig, ax = plt.subplots(figsize=(10, 5))
-    ax.imshow(wc, interpolation='bilinear'); ax.axis('off')
-    return fig
-
-# =============================================================================
-# 5. ABF (APEL, BLIX, GRIMALDI - 2019) ALGORİTMASI (ORİJİNAL)
-# =============================================================================
-
-def M(token_or_phrase: str, wildcard_first: bool = False):
-    toks = token_or_phrase.split()
-    wild = [False] * len(toks)
-    if wildcard_first and toks:
-        wild[0] = True
-    return {"phrase": toks, "wild": wild, "pattern": token_or_phrase}
-
-DICT = {
-   "inflation": [
-        {
-           "block": "consumer_prices_inflation",
-           "terms": ["consumer prices", "inflation"],
-           "hawk": [M("accelerat", True), M("boost", True), M("elevated"), M("escalat", True), M("high", True), M("increas", True), M("jump", True), M("pickup"), M("rise", True), M("rose"), M("rising"), M("runup"), M("strong", True), M("surg", True), M("up", True)],
-           "dove": [M("decelerat", True), M("declin", True), M("decreas", True), M("down", True), M("drop", True), M("fall", True), M("fell"), M("low", True), M("muted"), M("reduc", True), M("slow", True), M("stable"), M("subdued"), M("weak", True), M("contained")],
-        },
-        {
-           "block": "inflation_pressure",
-           "terms": ["inflation pressure"],
-           "hawk": [M("accelerat", True), M("boost", True), M("build", True), M("elevat", True), M("emerg", True), M("great", True), M("height", True), M("high", True), M("increas", True), M("intensif", True), M("mount", True), M("pickup"), M("rise", True), M("rose"), M("rising"), M("stok", True), M("strong", True), M("sustain", True)],
-           "dove": [M("abat", True), M("contain", True), M("dampen", True), M("decelerat", True), M("declin", True), M("decreas", True), M("dimin", True), M("eas", True), M("fall", True), M("fell"), M("low", True), M("moderat", True), M("reced", True), M("reduc", True), M("subdued"), M("temper", True)],
-        },
-    ],
-   "economic_activity": [
-        {
-           "block": "consumer_spending",
-           "terms": ["consumer spending"],
-           "hawk": [M("accelerat", True), M("edg up", True), M("expan", True), M("increas", True), M("pick up", True), M("pickup"), M("soft", True), M("strength", True), M("strong", True), M("weak", True)],
-           "dove": [M("contract", True), M("decelerat", True), M("decreas", True), M("drop", True), M("retrench", True), M("slow", True), M("slugg", True), M("soft", True), M("subdued")],
-        },
-        {
-           "block": "economic_activity_growth",
-           "terms": ["economic activity", "economic growth"],
-           "hawk": [M("accelerat", True), M("buoyant"), M("edg up", True), M("expan", True), M("increas", True), M("high", True), M("pick up", True), M("pickup"), M("rise", True), M("rose"), M("rising"), M("step up", True), M("strength", True), M("strong", True), M("upside")],
-           "dove": [M("contract", True), M("curtail", True), M("decelerat", True), M("declin", True), M("decreas", True), M("downside"), M("drop"), M("fall", True), M("fell"), M("low", True), M("moderat", True), M("slow", True), M("slugg", True), M("weak", True)],
-        },
-        {
-           "block": "resource_utilization",
-           "terms": ["resource utilization"],
-           "hawk": [M("high", True), M("increas", True), M("rise"), M("rising"), M("rose"), M("tight", True)],
-           "dove": [M("declin", True), M("fall", True), M("fell"), M("loose", True), M("low", True)],
-        },
-    ],
-   "employment": [
-        {
-           "block": "employment",
-           "terms": ["employment"],
-           "hawk": [M("expand", True), M("gain", True), M("improv", True), M("increas", True), M("pick up", True), M("pickup"), M("rais", True), M("rise", True), M("rising"), M("rose"), M("strength", True), M("turn up", True)],
-           "dove": [M("slow", True), M("declin", True), M("reduc", True), M("weak", True), M("deteriorat", True), M("shrink", True), M("shrank"), M("fall", True), M("fell"), M("drop", True), M("contract", True), M("sluggish")],
-        },
-        {
-           "block": "labor_market",
-           "terms": ["labor market"],
-           "hawk": [M("strain", True), M("tight", True)],
-           "dove": [M("eased", True), M("easing", True), M("loos", True), M("soft", True), M("weak", True)],
-        },
-        {
-           "block": "unemployment",
-           "terms": ["unemployment"],
-           "hawk": [M("declin", True), M("fall", True), M("fell"), M("low", True), M("reduc", True)],
-           "dove": [M("elevat", True), M("high"), M("increas", True), M("ris", True), M("rose", True)],
-        },
-    ],
-}
-
-def normalize_text(text: str) -> str:
-    t = text.lower().replace("’", "'").replace("`", "'")
-    t = re.sub(r"(?<=\w)-(?=\w)", " ", t)
-    t = re.sub(r"\brun\s+up\b", "runup", t)
-    t = re.sub(r"\s+", " ", t).strip()
-    return t
-
-def split_sentences_nlp(text: str):
-    text = re.sub(r"\n+", ". ", text)
-    sents = re.split(r"(?<=[\.\!\?\;])\s+", text)
-    return [s.strip() for s in sents if s.strip()]
-
-def tokenize(sent: str):
-    return re.findall(r"[a-z]+", sent)
-
-def match_token(tok: str, pat: str, wildcard: bool) -> bool:
-    return tok.startswith(pat) if wildcard else tok == pat
-
-def find_phrase_positions(tokens, phrase_tokens, wild_flags):
-    m = len(phrase_tokens)
-    hits = []
-    for i in range(0, len(tokens) - m + 1):
-        ok = True
-        for j in range(m):
-            if not match_token(tokens[i + j], phrase_tokens[j], wild_flags[j]):
-                ok = False
-                break
-        if ok:
-           hits.append((i, i + m - 1))
-    return hits
-
-def find_term_positions_flex(tokens, term: str):
-    tt = term.split()
-    m = len(tt)
-    hits = []
-    for i in range(0, len(tokens) - m + 1):
-        window = tokens[i:i+m]
-        ok = True
-        for j in range(m):
-            if window[j] == tt[j]: continue
-            if window[j] == tt[j] + "s" or tt[j] == window[j] + "s": continue
-            ok = False
-            break
-        if ok: hits.append((i, i + m - 1))
-    return hits
-
-def select_non_overlapping_terms(tokens, term_infos):
-    term_infos_sorted = sorted(term_infos, key=lambda x: len(x["term"].split()), reverse=True)
-    occupied = set()
-    selected = []
-    for info in term_infos_sorted:
-        for (s, e) in find_term_positions_flex(tokens, info["term"]):
-            if any(k in occupied for k in range(s, e + 1)): continue
-            occupied.update(range(s, e + 1))
-            selected.append({**info, "start": s, "end": e})
-    selected.sort(key=lambda x: x["start"])
-    return selected
-
-def analyze_hawk_dove(text: str, DICT: dict, window_words: int = 7, dedupe_within_term_window: bool = True, nearest_only: bool = False):
-    text_n = normalize_text(text)
-    sentences = split_sentences_nlp(text_n)
-    
-    topic_term_infos = {}
-    for topic, blocks in DICT.items():
-        infos = []
-        for b in blocks:
-            for term in b["terms"]:
-               infos.append({"topic": topic, "block": b["block"], "term": term})
-        topic_term_infos[topic] = infos
-
-    topic_counts = {topic: {"hawk": 0, "dove": 0} for topic in DICT.keys()}
-    matches = []
-
-    for sent in sentences:
-        tokens = tokenize(sent)
-        if not tokens: continue
-
-        for topic, term_infos in topic_term_infos.items():
-            selected_terms = select_non_overlapping_terms(tokens, term_infos)
-            if not selected_terms: continue
-
-            blocks_by_name = {b["block"]: b for b in DICT[topic]}
-
-            for tinfo in selected_terms:
-                block = blocks_by_name[tinfo["block"]]
-                ts, te = tinfo["start"], tinfo["end"]
-                w0 = max(0, ts - window_words)
-                w1 = min(len(tokens) - 1, te + window_words)
-                term_found = " ".join(tokens[ts:te + 1])
-
-                hawk_hits = []
-                for m in block["hawk"]:
-                   for (ms, me) in find_phrase_positions(tokens, m["phrase"], m["wild"]):
-                       if me < w0 or ms > w1: continue
-                       dist = min(abs(ms - te), abs(ts - me))
-                       hawk_hits.append((dist, m, ms, me))
-
-                dove_hits = []
-                for m in block["dove"]:
-                   for (ms, me) in find_phrase_positions(tokens, m["phrase"], m["wild"]):
-                       if me < w0 or ms > w1: continue
-                       dist = min(abs(ms - te), abs(ts - me))
-                       dove_hits.append((dist, m, ms, me))
-
-                if nearest_only:
-                   hawk_hits = sorted(hawk_hits, key=lambda x: x[0])[:1]
-                   dove_hits = sorted(dove_hits, key=lambda x: x[0])[:1]
-
-                seen = set()
-                def add_hit(direction, dist, m, ms, me):
-                   mod_found = " ".join(tokens[ms:me+1])
-                   key = (topic, block["block"], ts, te, direction, mod_found)
-                   if dedupe_within_term_window and key in seen: return
-                   seen.add(key)
-                   topic_counts[topic][direction] += 1
-                   matches.append({
-                       "topic": topic, "block": block["block"], "direction": direction,
-                       "term_found": term_found, "modifier_pattern": m["pattern"], "modifier_found": mod_found,
-                       "distance": dist, "sentence": sent,
-                       "term": tinfo["term"], "type": "HAWK" if direction == "hawk" else "DOVE"
-                   })
-
-                for (dist, m, ms, me) in hawk_hits: add_hit("hawk", dist, m, ms, me)
-                for (dist, m, ms, me) in dove_hits: add_hit("dove", dist, m, ms, me)
-
-    hawk_total = sum(v["hawk"] for v in topic_counts.values())
-    dove_total = sum(v["dove"] for v in topic_counts.values())
-    denom = hawk_total + dove_total
-    net_hawkishness = 1.0 if denom == 0 else (1.0 + (hawk_total - dove_total) / denom)
-
-    return {
-       "topic_counts": topic_counts,
-       "matches": matches,
-       "match_details": matches,
-       "net_hawkishness": net_hawkishness,
-       "hawk_count": hawk_total,
-       "dove_count": dove_total
-    }
-
-# =============================================================================
-# 6. ENTEGRASYON VE ML YARDIMCILARI
-# =============================================================================
-
-class ABGAnalyzer:
-    def analyze(self, text):
-        return analyze_hawk_dove(text, DICT=DICT, window_words=10, dedupe_within_term_window=True, nearest_only=True)
-
-def run_full_analysis(text):
-    res = analyze_hawk_dove(text, DICT=DICT, window_words=10, dedupe_within_term_window=True, nearest_only=True)
-    s_abg = res['net_hawkishness']
-    h_cnt = res['hawk_count']
-    d_cnt = res['dove_count']
-    
-    h_list = []
-    d_list = []
-    h_ctx = {}
-    d_ctx = {}
-    
-    for m in res['matches']:
-        item = f"{m['term_found']} ({m['modifier_found']})"
-        if m['direction'] == 'hawk':
-            h_list.append(item)
-            if m['term_found'] not in h_ctx: h_ctx[m['term_found']] = []
-            h_ctx[m['term_found']].append(m['sentence'])
-        else:
-            d_list.append(item)
-            if m['term_found'] not in d_ctx: d_ctx[m['term_found']] = []
-            d_ctx[m['term_found']].append(m['sentence'])
-            
-    flesch = calculate_flesch_reading_ease(text)
-    return s_abg, h_cnt, d_cnt, h_list, d_list, h_ctx, d_ctx, flesch
-
-def calculate_abg_scores(df):
-    if df is None or df.empty: return pd.DataFrame()
-    rows = []
-    for _, row in df.iterrows():
-        res = analyze_hawk_dove(str(row.get('text_content', '')), DICT=DICT, window_words=10, dedupe_within_term_window=True, nearest_only=True)
-        donem = row.get("Donem", "")
-        if not donem and "period_date" in row:
-             try: donem = pd.to_datetime(row["period_date"]).strftime("%Y-%m")
-             except: pass
-        rows.append({
-            "period_date": row.get("period_date"),
-            "Donem": donem,
-            "abg_index": res['net_hawkishness']
-        })
-    return pd.DataFrame(rows)
-
-# =============================================================================
-# 7. ML ALGORİTMASI (Ridge + Logistic)
-# =============================================================================
-
-@dataclass
-class CFG:
-    cap_low: int = -750
-    cap_high: int = 750
-    token_pattern: str = r"(?u)\b[0-9a-zçğıöşü]{2,}\b"
-    word_ngram: Tuple[int,int] = (1, 2)
-    min_df: int = 1
-    max_df: float = 1.0
-    max_features: int = 20000    
-    trend_window: int = 6
-    max_splits: int = 6
-    half_life_days: float = 365.0
-    q_lo: float = 0.02
-    q_hi: float = 0.98
-    vol_factor: float = 1.0
-    vol_cap: float = 3.0
-    unc_factor: float = 1.5
-    blend_cond: float = 0.65
-    blend_all: float = 0.35
-    fallback_cut_bps: float = -75.0
-    fallback_hike_bps: float = 75.0
-
-cfg = CFG()
-
-def normalize_tr_text(s: str) -> str:
-    if s is None: return ""
-    s = str(s).lower()
-    s = re.sub(r"\s+", " ", s).strip()
-    return s
-
-def clip_bps(x, lo=cfg.cap_low, hi=cfg.cap_high):
-    return np.clip(x, lo, hi)
-
-def bps_to_direction(y_bps: np.ndarray) -> np.ndarray:
-    y = np.asarray(y_bps, dtype=float)
-    out = np.zeros_like(y, dtype=int)
-    out[y < 0] = -1
-    out[y > 0] = 1
-    return out
-
-def exp_time_weights(dates: pd.Series, half_life_days: float = cfg.half_life_days) -> np.ndarray:
-    d = pd.to_datetime(dates)
-    t = (d - d.min()).dt.days.values.astype(float)
-    lam = np.log(2.0) / float(half_life_days)
-    w = np.exp(lam * t)
-    return w / np.mean(w)
-
-def rolling_slope(y: np.ndarray, window: int) -> np.ndarray:
-    y = np.asarray(y, dtype=float)
-    out = np.zeros_like(y, dtype=float)
-    for i in range(len(y)):
-        j0 = max(0, i - window + 1)
-        seg = y[j0:i+1]
-        if len(seg) < 3:
-            out[i] = 0.0
-            continue
-        x = np.arange(len(seg), dtype=float)
-        out[i] = np.polyfit(x, seg, 1)[0]
-    return out
-
-def safe_median_days(dates: pd.Series) -> float:
-    if len(dates) <= 1: return 30.0
-    diffs = pd.to_datetime(dates).diff().dt.days.dropna()
-    return float(diffs.median()) if len(diffs) else 30.0
-
-def choose_splits(n: int) -> int:
-    return int(min(cfg.max_splits, max(3, n // 8)))
-
-def rmse_metric(y_true, y_pred):
-    return float(np.sqrt(mean_squared_error(y_true, y_pred)))
-
-def add_features(df: pd.DataFrame, trend_window: int = cfg.trend_window) -> pd.DataFrame:
-    out = df.copy()
-    out["y_bps"] = clip_bps(out["rate_change_bps"].values)
-    out["y_dir"] = bps_to_direction(out["y_bps"].values)
-
-    out["prev_change_bps"] = clip_bps(out["y_bps"].shift(1).fillna(0.0).values)
-    out["prev_abs_change"] = np.abs(out["prev_change_bps"].values)
-    out["prev_sign"] = np.sign(out["prev_change_bps"].values).astype(int)
-
-    streak, cur = [], 0
-    for v in out["y_bps"].shift(1).fillna(0.0).values:
-        if float(v) == 0.0: cur += 1
-        else: cur = 0
-        streak.append(cur)
-    out["hold_streak"] = np.array(streak, dtype=int)
-
-    out["mean_abs_last3"] = (
-        out["y_bps"].shift(1).fillna(0).abs() +
-        out["y_bps"].shift(2).fillna(0).abs() +
-        out["y_bps"].shift(3).fillna(0).abs()
-    ).values / 3.0
-
-    med = safe_median_days(out["date"])
-    out["days_since_prev"] = out["date"].diff().dt.days.fillna(med).clip(lower=0).astype(float)
-
-    out["roll_mean_bps"] = out["y_bps"].rolling(trend_window, min_periods=1).mean()
-    out["roll_std_bps"] = out["y_bps"].rolling(trend_window, min_periods=1).std().fillna(0.0)
-    out["roll_slope_bps"] = rolling_slope(out["y_bps"].values, trend_window)
-    out["momentum_bps"] = out["y_bps"] - out["roll_mean_bps"]
-
-    base = float(out["roll_std_bps"].median()) if len(out) else 1.0
-    base = base if np.isfinite(base) and base > 0 else 1.0
-    out["vol_ratio"] = (out["roll_std_bps"] / base).replace([np.inf, -np.inf], 1.0).fillna(1.0)
-    return out
-
-KEYWORDS = [
-    "enflasyon", "çekirdek", "fiyat", "beklenti", "talep", "iktisadi faaliyet", "büyüme",
-    "kur", "kredi", "risk primi", "finansal koşul", "sıkı", "sıkılaşma", "gevşeme", 
-    "kararlı", "ilave", "gerekirse", "dezenflasyon", "inflation", "price", "growth"
-]
-
-def keyword_features(text_series: pd.Series) -> np.ndarray:
-    X = []
-    for t in text_series.fillna("").astype(str).values:
-        t = t.lower()
-        row = [t.count(kw) for kw in KEYWORDS]
-        row.append(len(t))
-        X.append(row)
-    return np.asarray(X, dtype=float)
-
-kw_transformer = FunctionTransformer(keyword_features, validate=False)
-
-def build_preprocess(numeric_cols: List[str]) -> ColumnTransformer:
-    word_tfidf = TfidfVectorizer(
-        token_pattern=cfg.token_pattern,
-        analyzer="word",
-        ngram_range=cfg.word_ngram,
-        min_df=cfg.min_df,
-        max_df=cfg.max_df,
-        max_features=cfg.max_features,
-        sublinear_tf=True
-    )
-    preprocess = ColumnTransformer(
-        transformers=[
-            ("w", word_tfidf, "text"),
-            ("kw", Pipeline([("kw", kw_transformer), ("sc", StandardScaler(with_mean=False))]), "text"),
-            ("num", Pipeline([("sc", StandardScaler(with_mean=False))]), numeric_cols),
-        ],
-        remainder="drop",
-        sparse_threshold=0.3
-    )
-    return preprocess
-
-def build_models(preprocess: ColumnTransformer):
-    clf = LogisticRegression(solver="saga", max_iter=5000, class_weight="balanced", C=2.0, random_state=42)
-    reg_all  = Ridge(alpha=2.0, random_state=42)
-    reg_cut  = Ridge(alpha=2.0, random_state=42)
-    reg_hike = Ridge(alpha=2.0, random_state=42)
-
-    clf_pipe = Pipeline([("prep", clone(preprocess)), ("clf", clf)])
-    reg_all_pipe  = Pipeline([("prep", clone(preprocess)), ("reg", reg_all)])
-    reg_cut_pipe  = Pipeline([("prep", clone(preprocess)), ("reg", reg_cut)])
-    reg_hike_pipe = Pipeline([("prep", clone(preprocess)), ("reg", reg_hike)])
-    return clf_pipe, reg_cut_pipe, reg_hike_pipe, reg_all_pipe
-
-def walk_forward_fast(X, y_bps, y_dir, dates, clf_pipe, reg_cut_pipe, reg_hike_pipe, reg_all_pipe, n_splits: int):
-    tscv = TimeSeriesSplit(n_splits=n_splits)
-    y_pred = np.full(len(y_bps), np.nan, dtype=float)
-    dir_pred = np.full(len(y_bps), np.nan, dtype=float)
-    conf_pred = np.full(len(y_bps), np.nan, dtype=float)
-    residuals = []
-    residuals_by_dir = {-1: [], 0: [], 1: []}
-
-    for tr, te in tscv.split(X):
-        w_tr = exp_time_weights(dates.iloc[tr])
-        clf_pipe.fit(X.iloc[tr], y_dir[tr], clf__sample_weight=w_tr)
-        d_hat = clf_pipe.predict(X.iloc[te]).astype(int)
-
-        if hasattr(clf_pipe.named_steps["clf"], "predict_proba"):
-            conf_te = clf_pipe.predict_proba(X.iloc[te]).max(axis=1)
-        else:
-            conf_te = np.ones(len(te), dtype=float)
-
-        reg_all_pipe.fit(X.iloc[tr], y_bps[tr], reg__sample_weight=w_tr)
-        tr_cut = tr[y_dir[tr] == -1]; tr_hike = tr[y_dir[tr] == 1]
-        can_cut = len(tr_cut) >= 8; can_hike = len(tr_hike) >= 8
-
-        if can_cut: reg_cut_pipe.fit(X.iloc[tr_cut], y_bps[tr_cut], reg__sample_weight=exp_time_weights(dates.iloc[tr_cut]))
-        if can_hike: reg_hike_pipe.fit(X.iloc[tr_hike], y_bps[tr_hike], reg__sample_weight=exp_time_weights(dates.iloc[tr_hike]))
-
-        for j, idx in enumerate(te):
-            d = int(d_hat[j]); conf_pred[idx] = float(conf_te[j])
-            pred_all = float(reg_all_pipe.predict(X.iloc[[idx]])[0])
-            if d == 0: pred_cond = 0.0
-            elif d == -1: pred_cond = float(reg_cut_pipe.predict(X.iloc[[idx]])[0]) if can_cut else cfg.fallback_cut_bps
-            else: pred_cond = float(reg_hike_pipe.predict(X.iloc[[idx]])[0]) if can_hike else cfg.fallback_hike_bps
-
-            pred = cfg.blend_cond * pred_cond + cfg.blend_all * pred_all
-            pred = float(clip_bps(pred))
-            y_pred[idx] = pred; dir_pred[idx] = d
-            res = float(y_bps[idx] - pred)
-            residuals.append(res); residuals_by_dir[d].append(res)
-
-    return y_pred, dir_pred, conf_pred, residuals, residuals_by_dir
-
-def compute_interval(residuals, residuals_by_dir, q_lo=cfg.q_lo, q_hi=cfg.q_hi):
-    def qpair(arr):
-        arr = np.asarray(arr, dtype=float)
-        if arr.size < 20: return (-250.0, 250.0)
-        return (float(np.quantile(arr, q_lo)), float(np.quantile(arr, q_hi)))
-    overall = qpair(residuals)
-    by_dir = {d: qpair(residuals_by_dir.get(d, np.array([]))) for d in [-1,0,1]}
-    return overall, by_dir
-
-def widen_interval(lo, hi, vol_ratio, conf):
-    vr = float(vol_ratio) if np.isfinite(vol_ratio) else 1.0
-    vr = max(0.5, min(vr, cfg.vol_cap))
-    mult_vol = 1.0 + cfg.vol_factor * max(0.0, (vr - 1.0))
-    c = float(conf) if np.isfinite(conf) else 1.0
-    unc = max(0.0, 1.0 - c)
-    mult_unc = 1.0 + cfg.unc_factor * unc
-    mult = mult_vol * mult_unc
-    return (lo * mult, hi * mult)
-
-def fit_final(X, y_bps, y_dir, dates, clf_pipe, reg_cut_pipe, reg_hike_pipe, reg_all_pipe):
-    w_all = exp_time_weights(dates)
-    clf_pipe.fit(X, y_dir, clf__sample_weight=w_all)
-    reg_all_pipe.fit(X, y_bps, reg__sample_weight=w_all)
-    cut_idx = np.where(y_dir == -1)[0]
-    hike_idx = np.where(y_dir == 1)[0]
-    if len(cut_idx) >= 8: reg_cut_pipe.fit(X.iloc[cut_idx], y_bps[cut_idx], reg__sample_weight=exp_time_weights(dates.iloc[cut_idx]))
-    if len(hike_idx) >= 8: reg_hike_pipe.fit(X.iloc[hike_idx], y_bps[hike_idx], reg__sample_weight=exp_time_weights(dates.iloc[hike_idx]))
-
-def build_next_row(df_hist: pd.DataFrame, next_text: str) -> pd.DataFrame:
-    last = df_hist.iloc[-1]
-    y = df_hist["y_bps"].values.astype(float)
-    prev_change_bps = float(clip_bps(last["y_bps"]))
-    hold_streak = int(last["hold_streak"] + (1 if prev_change_bps == 0 else 0))
-    
-    w = cfg.trend_window
-    roll_mean = float(pd.Series(y).tail(w).mean())
-    roll_std = float(pd.Series(y).tail(w).std(ddof=0)) if len(y) >= 2 else 0.0
-    roll_slope = float(rolling_slope(y, w)[-1])
-    momentum = float(prev_change_bps - roll_mean)
-    
-    base = float(df_hist["roll_std_bps"].median()) if len(df_hist) else 1.0
-    vol_ratio = float(roll_std / base) if base > 0 else 1.0
-
-    row = pd.DataFrame([{
-        "text": normalize_tr_text(next_text),
-        "prev_change_bps": prev_change_bps,
-        "prev_abs_change": abs(prev_change_bps),
-        "prev_sign": int(np.sign(prev_change_bps)),
-        "hold_streak": hold_streak,
-        "mean_abs_last3": float(np.mean(np.abs(df_hist["y_bps"].tail(3).values))),
-        "days_since_prev": float(last["days_since_prev"]),
-        "roll_mean_bps": roll_mean,
-        "roll_std_bps": roll_std,
-        "roll_slope_bps": roll_slope,
-        "momentum_bps": momentum,
-        "vol_ratio": vol_ratio
-    }])
-    return row
-
-def predict_next(df_hist, next_text, clf_pipe, reg_cut_pipe, reg_hike_pipe, reg_all_pipe, overall_q, by_dir_q):
-    row = build_next_row(df_hist, next_text)
-    d_hat = int(clf_pipe.predict(row)[0])
-    
-    conf = 1.0
-    proba_map = {}
-    if hasattr(clf_pipe.named_steps["clf"], "predict_proba"):
-        proba = clf_pipe.predict_proba(row)[0]
-        classes = clf_pipe.named_steps["clf"].classes_
-        proba_map = {int(c): float(p) for c,p in zip(classes, proba)}
-        conf = float(np.max(proba))
-
-    pred_all = float(reg_all_pipe.predict(row)[0])
-    if d_hat == 0: pred_cond = 0.0
-    elif d_hat == -1: 
-        try: pred_cond = float(reg_cut_pipe.predict(row)[0])
-        except: pred_cond = cfg.fallback_cut_bps
-    else: 
-        try: pred_cond = float(reg_hike_pipe.predict(row)[0])
-        except: pred_cond = cfg.fallback_hike_bps
-
-    pred = cfg.blend_cond * pred_cond + cfg.blend_all * pred_all
-    pred = float(clip_bps(pred))
-
-    lo_d, hi_d = by_dir_q.get(d_hat, overall_q)
-    lo_o, hi_o = overall_q
-    lo = min(lo_d, lo_o); hi = max(hi_d, hi_o)
-    lo_w, hi_w = widen_interval(lo, hi, vol_ratio=float(row["vol_ratio"].iloc[0]), conf=conf)
-    
-    return {
-        "pred_direction": {-1:"İNDİRİM", 0:"SABİT", 1:"ARTIRIM"}[d_hat],
-        "direction_confidence": conf,
-        "direction_proba": proba_map,
-        "pred_change_bps": pred,
-        "pred_interval_lo": float(clip_bps(pred + lo_w)),
-        "pred_interval_hi": float(clip_bps(pred + hi_w))
-    }
-
-def prepare_ml_dataset(df_logs, df_market):
-    if df_logs.empty or df_market.empty: return pd.DataFrame()
-    if 'period_date' in df_logs.columns:
-        df_logs = df_logs.copy()
+    if not df_logs.empty:
         df_logs['period_date'] = pd.to_datetime(df_logs['period_date'])
         df_logs['Donem'] = df_logs['period_date'].dt.strftime('%Y-%m')
-    if 'Donem' not in df_market.columns: return pd.DataFrame()
-    
-    df = pd.merge(df_logs, df_market, on="Donem", how="left")
-    
-    # Colab mantığına uygun text clean
-    df['text'] = df['text_content'].fillna("").apply(normalize_tr_text)
-    
-    # FAİZ DEĞİŞİMİ HESAPLAMA (PPK Faizi'nden otomatik)
-    if 'PPK Faizi' in df.columns:
-        df['rate_change_bps'] = df['PPK Faizi'].diff().fillna(0.0) * 100
-        # Colab'da kullanılan kolon isimleri: date, text, rate_change_bps
-        return pd.DataFrame({
-            "date": df['period_date'],
-            "text": df['text'],
-            "rate_change_bps": df['rate_change_bps']
-        }).dropna()
-    
-    return pd.DataFrame()
+        df_logs['word_count'] = df_logs['text_content'].apply(lambda x: len(str(x).split()) if x else 0)
+        df_logs['flesch_score'] = df_logs['text_content'].apply(lambda x: utils.calculate_flesch_reading_ease(str(x)))
+        df_logs['score_abg_scaled'] = df_logs['score_abg'].apply(lambda x: x*100 if abs(x) <= 1 else x)
 
-class AdvancedMLPredictor:
-    def __init__(self):
-        self.clf_pipe = None
-        self.reg_pipes = {}
-        self.intervals = {}
-        self.df_hist = None
-        self.metrics = {}
+        abg_df = utils.calculate_abg_scores(df_logs)
+        abg_df['abg_dashboard_val'] = (abg_df['abg_index'] - 1.0) * 100
         
-    def train(self, ml_df):
-        if not HAS_ML_DEPS: return "Kütüphane eksik"
+        min_d = df_logs['period_date'].min().date()
+        max_d = datetime.date.today()
+        df_market, err = utils.fetch_market_data_adapter(min_d, max_d)
         
-        df = add_features(ml_df, trend_window=cfg.trend_window)
-        self.df_hist = df # Tahmin için lazım
+        merged = pd.merge(df_logs, df_market, on="Donem", how="left")
+        merged = pd.merge(merged, abg_df[['period_date', 'abg_dashboard_val']], on='period_date', how='left')
         
-        numeric_cols = [
-            "prev_change_bps", "prev_abs_change", "prev_sign",
-            "hold_streak", "mean_abs_last3", "days_since_prev",
-            "roll_mean_bps", "roll_std_bps", "roll_slope_bps", "momentum_bps", "vol_ratio"
+        merged = merged.sort_values("period_date")
+        if 'Yıllık TÜFE' in merged.columns: merged['Yıllık TÜFE'] = pd.to_numeric(merged['Yıllık TÜFE'], errors='coerce')
+        if 'PPK Faizi' in merged.columns: merged['PPK Faizi'] = pd.to_numeric(merged['PPK Faizi'], errors='coerce')
+        
+        fig = make_subplots(specs=[[{"secondary_y": True}]])
+        
+        # Word Count
+        fig.add_trace(go.Bar(x=merged['period_date'], y=merged['word_count'], name="Metin Uzunluğu", marker=dict(color='gray'), opacity=0.10, yaxis="y3", hoverinfo="x+y+name"))
+        
+        # --- SKORLAR ---
+        fig.add_trace(go.Scatter(x=merged['period_date'], y=merged['score_abg_scaled'], name="Şahin/Güvercin-Hibrit", line=dict(color='black', width=2, dash='dot'), marker=dict(size=6, color='black'), yaxis="y"))
+        fig.add_trace(go.Scatter(x=merged['period_date'], y=merged['abg_dashboard_val'], name="Şahin/Güvercin ABG 2019", line=dict(color='navy', width=4), yaxis="y"))
+        
+        if 'Yıllık TÜFE' in merged.columns: fig.add_trace(go.Scatter(x=merged['period_date'], y=merged['Yıllık TÜFE'], name="Yıllık TÜFE (%)", line=dict(color='red', dash='dot'), yaxis="y"))
+        if 'PPK Faizi' in merged.columns: fig.add_trace(go.Scatter(x=merged['period_date'], y=merged['PPK Faizi'], name="Faiz (%)", line=dict(color='orange', dash='dot'), yaxis="y"))
+        fig.add_trace(go.Scatter(x=merged['period_date'], y=merged['flesch_score'], name="Okunabilirlik (Flesch)", mode='markers', marker=dict(color='teal', size=8, opacity=0.8), yaxis="y"))
+
+        layout_shapes = [
+            dict(type="rect", xref="paper", yref="y", x0=0, x1=1, y0=0, y1=150, fillcolor="rgba(255, 0, 0, 0.08)", line_width=0, layer="below"),
+            dict(type="rect", xref="paper", yref="y", x0=0, x1=1, y0=-150, y1=0, fillcolor="rgba(0, 0, 255, 0.08)", line_width=0, layer="below"),
+            dict(type="line", xref="paper", yref="y", x0=0, x1=1, y0=0, y1=0, line=dict(color="black", width=3), layer="below"),
         ]
-        
-        X = df[["text"] + numeric_cols]
-        y_bps = df["y_bps"].values.astype(float)
-        y_dir = df["y_dir"].values.astype(int)
-        dates = df["date"]
-        
-        preprocess = build_preprocess(numeric_cols)
-        clf, r_cut, r_hike, r_all = build_models(preprocess)
-        
-        # Walk Forward Validation
-        n_splits = choose_splits(len(df))
-        y_p, d_p, c_p, res, res_dir = walk_forward_fast(X, y_bps, y_dir, dates, clf, r_cut, r_hike, r_all, n_splits)
-        
-        # Store predictions in df_hist for visualization
-        self.df_hist['predicted_bps'] = y_p
+        layout_annotations = [
+            dict(x=0.02, y=130, xref="paper", yref="y", text="🦅 ŞAHİN", showarrow=False, font=dict(size=14, color="darkred", weight="bold"), xanchor="left"),
+            dict(x=0.02, y=-130, xref="paper", yref="y", text="🕊️ GÜVERCİN", showarrow=False, font=dict(size=14, color="darkblue", weight="bold"), xanchor="left")
+        ]
+        governors = [("2020-11-01", "Naci Ağbal"), ("2021-04-01", "Şahap Kavcıoğlu"), ("2023-06-01", "Hafize Gaye Erkan"), ("2024-02-01", "Fatih Karahan")]
+        for start_date, name in governors:
+            layout_shapes.append(dict(type="line", xref="x", yref="paper", x0=start_date, x1=start_date, y0=0, y1=1, line=dict(color="gray", width=1, dash="longdash"), layer="below"))
+            layout_annotations.append(dict(x=start_date, y=1.02, xref="x", yref="paper", text=f" <b>{name.split()[0][0]}.{name.split()[-1]}</b>", showarrow=False, xanchor="left", font=dict(size=9, color="#555")))
 
-        # Metrics
-        mask = ~np.isnan(y_p)
-        if np.any(mask):
-            self.metrics['mae'] = mean_absolute_error(y_bps[mask], y_p[mask])
-            self.metrics['rmse'] = rmse_metric(y_bps[mask], y_p[mask])
-            self.metrics['acc'] = np.mean(y_dir[mask] == d_p[mask].astype(int))
-        
-        # Fit Final Models
-        overall_q, by_dir_q = compute_interval(res, res_dir)
-        self.intervals = {'overall': overall_q, 'by_dir': by_dir_q}
-        
-        fit_final(X, y_bps, y_dir, dates, clf, r_cut, r_hike, r_all)
-        
-        self.clf_pipe = clf
-        self.reg_pipes = {'cut': r_cut, 'hike': r_hike, 'all': r_all}
-        return "OK"
+        event_links_display = []
+        if not df_events.empty:
+            for _, ev in df_events.iterrows():
+                ev_date = pd.to_datetime(ev['event_date']).strftime('%Y-%m-%d')
+                layout_shapes.append(dict(
+                    type="line", xref="x", yref="paper",
+                    x0=ev_date, x1=ev_date, y0=0, y1=1,
+                    line=dict(color="purple", width=2, dash="dot")
+                ))
+                first_link = ev['links'].split('\n')[0] if ev['links'] else ""
+                layout_annotations.append(dict(
+                    x=ev_date, y=0.05, xref="x", yref="paper",
+                    text=f"ℹ️ <a href='{first_link}' target='_blank'>Haber</a>",
+                    showarrow=False, xanchor="left",
+                    font=dict(size=10, color="purple"),
+                    bgcolor="rgba(255,255,255,0.7)"
+                ))
+                if ev['links']:
+                    links_list = [l.strip() for l in ev['links'].split('\n') if l.strip()]
+                    event_links_display.append({"Tarih": ev_date, "Linkler": links_list})
 
-    def predict(self, text):
-        if self.df_hist is None or self.clf_pipe is None: return None
-        return predict_next(
-            self.df_hist, text, 
-            self.clf_pipe, self.reg_pipes['cut'], self.reg_pipes['hike'], self.reg_pipes['all'],
-            self.intervals['overall'], self.intervals['by_dir']
+        fig.update_layout(
+            title="Merkez Bankası Analiz Paneli", hovermode="x unified", height=600,
+            shapes=layout_shapes, annotations=layout_annotations, showlegend=True,
+            legend=dict(orientation="h", yanchor="top", y=-0.15, xanchor="center", x=0.5),
+            yaxis=dict(title="Skor & Oranlar", range=[-150, 150], zeroline=False),
+            yaxis2=dict(visible=False, overlaying="y", side="right"),
+            yaxis3=dict(title="Kelime", overlaying="y", side="right", showgrid=False, visible=False, range=[0, merged['word_count'].max() * 2])
         )
-
-# --- VADER / FINBERT PLACEHOLDERS ---
-def calculate_vader_series(df): 
-    return pd.DataFrame(columns=["period_date", "Donem", "vader_compound", "vader_pos", "vader_neg", "vader_neu"])
-
-def calculate_finbert_series(df): 
-    return pd.DataFrame(columns=["period_date", "finbert_pos", "finbert_neg", "finbert_neu", "finbert_score"])
-
-# =============================================================================
-# 8. YENİ STRUCTURAL HAWK/DOVE ALGORİTMASI (Window & Pattern Matching)
-# =============================================================================
-
-def M_struct(token_or_phrase: str, wildcard_first: bool = False):
-    toks = token_or_phrase.split()
-    wild = [False] * len(toks)
-    if wildcard_first and toks:
-        wild[0] = True
-    return {"phrase": toks, "wild": wild, "pattern": token_or_phrase}
-
-HAWK_DOVE_DICT_STRUCT = {
-   "inflation": [
-        {
-           "block": "consumer_prices_inflation",
-           "terms": ["consumer prices", "inflation"],
-           "hawk": [M_struct("accelerat", True), M_struct("boost", True), M_struct("elevated"), M_struct("escalat", True), M_struct("high", True), M_struct("increas", True), M_struct("jump", True), M_struct("pickup"), M_struct("rise", True), M_struct("rose"), M_struct("rising"), M_struct("runup"), M_struct("strong", True), M_struct("surg", True), M_struct("up", True)],
-           "dove": [M_struct("decelerat", True), M_struct("declin", True), M_struct("decreas", True), M_struct("down", True), M_struct("drop", True), M_struct("fall", True), M_struct("fell"), M_struct("low", True), M_struct("muted"), M_struct("reduc", True), M_struct("slow", True), M_struct("stable"), M_struct("subdued"), M_struct("weak", True), M_struct("contained")],
-        },
-        {
-           "block": "inflation_pressure",
-           "terms": ["inflation pressure"],
-           "hawk": [M_struct("accelerat", True), M_struct("boost", True), M_struct("build", True), M_struct("elevat", True), M_struct("emerg", True), M_struct("great", True), M_struct("height", True), M_struct("high", True), M_struct("increas", True), M_struct("intensif", True), M_struct("mount", True), M_struct("pickup"), M_struct("rise", True), M_struct("rose"), M_struct("rising"), M_struct("stok", True), M_struct("strong", True), M_struct("sustain", True)],
-           "dove": [M_struct("abat", True), M_struct("contain", True), M_struct("dampen", True), M_struct("decelerat", True), M_struct("declin", True), M_struct("decreas", True), M_struct("dimin", True), M_struct("eas", True), M_struct("fall", True), M_struct("fell"), M_struct("low", True), M_struct("moderat", True), M_struct("reced", True), M_struct("reduc", True), M_struct("subdued"), M_struct("temper", True)],
-        },
-    ],
-   "economic_activity": [
-        {
-           "block": "consumer_spending",
-           "terms": ["consumer spending"],
-           "hawk": [M_struct("accelerat", True), M_struct("edg up", True), M_struct("expan", True), M_struct("increas", True), M_struct("pick up", True), M_struct("pickup"), M_struct("soft", True), M_struct("strength", True), M_struct("strong", True), M_struct("weak", True)],
-           "dove": [M_struct("contract", True), M_struct("decelerat", True), M_struct("decreas", True), M_struct("drop", True), M_struct("retrench", True), M_struct("slow", True), M_struct("slugg", True), M_struct("soft", True), M_struct("subdued")],
-        },
-        {
-           "block": "economic_activity_growth",
-           "terms": ["economic activity", "economic growth"],
-           "hawk": [M_struct("accelerat", True), M_struct("buoyant"), M_struct("edg up", True), M_struct("expan", True), M_struct("increas", True), M_struct("high", True), M_struct("pick up", True), M_struct("pickup"), M_struct("rise", True), M_struct("rose"), M_struct("rising"), M_struct("step up", True), M_struct("strength", True), M_struct("strong", True), M_struct("upside")],
-           "dove": [M_struct("contract", True), M_struct("curtail", True), M_struct("decelerat", True), M_struct("declin", True), M_struct("decreas", True), M_struct("downside"), M_struct("drop"), M_struct("fall", True), M_struct("fell"), M_struct("low", True), M_struct("moderat", True), M_struct("slow", True), M_struct("slugg", True), M_struct("weak", True)],
-        },
-        {
-           "block": "resource_utilization",
-           "terms": ["resource utilization"],
-           "hawk": [M_struct("high", True), M_struct("increas", True), M_struct("rise"), M_struct("rising"), M_struct("rose"), M_struct("tight", True)],
-           "dove": [M_struct("declin", True), M_struct("fall", True), M_struct("fell"), M_struct("loose", True), M_struct("low", True)],
-        },
-    ],
-   "employment": [
-        {
-           "block": "employment",
-           "terms": ["employment"],
-           "hawk": [M_struct("expand", True), M_struct("gain", True), M_struct("improv", True), M_struct("increas", True), M_struct("pick up", True), M_struct("pickup"), M_struct("rais", True), M_struct("rise", True), M_struct("rising"), M_struct("rose"), M_struct("strength", True), M_struct("turn up", True)],
-           "dove": [M_struct("slow", True), M_struct("declin", True), M_struct("reduc", True), M_struct("weak", True), M_struct("deteriorat", True), M_struct("shrink", True), M_struct("shrank"), M_struct("fall", True), M_struct("fell"), M_struct("drop", True), M_struct("contract", True), M_struct("sluggish")],
-        },
-        {
-           "block": "labor_market",
-           "terms": ["labor market"],
-           "hawk": [M_struct("strain", True), M_struct("tight", True)],
-           "dove": [M_struct("eased", True), M_struct("easing", True), M_struct("loos", True), M_struct("soft", True), M_struct("weak", True)],
-        },
-        {
-           "block": "unemployment",
-           "terms": ["unemployment"],
-           "hawk": [M_struct("declin", True), M_struct("fall", True), M_struct("fell"), M_struct("low", True), M_struct("reduc", True)],
-           "dove": [M_struct("elevat", True), M_struct("high"), M_struct("increas", True), M_struct("ris", True), M_struct("rose", True)],
-        },
-    ],
-}
-
-def normalize_text_struct(text: str) -> str:
-    t = text.lower().replace("’", "'").replace("`", "'")
-    t = re.sub(r"(?<=\w)-(?=\w)", " ", t)
-    t = re.sub(r"\brun\s+up\b", "runup", t)
-    t = re.sub(r"\s+", " ", t).strip()
-    return t
-
-def split_sentences_struct(text: str):
-    text = re.sub(r"\n+", ". ", text)
-    sents = re.split(r"(?<=[\.\!\?\;])\s+", text)
-    return [s.strip() for s in sents if s.strip()]
-
-def tokenize_struct(sent: str):
-    return re.findall(r"[a-z]+", sent)
-
-def match_token_struct(tok: str, pat: str, wildcard: bool) -> bool:
-    return tok.startswith(pat) if wildcard else tok == pat
-
-def find_phrase_positions_struct(tokens, phrase_tokens, wild_flags):
-    m = len(phrase_tokens)
-    hits = []
-    for i in range(0, len(tokens) - m + 1):
-        ok = True
-        for j in range(m):
-            if not match_token_struct(tokens[i + j], phrase_tokens[j], wild_flags[j]):
-                ok = False
-                break
-        if ok:
-           hits.append((i, i + m - 1))
-    return hits
-
-def find_term_positions_flex_struct(tokens, term: str):
-    tt = term.split()
-    m = len(tt)
-    hits = []
-    for i in range(0, len(tokens) - m + 1):
-        window = tokens[i:i+m]
-        ok = True
-        for j in range(m):
-            if window[j] == tt[j]: continue
-            if window[j] == tt[j] + "s" or tt[j] == window[j] + "s": continue
-            ok = False
-            break
-        if ok:
-           hits.append((i, i + m - 1))
-    return hits
-
-def select_non_overlapping_terms_struct(tokens, term_infos):
-    term_infos_sorted = sorted(term_infos, key=lambda x: len(x["term"].split()), reverse=True)
-    occupied = set()
-    selected = []
-    for info in term_infos_sorted:
-        for (s, e) in find_term_positions_flex_struct(tokens, info["term"]):
-            if any(k in occupied for k in range(s, e + 1)): continue
-            occupied.update(range(s, e + 1))
-            selected.append({**info, "start": s, "end": e})
-    selected.sort(key=lambda x: x["start"])
-    return selected
-
-def analyze_hawk_dove_structural(text: str, window_words: int = 7, dedupe_within_term_window: bool = True, nearest_only: bool = True):
-    if not text:
-        return {
-            "net_hawkishness": 0.0,
-            "hawk_pct": 0.0,
-            "dove_pct": 0.0,
-            "hawk_total": 0,
-            "dove_total": 0,
-            "topic_counts": {},
-            "matches_df": pd.DataFrame()
-        }
-
-    text_n = normalize_text_struct(text)
-    sentences = split_sentences_struct(text_n)
-
-    topic_term_infos = {}
-    for topic, blocks in HAWK_DOVE_DICT_STRUCT.items():
-        infos = []
-        for b in blocks:
-            for term in b["terms"]:
-                infos.append({"topic": topic, "block": b["block"], "term": term})
-        topic_term_infos[topic] = infos
-
-    topic_counts = {topic: {"hawk": 0, "dove": 0} for topic in HAWK_DOVE_DICT_STRUCT.keys()}
-    matches = []
-
-    for sent in sentences:
-        tokens = tokenize_struct(sent)
-        if not tokens: continue
-
-        for topic, term_infos in topic_term_infos.items():
-            selected_terms = select_non_overlapping_terms_struct(tokens, term_infos)
-            if not selected_terms: continue
-
-            blocks_by_name = {b["block"]: b for b in HAWK_DOVE_DICT_STRUCT[topic]}
-
-            for tinfo in selected_terms:
-                block = blocks_by_name[tinfo["block"]]
-                ts, te = tinfo["start"], tinfo["end"]
-                w0 = max(0, ts - window_words)
-                w1 = min(len(tokens) - 1, te + window_words)
-                
-                term_found = " ".join(tokens[ts:te + 1])
-
-                hawk_hits = []
-                for m in block["hawk"]:
-                    for (ms, me) in find_phrase_positions_struct(tokens, m["phrase"], m["wild"]):
-                        if me < w0 or ms > w1: continue
-                        dist = min(abs(ms - te), abs(ts - me))
-                        hawk_hits.append((dist, m, ms, me))
-
-                dove_hits = []
-                for m in block["dove"]:
-                    for (ms, me) in find_phrase_positions_struct(tokens, m["phrase"], m["wild"]):
-                        if me < w0 or ms > w1: continue
-                        dist = min(abs(ms - te), abs(ts - me))
-                        dove_hits.append((dist, m, ms, me))
-
-                if nearest_only:
-                    hawk_hits = sorted(hawk_hits, key=lambda x: x[0])[:1]
-                    dove_hits = sorted(dove_hits, key=lambda x: x[0])[:1]
-
-                seen = set()
-                
-                def add_hit(direction, dist, m, ms, me):
-                    mod_found = " ".join(tokens[ms:me+1])
-                    key = (topic, block["block"], ts, te, direction, mod_found)
-                    if dedupe_within_term_window and key in seen: return
-                    seen.add(key)
-                    topic_counts[topic][direction] += 1
-                    matches.append({
-                        "topic": topic,
-                        "block": block["block"],
-                        "direction": direction,
-                        "term_found": term_found,
-                        "modifier_found": mod_found,
-                        "distance": dist,
-                        "sentence": sent
-                    })
-
-                for (dist, m, ms, me) in hawk_hits: add_hit("hawk", dist, m, ms, me)
-                for (dist, m, ms, me) in dove_hits: add_hit("dove", dist, m, ms, me)
-
-    hawk_total = sum(v["hawk"] for v in topic_counts.values())
-    dove_total = sum(v["dove"] for v in topic_counts.values())
-    denom = hawk_total + dove_total
-
-    hawk_pct = 0.0 if denom == 0 else 100.0 * hawk_total / denom
-    dove_pct = 0.0 if denom == 0 else 100.0 * dove_total / denom
-    net_hawkishness = 1.0 if denom == 0 else (1.0 + (hawk_total - dove_total) / denom)
-
-    df_matches = pd.DataFrame(matches) if matches else pd.DataFrame()
-
-    return {
-        "net_hawkishness": net_hawkishness,
-        "hawk_pct": hawk_pct,
-        "dove_pct": dove_pct,
-        "hawk_total": hawk_total,
-        "dove_total": dove_total,
-        "topic_counts": topic_counts,
-        "matches_df": df_matches
-    }
-
-# =============================================================================
-# 9. CENTRAL BANK RoBERTa ENTEGRASYONU (Moritz-Pfeifer)
-# =============================================================================
-
-@st.cache_resource
-def load_roberta_pipeline():
-    try:
-        from transformers import pipeline
-        # Kullanıcının bulduğu TAM İSABET model:
-        model_name = "Moritz-Pfeifer/CentralBankRoBERTa-sentiment-classifier"
+        st.plotly_chart(fig, use_container_width=True)
         
-        # Bu model bazen "config" dosyasını geç okuyabilir, o yüzden try/except içinde:
-        classifier = pipeline("text-classification", model=model_name, return_all_scores=True)
-        return classifier
-    except ImportError:
-        return "MISSING_LIB"
-    except Exception as e:
-        # Hata detayını terminale yazdır, arayüzü bozma
-        print(f"Model Yükleme Hatası: {e}")
-        return None
+        if event_links_display:
+            with st.expander("📅 Grafikteki Önemli Tarihler ve Haber Linkleri", expanded=False):
+                for item in event_links_display:
+                    st.markdown(f"**{item['Tarih']}**")
+                    for link in item['Linkler']:
+                        st.markdown(f"- [Haber Linki]({link})")
+                        
+        if st.button("🔄 Yenile"): st.cache_data.clear(); st.rerun()
+    else: st.info("Kayıt yok.")
 
-def analyze_with_roberta(text):
-    if not text:
-        return None
-        
-    classifier = load_roberta_pipeline()
-    
-    if classifier == "MISSING_LIB":
-        return "MISSING_LIB"
-    if classifier is None:
-        return "ERROR"
+# ==============================================================================
+# TAB 2: VERİ GİRİŞİ
+# ==============================================================================
+with tab2:
+    st.subheader("Veri İşlemleri")
+    st.info("ℹ️ **BİLGİ:** Aşağıdaki geçmiş kayıtlar listesinden istediğiniz dönemi seçerek, hangi cümlelerin hesaplamaya alındığını görebilirsiniz.")
+    with st.container():
+        df_all = utils.fetch_all_data()
+        if not df_all.empty: 
+            df_all['period_date'] = pd.to_datetime(df_all['period_date'])
+            df_all['date_only'] = df_all['period_date'].dt.date
+            current_id = st.session_state['form_data']['id']
+            with st.container(border=True):
+                if st.button("➕ YENİ VERİ GİRİŞİ (Temizle)", type="secondary"): reset_form(); st.rerun()
+                st.markdown("---")
+                c1, c2 = st.columns([1, 2])
+                with c1:
+                    val_date = st.session_state['form_data']['date']; selected_date = st.date_input("Tarih", value=val_date)
+                    val_source = st.session_state['form_data']['source']; source = st.text_input("Kaynak", value=val_source)
+                    st.caption(f"Dönem: **{selected_date.strftime('%Y-%m')}**")
+                with c2:
+                    val_text = st.session_state['form_data']['text']; txt = st.text_area("Metin", value=val_text, height=200, placeholder="Metni buraya yapıştırın...")
+                st.markdown("---")
+                if st.session_state['collision_state']['active']:
+                    st.error("⚠️ Kayıt Çakışması"); admin_pass = st.text_input("Admin Şifresi", type="password", key="overwrite_pass")
+                    if st.button("🚨 Üzerine Yaz", type="primary"):
+                        if admin_pass == ADMIN_PWD:
+                            p_txt = st.session_state['collision_state']['pending_text']; t_id = st.session_state['collision_state']['target_id']
+                            s_abg, h_cnt, d_cnt, hawks, doves, h_ctx, d_ctx, flesch = utils.run_full_analysis(p_txt)
+                            utils.update_entry(t_id, selected_date, p_txt, source, s_abg, s_abg); st.success("Başarılı!"); reset_form(); st.rerun()
+                        else: st.error("Hatalı!")
+                    if st.button("❌ İptal"): st.session_state['collision_state']['active'] = False; st.rerun()
+                elif st.session_state['update_state']['active']:
+                    st.warning("Güncelleme Onayı"); update_pass = st.text_input("Admin Şifresi", type="password", key="update_pass")
+                    if st.button("💾 Güncelle", type="primary"):
+                        if update_pass == ADMIN_PWD:
+                            p_txt = st.session_state['update_state']['pending_text']
+                            s_abg, h_cnt, d_cnt, hawks, doves, h_ctx, d_ctx, flesch = utils.run_full_analysis(p_txt)
+                            utils.update_entry(current_id, selected_date, p_txt, source, s_abg, s_abg); st.success("Güncellendi!"); reset_form(); st.rerun()
+                        else: st.error("Hatalı!")
+                    if st.button("❌ İptal"): st.session_state['update_state']['active'] = False; st.rerun()
+                else:
+                    btn_label = "💾 Güncelle" if current_id else "💾 Kaydet"
+                    if st.button(btn_label, type="primary"):
+                        if txt:
+                            collision_record = None
+                            if not df_all.empty:
+                                mask = df_all['date_only'] == selected_date
+                                if mask.any(): collision_record = df_all[mask].iloc[0]
+                            is_self_update = current_id and ((collision_record is None) or (collision_record is not None and int(collision_record['id']) == current_id))
+                            if is_self_update: st.session_state['update_state'] = {'active': True, 'pending_text': txt}; st.rerun()
+                            elif collision_record is not None: st.session_state['collision_state'] = {'active': True, 'target_id': int(collision_record['id']), 'target_date': selected_date, 'pending_text': txt}; st.rerun()
+                            else:
+                                s_abg, h_cnt, d_cnt, hawks, doves, h_ctx, d_ctx, flesch = utils.run_full_analysis(txt)
+                                utils.insert_entry(selected_date, txt, source, s_abg, s_abg); st.success("Eklendi!"); reset_form(); st.rerun()
+                        else: st.error("Metin boş.")
+                    if current_id:
+                        with st.popover("🗑️ Sil"):
+                            del_pass = st.text_input("Şifre", type="password", key="del_pass")
+                            if st.button("🔥 Sil"):
+                                if del_pass == ADMIN_PWD: utils.delete_entry(current_id); st.success("Silindi!"); reset_form(); st.rerun()
+                                else: st.error("Hatalı!")
+                if txt:
+                    s_live, h_cnt, d_cnt, h_list, d_list, h_ctx, d_ctx, flesch_live = utils.run_full_analysis(txt)
+                    st.markdown("---"); st.subheader("🔍 Analiz Detayları")
+                    c1, c2, c3 = st.columns(3)
+                    with c1: st.metric("Şahin", f"{h_cnt}")
+                    with c2: st.metric("Güvercin", f"{d_cnt}")
+                    with c3: st.metric("Flesch", f"{flesch_live:.1f}")
+                    st.caption(f"**Net Skor:** {s_live:.2f}")
+                    with st.expander("📄 Tespit Edilen Cümleler", expanded=True):
+                        k1, k2 = st.columns(2)
+                        with k1:
+                            st.markdown("#### 🦅 Şahin")
+                            if h_list:
+                                for item in h_list:
+                                    t = item.split(' (')[0]; st.markdown(f"**{item}**")
+                                    if t in h_ctx: 
+                                        for s in h_ctx[t]: st.caption(f"📝 {s}")
+                            else: st.write("- Yok")
+                        with k2:
+                            st.markdown("#### 🕊️ Güvercin")
+                            if d_list:
+                                for item in d_list:
+                                    t = item.split(' (')[0]; st.markdown(f"**{item}**")
+                                    if t in d_ctx: 
+                                        for s in d_ctx[t]: st.caption(f"📝 {s}")
+                            else: st.write("- Yok")
+            st.markdown("### 📋 Kayıtlar")
+            df_show = df_all.copy()
+            df_show['Dönem'] = df_show['period_date'].dt.strftime('%Y-%m')
+            df_show['Görsel Skor'] = df_show['score_abg'].apply(lambda x: x*100 if abs(x)<=1 else x)
+            event = st.dataframe(df_show[['id', 'Dönem', 'Görsel Skor']], on_select="rerun", selection_mode="single-row", use_container_width=True, hide_index=True, key=st.session_state['table_key'])
+            if len(event.selection.rows) > 0:
+                sel_id = df_show.iloc[event.selection.rows[0]]['id']
+                if st.session_state['collision_state']['active'] or st.session_state['update_state']['active']: st.session_state['collision_state']['active'] = False; st.session_state['update_state']['active'] = False
+                if st.session_state['form_data']['id'] != sel_id:
+                    orig = df_all[df_all['id'] == sel_id].iloc[0]
+                    st.session_state['form_data'] = {'id': int(orig['id']), 'date': pd.to_datetime(orig['period_date']).date(), 'source': orig['source'], 'text': orig['text_content']}
+                    st.rerun()
 
-    # Token limiti (512 token ~ ortalama 1500-2000 karakter)
-    truncated_text = text[:2000] 
-    
-    try:
-        results = classifier(truncated_text)[0]
-        # Bu modelin çıktı etiketleri genelde: 'hawkish', 'dovish', 'neutral' şeklindedir.
-        
-        processed = {}
-        # Etiketleri Türkçeleştirme Haritası
-        labels_map = {
-            "hawkish": "🦅 Şahin (Hawkish)", 
-            "dovish": "🕊️ Güvercin (Dovish)", 
-            "neutral": "⚖️ Nötr (Neutral)",
-            # Yedek olarak (model versiyonu farklıysa diye):
-            "positive": "Şahin (Pozitif)",
-            "negative": "Güvercin (Negatif)"
-        }
-        
-        best_score = -1
-        best_label = ""
-        
-        for r in results:
-            lbl = r['label'].lower() # Gelen etiketi küçült (örn: "Hawkish" -> "hawkish")
-            score = r['score']
-            
-            # Haritadan Türkçe karşılığını bul, yoksa orijinalini kullan
-            mapped_lbl = labels_map.get(lbl, lbl.capitalize())
-            processed[mapped_lbl] = score
-            
-            if score > best_score:
-                best_score = score
-                best_label = mapped_lbl
-                
-        return {
-            "best_label": best_label,
-            "best_score": best_score,
-            "all_scores": processed
-        }
-    except Exception as e:
-        return f"Error: {str(e)}"
-
-# utils.py EN ALTINA EKLENECEK
-
-def analyze_sentences_with_roberta(text):
-    """
-    Metni cümlelere böler ve her bir cümleyi tek tek RoBERTa modeline sorar.
-    DÜZELTME: Modelden dönen liste yapısını (all_scores) doğru işler.
-    """
-    if not text: return pd.DataFrame()
-    
-    classifier = load_roberta_pipeline()
-    if not classifier or classifier == "MISSING_LIB": return pd.DataFrame()
-
-    # 1. Cümlelere Bölme
-    sentences = split_sentences_nlp(text)
-    # Çok kısa cümleleri filtrele
-    sentences = [s for s in sentences if len(s.split()) > 3]
-    
-    if not sentences: return pd.DataFrame()
-    
-    results_list = []
-    
-    try:
-        # Pipeline tahmini (Batch)
-        predictions = classifier(sentences)
-        
-        # Etiket Haritası
-        labels_map = {
-            "hawkish": "🦅 Şahin", 
-            "dovish": "🕊️ Güvercin", 
-            "neutral": "⚖️ Nötr",
-            "positive": "🦅 Şahin (Pozitif)",
-            "negative": "🕊️ Güvercin (Negatif)"
-        }
-
-        for sent, pred in zip(sentences, predictions):
-            # DÜZELTME: pred, [{'label': 'hawkish', 'score': 0.9}, ...] şeklinde bir LİSTE olabilir.
-            # En yüksek skora sahip olanı seçmeliyiz.
-            if isinstance(pred, list):
-                best_pred = max(pred, key=lambda x: x['score'])
-            else:
-                best_pred = pred
-
-            lbl_raw = best_pred['label'].lower()
-            score = best_pred['score']
-            
-            label_tr = labels_map.get(lbl_raw, lbl_raw.capitalize())
-            
-            results_list.append({
-                "Cümle": sent,
-                "Etiket": label_tr,
-                "Güven Skoru": score,
-                "Ham Etiket": lbl_raw
-            })
-            
-        df = pd.DataFrame(results_list)
-        
+with tab3:
+    st.header("Piyasa Verileri")
+    d1 = st.date_input("Başlangıç", datetime.date(2023, 1, 1))
+    d2 = st.date_input("Bitiş", datetime.date.today())
+    if st.button("Getir", key="get_market"):
+        df, err = utils.fetch_market_data_adapter(d1, d2)
         if not df.empty:
-            # Şahinler ve Güvercinler üstte, Nötrler altta görünsün
-            df = df.sort_values(by=["Ham Etiket", "Güven Skoru"], ascending=[True, False])
-            
-        return df
+            fig_m = go.Figure()
+            if 'Yıllık TÜFE' in df.columns: fig_m.add_trace(go.Scatter(x=df['Donem'], y=df['Yıllık TÜFE'], name="Yıllık TÜFE", line=dict(color='red')))
+            if 'Aylık TÜFE' in df.columns: fig_m.add_trace(go.Scatter(x=df['Donem'], y=df['Aylık TÜFE'], name="Aylık TÜFE", line=dict(color='blue', dash='dot')))
+            if 'PPK Faizi' in df.columns: fig_m.add_trace(go.Scatter(x=df['Donem'], y=df['PPK Faizi'], name="Faiz", line=dict(color='orange')))
+            st.plotly_chart(fig_m, use_container_width=True)
+            st.dataframe(df, use_container_width=True)
+        else: st.error(f"Hata: {err}")
 
-    except Exception as e:
-        print(f"Cümle analizi hatası (Log): {e}") # Hata detayını terminalde görebilirsiniz
-        return pd.DataFrame()
+with tab4:
+    st.header("🔍 Frekans ve Diff Analizi")
+    df_all = utils.fetch_all_data()
+    if not df_all.empty:
+        df_all['period_date'] = pd.to_datetime(df_all['period_date'])
+        df_all['Donem'] = df_all['period_date'].dt.strftime('%Y-%m')
+        df_all = df_all.sort_values('period_date', ascending=False)
+        st.subheader("📊 En Çok Tekrar Eden Ekonomi Terimleri")
+        st.text_input("🚫 Grafikten Çıkarılacak Kelimeler (Enter)", key="deep_stop_in", on_change=add_deep_stop)
+        if st.session_state['stop_words_deep']:
+            st.write("Filtreler:")
+            cols = st.columns(8)
+            for i, word in enumerate(st.session_state['stop_words_deep']):
+                if cols[i % 8].button(f"{word} ✖", key=f"del_deep_{word}"):
+                    st.session_state['stop_words_deep'].remove(word)
+                    st.rerun()
+        st.divider()
+        freq_df, top_terms = utils.get_top_terms_series(df_all, 7, st.session_state['stop_words_deep'])
+        if not freq_df.empty:
+            fig_freq = go.Figure()
+            for term in top_terms:
+                fig_freq.add_trace(go.Scatter(x=freq_df['period_date'], y=freq_df[term], name=term, mode='lines+markers'))
+            fig_freq.update_layout(title="Kelime Kullanım Sıklığı Trendi", hovermode="x unified", height=400)
+            st.plotly_chart(fig_freq, use_container_width=True)
+        st.divider()
+        st.subheader("🔄 Metin Farkı (Diff) Analizi")
+        c_diff1, c_diff2 = st.columns(2)
+        with c_diff1: sel_date1 = st.selectbox("Eski Metin:", df_all['Donem'].tolist(), index=min(1, len(df_all)-1))
+        with c_diff2: sel_date2 = st.selectbox("Yeni Metin:", df_all['Donem'].tolist(), index=0)
+        if st.button("Farkları Göster", type="primary"):
+            if sel_date1 and sel_date2:
+                t1 = df_all[df_all['Donem'] == sel_date1].iloc[0]['text_content']
+                t2 = df_all[df_all['Donem'] == sel_date2].iloc[0]['text_content']
+                diff_html = utils.generate_diff_html(t1, t2)
+                st.markdown(f"**Kırmızı:** {sel_date1}'den silinenler | **Yeşil:** {sel_date2}'ye eklenenler")
+                with st.container(border=True, height=400): st.markdown(diff_html, unsafe_allow_html=True)
+    else: st.info("Yeterli veri yok.")
+
+with tab5:
+    st.header("🤖 Gelişmiş PPK Faiz Tahmin Modeli")
+    st.info("Bu model, veritabanındaki tüm veriyi eğitir ancak aşağıda seçtiğiniz metin üzerinden 'sonraki' adımı tahmin eder.")
+    
+    with st.expander("ℹ️ Model Detayları", expanded=False):
+        st.markdown("""
+        * **Algoritma:** Ridge Regresyon (Sürekli Tahmin) + Logistic Regresyon (Yön Tahmini)
+        * **Özellikler:** TF-IDF (Metin), Anahtar Kelimeler (Enflasyon, Büyüme vb.), Geçmiş Faiz Değişimleri, Volatilite.
+        * **Validasyon:** Walk-Forward Validation (Zaman serisine duyarlı doğrulama).
+        * **Güven Aralığı:** Model hatalarına dayalı dinamik bant genişliği.
+        """)
+
+    # 1. Veri Hazırlığı
+    df_logs = utils.fetch_all_data()
+    
+    min_d = datetime.date(2020, 1, 1)
+    if not df_logs.empty:
+        df_logs['period_date'] = pd.to_datetime(df_logs['period_date'], errors='coerce')
+        df_logs = df_logs.dropna(subset=['period_date'])
+        
+        if not df_logs.empty:
+            # Tarih aralığı seçicisi için min/max
+            min_avail_date = df_logs['period_date'].min().date()
+            max_avail_date = df_logs['period_date'].max().date()
+            
+            # Min_d, market verisi çekmek için
+            min_val = df_logs['period_date'].min()
+            if isinstance(min_val, pd.Timestamp): min_d = min_val.date()
+            elif isinstance(min_val, str): min_d = pd.to_datetime(min_val).date()
+            elif isinstance(min_val, datetime.date): min_d = min_val
+
+    # Market Verisi
+    df_market, err = utils.fetch_market_data_adapter(min_d, datetime.date.today())
+    ml_df = utils.prepare_ml_dataset(df_logs, df_market)
+
+    if not ml_df.empty and len(ml_df) > 10:
+        # 2. Modeli Eğit
+        predictor = utils.AdvancedMLPredictor()
+        status = predictor.train(ml_df)
+        
+        if status == "OK":
+            # 3. KULLANICI SEÇİMİ
+            st.markdown("### 📅 Analiz İçin Dönem Seçimi")
+            c_d1, c_d2 = st.columns(2)
+            start_date_sel = c_d1.date_input("Başlangıç", value=min_avail_date, min_value=min_avail_date, max_value=max_avail_date)
+            end_date_sel = c_d2.date_input("Bitiş", value=max_avail_date, min_value=min_avail_date, max_value=max_avail_date)
+            
+            filtered_logs = df_logs[(df_logs['period_date'].dt.date >= start_date_sel) & (df_logs['period_date'].dt.date <= end_date_sel)].copy()
+            filtered_logs = filtered_logs.sort_values("period_date", ascending=False)
+            filtered_logs['Dönem'] = filtered_logs['period_date'].dt.strftime('%Y-%m')
+            
+            period_options = filtered_logs['Dönem'].tolist()
+            
+            if period_options:
+                selected_period = st.selectbox("Analiz Edilecek Toplantıyı Seçin:", period_options, index=0)
+                
+                target_row = filtered_logs[filtered_logs['Dönem'] == selected_period].iloc[0]
+                target_text = target_row['text_content']
+                target_source = f"Seçilen Kayıt: {target_row['Dönem']}"
+                selected_date_for_chart = target_row['period_date']
+                
+                st.divider()
+                st.subheader(f"Analiz Edilen Metin: {target_source}")
+                
+                # 4. Tahmin Yap
+                prediction = predictor.predict(target_text)
+                
+                if prediction:
+                    c1, c2, c3 = st.columns(3)
+                    direction = prediction['pred_direction']
+                    color = "green" if direction == "ARTIRIM" else "red" if direction == "İNDİRİM" else "gray"
+                    with c1:
+                        st.markdown(f"### Yön: :{color}[{direction}]")
+                        st.caption(f"Güven Skoru: %{prediction['direction_confidence']*100:.1f}")
+                    bps = prediction['pred_change_bps']
+                    with c2: st.metric("Tahmini Değişim", f"{bps:.0f} bps")
+                    lo = prediction['pred_interval_lo']
+                    hi = prediction['pred_interval_hi']
+                    with c3: st.metric("Tahmin Aralığı", f"{lo:.0f} / {hi:.0f} bps")
+                    
+                    st.divider()
+                    
+                    # 5. Grafik
+                    st.subheader("📊 Model Performansı (Geçmiş)")
+                    
+                    if predictor.df_hist is not None:
+                        hist = predictor.df_hist.copy()
+                        hist['date'] = pd.to_datetime(hist['date'])
+                        
+                        chart_start = pd.to_datetime(start_date_sel) - pd.Timedelta(days=90)
+                        chart_end = pd.to_datetime(end_date_sel) + pd.Timedelta(days=90)
+                        
+                        hist_view = hist[(hist['date'] >= chart_start) & (hist['date'] <= chart_end)]
+                        
+                        if not hist_view.empty:
+                            fig = go.Figure()
+                            # Gerçekleşen
+                            fig.add_trace(go.Bar(
+                                x=hist_view['date'], y=hist_view['y_bps'],
+                                name="Gerçekleşen Değişim", marker_color='gray', opacity=0.5
+                            ))
+                            # Geçmiş Tahminler
+                            if 'predicted_bps' in hist_view.columns:
+                                hist_pred = hist_view.dropna(subset=['predicted_bps'])
+                                fig.add_trace(go.Scatter(
+                                    x=hist_pred['date'], y=hist_pred['predicted_bps'],
+                                    name="Model Geçmiş Tahminleri", 
+                                    line=dict(color='blue', width=2, dash='dot')
+                                ))
+                            
+                            # Şu anki tahmin noktası
+                            if chart_start <= selected_date_for_chart <= chart_end:
+                                fig.add_trace(go.Scatter(
+                                    x=[selected_date_for_chart], 
+                                    y=[bps],
+                                    mode='markers',
+                                    marker=dict(color=color, size=15, symbol='star'),
+                                    name=f"Seçilen ({target_source}) Tahmini"
+                                ))
+                            
+                            fig.update_layout(hovermode="x unified", title="Faiz Değişimleri ve Tahminler")
+                            st.plotly_chart(fig, use_container_width=True)
+                        else:
+                            st.warning("Seçilen tarih aralığında görüntülenecek grafik verisi yok.")
+                else:
+                    st.error("Tahmin üretilemedi.")
+            else:
+                st.info("Bu tarih aralığında kayıt bulunamadı.")
+        else:
+            st.warning(f"Model eğitilemedi: {status}")
+    else:
+        st.warning("Model eğitimi için yeterli veri yok (En az 10 toplantı kaydı ve piyasa verisi gerekli).")
+
+with tab6:
+    st.header("☁️ Kelime Bulutu (WordCloud)")
+    if not df_all.empty:
+        st.text_input("🚫 Buluttan Çıkarılacak Kelimeler (Enter)", key="cloud_stop_in", on_change=add_cloud_stop)
+        if st.session_state['stop_words_cloud']:
+            st.write("Filtreler:")
+            cols = st.columns(8)
+            for i, word in enumerate(st.session_state['stop_words_cloud']):
+                if cols[i % 8].button(f"{word} ✖", key=f"del_cloud_{word}"):
+                    st.session_state['stop_words_cloud'].remove(word)
+                    st.rerun()
+        st.divider()
+        dates = df_all['Donem'].tolist()
+        sel_cloud_date = st.selectbox("Dönem Seçin:", ["Tüm Zamanlar"] + dates)
+        if st.button("Bulutu Oluştur", type="primary"):
+            if sel_cloud_date == "Tüm Zamanlar": text_cloud = " ".join(df_all['text_content'].astype(str).tolist())
+            else: text_cloud = df_all[df_all['Donem'] == sel_cloud_date].iloc[0]['text_content']
+            fig_wc = utils.generate_wordcloud_img(text_cloud, st.session_state['stop_words_cloud'])
+            if fig_wc: st.pyplot(fig_wc)
+            else: st.error("Kütüphane eksik veya metin boş.")
+    else: st.info("Veri yok.")
+
+with tab7:
+    st.header("📜 Apel, Blix ve Grimaldi (2019) Analizi")
+    st.info("Bu yöntem, kelimeleri 'enflasyon', 'büyüme', 'istihdam' gibi kategorilere ayırarak, yanlarındaki sıfatlara göre 'Şahin' veya 'Güvercin' olarak puanlar.")
+    df_abg_source = utils.fetch_all_data()
+    if not df_abg_source.empty:
+        df_abg_source = df_abg_source.copy()
+        df_abg_source['period_date'] = pd.to_datetime(df_abg_source['period_date'])
+        df_abg_source['Donem'] = df_abg_source['period_date'].dt.strftime('%Y-%m')
+        abg_df = utils.calculate_abg_scores(df_abg_source)
+        fig_abg = go.Figure()
+        fig_abg.add_trace(go.Scatter(x=abg_df['period_date'], y=abg_df['abg_index'], name="ABF Net Hawkishness", line=dict(color='purple', width=3), marker=dict(size=8)))
+        fig_abg.add_shape(type="line", x0=abg_df['period_date'].min(), x1=abg_df['period_date'].max(), y0=1, y1=1, line=dict(color="gray", dash="dash"))
+        fig_abg.update_layout(title="ABF (2019) Endeksi Zaman Serisi (Nötr=1.0)", yaxis_title="Hawkishness Index (0 - 2)", hovermode="x unified")
+        st.plotly_chart(fig_abg, use_container_width=True)
+        st.divider()
+        st.subheader("🔍 Dönem Bazlı Detaylar")
+        sel_abg_period = st.selectbox("İncelenecek Dönem:", abg_df['Donem'].tolist())
+        if sel_abg_period:
+            subset = df_abg_source[df_abg_source['Donem'] == sel_abg_period]
+            if not subset.empty:
+                text_abg = subset.iloc[0]['text_content']
+                
+                # Analiz fonksiyonunu çağır
+                res = utils.analyze_hawk_dove(
+                    text_abg, 
+                    DICT=utils.DICT, 
+                    window_words=10, 
+                    dedupe_within_term_window=True, 
+                    nearest_only=True
+                )
+                
+                net_h = res.get('net_hawkishness', 0)
+                h_cnt = res.get('hawk_count', 0)
+                d_cnt = res.get('dove_count', 0)
+                details = res.get('match_details', [])
+                
+                c1, c2, c3 = st.columns(3)
+                c1.metric("Net Endeks", f"{net_h:.4f}")
+                c2.metric("🦅 Şahin Eşleşme", h_cnt)
+                c3.metric("🕊️ Güvercin Eşleşme", d_cnt)
+                
+                if "topic_counts" in res:
+                     with st.expander("Detaylı Kırılım (Topic Counts)"):
+                         st.json(res["topic_counts"])
+
+                with st.expander("📝 Detaylı Eşleşme Tablosu (Cümle Bağlamı)", expanded=True):
+                    if details:
+                        detail_data = []
+                        for m in details:
+                            detail_data.append({"Tip": "🦅 ŞAHİN" if m['type'] == "HAWK" else "🕊️ GÜVERCİN", "Eşleşen Terim": m['term'], "Cümle": m['sentence']})
+                        st.dataframe(pd.DataFrame(detail_data), use_container_width=True, hide_index=True)
+                    else: 
+                        st.info("Bu metinde herhangi bir ABF sözlük eşleşmesi bulunamadı.")
+                
+                with st.expander("Metin Önizleme"): st.write(text_abg)
+            else: st.error("Seçilen dönem için metin bulunamadı.")
+    else: st.info("Analiz için veri yok.")
+
+# ==============================================================================
+# TAB STRUCT: YENİ YAPISAL ANALİZ (THICK LINE)
+# ==============================================================================
+with tab_struct:
+    st.header("🏗️ Yapısal Analiz (Pencere Yöntemi)")
+    st.info("Bu yöntem, kelimeler arası mesafeyi (Window) ölçerek daha hassas bir şahin/güvercin ayrımı yapar.")
+    
+    # Text Seçimi
+    struct_text_input = ""
+    df_all_struct = utils.fetch_all_data()
+    
+    if not df_all_struct.empty:
+        df_all_struct['period_date'] = pd.to_datetime(df_all_struct['period_date'])
+        df_all_struct['Donem'] = df_all_struct['period_date'].dt.strftime('%Y-%m')
+        
+        # Seçenekler
+        opts = df_all_struct['Donem'].tolist()
+        sel_struct_period = st.selectbox("Analiz Edilecek Dönem (Yapısal):", opts, index=0)
+        
+        if sel_struct_period:
+            row = df_all_struct[df_all_struct['Donem'] == sel_struct_period].iloc[0]
+            struct_text_input = row['text_content']
+            
+            # 1. Analizi Çalıştır
+            result = utils.analyze_hawk_dove_structural(struct_text_input, window_words=10)
+            score = result["net_hawkishness"]
+            
+            # 2. Metrikler
+            c1, c2, c3 = st.columns(3)
+            delta_msg = "Şahin" if score > 1.05 else ("Güvercin" if score < 0.95 else "Nötr")
+            c1.metric("Yapısal Şahinlik Skoru", f"{score:.4f}", delta=delta_msg)
+            c2.metric("Toplam Şahin Sinyali", result["hawk_total"])
+            c3.metric("Toplam Güvercin Sinyali", result["dove_total"])
+            
+            st.divider()
+            
+            # 3. KALIN ÇİZGİ GRAFİĞİ (Altair ile)
+            st.subheader("Sentiment Trendi (Simüle)")
+            st.caption("Aşağıdaki grafik, son 5 dönemin skorunu ve mevcut analizinizi 'Kalın Çizgi' formatında gösterir.")
+            
+            # Simülasyon Verisi (Gerçek uygulamada DB'den çekilmeli)
+            # Burada 'Thick Line' efektini göstermek için dummy data kullanıyoruz.
+            trend_data = [1.0, 0.9, 1.1, 0.85, 1.02] 
+            trend_data.append(score) # En son veri şu anki analiz
+            
+            chart_data = pd.DataFrame({
+                'Toplantı': [f"T-{5-i}" for i in range(len(trend_data))],
+                'Skor': trend_data
+            })
+            chart_data.iloc[-1, 0] = "Mevcut"
+            
+            line_chart = alt.Chart(chart_data).mark_line(
+                strokeWidth=10,       # KALIN ÇİZGİ
+                point=True,
+                interpolate='monotone'
+            ).encode(
+                x=alt.X('Toplantı', sort=None),
+                y=alt.Y('Skor', scale=alt.Scale(domain=[0.5, 1.5])),
+                color=alt.value("#FF4B4B"), # Streamlit Kırmızısı / Neon
+                tooltip=['Toplantı', 'Skor']
+            ).properties(height=350)
+            
+            st.altair_chart(line_chart, use_container_width=True)
+            
+            # 4. Konu Dağılımı
+            st.subheader("Konu Bazlı Sinyaller")
+            topics = []
+            for topic, counts in result["topic_counts"].items():
+                topics.append({"Konu": topic, "Yön": "Şahin", "Adet": counts["hawk"]})
+                topics.append({"Konu": topic, "Yön": "Güvercin", "Adet": counts["dove"]})
+                
+            df_topic = pd.DataFrame(topics)
+            bar_chart = alt.Chart(df_topic).mark_bar().encode(
+                x='Konu', y='Adet',
+                color=alt.Color('Yön', scale=alt.Scale(domain=['Şahin', 'Güvercin'], range=['#e74c3c', '#2ecc71'])),
+                tooltip=['Konu', 'Yön', 'Adet']
+            ).properties(height=300)
+            
+            st.altair_chart(bar_chart, use_container_width=True)
+            
+            # 5. Eşleşme Tablosu
+            with st.expander("Detaylı Eşleşmeler"):
+                st.dataframe(result["matches_df"], use_container_width=True)
+
+    else: st.info("Veri yok.")
+
+# ==============================================================================
+# TAB ROBERTA: CB-RoBERTa (YAPAY ZEKA)
+# ==============================================================================
+# app.py içindeki "with tab_roberta:" bloğunu TAMAMEN bununla değiştirin:
+
+with tab_roberta:
+    st.header("🧠 CentralBankRoBERTa (Yapay Zeka Analizi)")
+    st.markdown("Bu modül, klasik kelime sayma yöntemleri yerine, cümlenin **bağlamını (context)** anlayan Transformer tabanlı yapay zeka modelini kullanır.")
+    
+    # Text Input (Tabstruct ile benzer mantık)
+    rob_text_input = ""
+    df_all_rob = utils.fetch_all_data()
+    
+    if not df_all_rob.empty:
+        df_all_rob['period_date'] = pd.to_datetime(df_all_rob['period_date'])
+        df_all_rob['Donem'] = df_all_rob['period_date'].dt.strftime('%Y-%m')
+        rob_opts = df_all_rob['Donem'].tolist()
+        
+        sel_rob_period = st.selectbox("Analiz Edilecek Dönem (AI):", rob_opts, index=0, key="rob_sel")
+        
+        if sel_rob_period:
+            row_rob = df_all_rob[df_all_rob['Donem'] == sel_rob_period].iloc[0]
+            rob_text_input = row_rob['text_content']
+            
+            with st.expander("Metni Gör"): st.write(rob_text_input)
+            
+            if st.button("Yapay Zeka İle Analiz Et", type="primary"):
+                if not utils.HAS_FINBERT: 
+                     st.error("`transformers` ve `torch` kütüphaneleri yüklü değil. Terminalde `pip install transformers torch` çalıştırın.")
+                else:
+                    with st.spinner("Model yükleniyor ve genel analiz yapılıyor..."):
+                        # 1. Genel Analiz
+                        roberta_res = utils.analyze_with_roberta(rob_text_input)
+                    
+                    if roberta_res == "MISSING_LIB":
+                        st.error("Kütüphane hatası.")
+                    elif roberta_res == "ERROR":
+                        st.error("Model indirilemedi.")
+                    elif isinstance(roberta_res, dict):
+                        lbl = roberta_res.get('best_label', 'Bilinmiyor')
+                        scr = roberta_res.get('best_score', 0.0)
+                        
+                        # --- GENEL SKOR KARTI ---
+                        c1, c2 = st.columns([1, 2])
+                        with c1:
+                            lbl_color = "gray"
+                            if "Şahin" in lbl: lbl_color = "red"
+                            elif "Güvercin" in lbl: lbl_color = "green"
+                            
+                            st.markdown(f"### Karar: :{lbl_color}[{lbl}]")
+                            st.metric("Model Güveni", f"%{scr*100:.2f}")
+                        
+                        with c2:
+                            scores = roberta_res.get('all_scores', {})
+                            if scores:
+                                chart_data = pd.DataFrame(list(scores.items()), columns=['Etiket', 'Olasılık'])
+                                c = alt.Chart(chart_data).mark_bar().encode(
+                                    x=alt.X('Olasılık', scale=alt.Scale(domain=[0, 1])),
+                                    y=alt.Y('Etiket', sort='-x'),
+                                    color=alt.Color('Etiket', legend=None),
+                                    tooltip=['Etiket', alt.Tooltip('Olasılık', format='.2%')]
+                                ).properties(height=200)
+                                st.altair_chart(c, use_container_width=True)
+                        
+                        st.divider()
+                        
+                        # --- CÜMLE BAZLI TABLO ---
+                        st.subheader("📝 Cümle Bazlı Ayrıştırma")
+                        with st.spinner("Cümleler tek tek inceleniyor..."):
+                            df_sentences = utils.analyze_sentences_with_roberta(rob_text_input)
+                        
+                        if not df_sentences.empty:
+                            # Renklendirme fonksiyonu
+                            def color_coding(val):
+                                color = 'black'
+                                if 'Şahin' in val: color = 'red'
+                                elif 'Güvercin' in val: color = 'green'
+                                return f'color: {color}; font-weight: bold;'
+
+                            st.dataframe(
+                                df_sentences.style.map(color_coding, subset=['Etiket'])
+                                .format({"Güven Skoru": "{:.2%}"}),
+                                use_container_width=True,
+                                hide_index=True
+                            )
+                        else:
+                            st.info("Cümle ayrıştırması yapılamadı.")
+
+                        st.info("Not: Bu analiz **Moritz-Pfeifer/CentralBankRoBERTa** modeli kullanılarak yapılmıştır.")
+                    else:
+                        st.error("Beklenmeyen hata oluştu.")
+    else: st.info("Veri yok.")
+
+with tab_imp:
+    st.header("📅 Önemli Tarihler ve Haberler")
+    st.info("Buraya girdiğiniz tarihler Dashboard grafiğinde işaretlenecek ve haber linkleri eklenecektir.")
+    
+    with st.container(border=True):
+        st.subheader("Yeni Olay Ekle")
+        c1, c2 = st.columns([1, 2])
+        with c1:
+            new_ev_date = st.date_input("Olay Tarihi", datetime.date.today())
+        with c2:
+            new_ev_links = st.text_area("Haber Linkleri (Her satıra bir link)", height=100)
+            
+        if st.button("Kaydet", type="primary"):
+            if new_ev_links:
+                utils.add_event(new_ev_date, new_ev_links)
+                st.success("Kaydedildi!")
+                st.rerun()
+            else:
+                st.error("Lütfen en az bir link giriniz.")
+    
+    st.divider()
+    st.subheader("Kayıtlı Olaylar")
+    events = utils.fetch_events()
+    
+    if not events.empty:
+        for idx, row in events.iterrows():
+            with st.container(border=True):
+                col1, col2, col3 = st.columns([2, 5, 1])
+                with col1:
+                    st.write(f"**{row['event_date']}**")
+                with col2:
+                    links = row['links'].split('\n') if row['links'] else []
+                    for l in links:
+                        st.markdown(f"- [{l}]({l})")
+                with col3:
+                    if st.button("Sil", key=f"del_ev_{row['id']}"):
+                        utils.delete_event(row['id'])
+                        st.rerun()
+    else:
+        st.info("Henüz kayıtlı bir olay yok.")
+
+with tab_vader:
+    st.header("😊 VADER Duygu Analizi")
+    st.info("VADER, metinlerdeki duygu yoğunluğunu ölçer. (Not: Kütüphane İngilizce odaklıdır, Türkçe metinlerde skorlar düşük kalabilir)")
+    
+    if not utils.HAS_VADER:
+        st.error("vaderSentiment kütüphanesi eksik. Lütfen `pip install vaderSentiment` çalıştırın.")
+    else:
+        df_logs = utils.fetch_all_data()
+        if not df_logs.empty:
+            df_logs['period_date'] = pd.to_datetime(df_logs['period_date'])
+            df_logs['Donem'] = df_logs['period_date'].dt.strftime('%Y-%m')
+            
+            # Analizi çalıştır
+            vader_df = utils.calculate_vader_series(df_logs)
+            
+            # Zaman Serisi Grafiği
+            st.subheader("📈 Duygu Tonu Zaman Serisi (Compound Skor)")
+            fig_v = go.Figure()
+            fig_v.add_trace(go.Scatter(x=vader_df['period_date'], y=vader_df['vader_compound'], mode='lines+markers', name='Compound', line=dict(color='blue')))
+            fig_v.add_hline(y=0, line_dash="dash", line_color="gray")
+            fig_v.update_layout(title="VADER Compound Skoru (-1: Negatif, +1: Pozitif)", hovermode="x unified")
+            st.plotly_chart(fig_v, use_container_width=True)
+            
+            # Bar Grafiği
+            st.subheader("📊 Pozitif ve Negatif Skorlar")
+            fig_pn = go.Figure()
+            fig_pn.add_trace(go.Bar(x=vader_df['period_date'], y=vader_df['vader_pos'], name='Pozitif', marker_color='green'))
+            fig_pn.add_trace(go.Bar(x=vader_df['period_date'], y=vader_df['vader_neg'], name='Negatif', marker_color='red'))
+            fig_pn.update_layout(title="Pozitif ve Negatif Bileşenler", barmode='group', hovermode="x unified")
+            st.plotly_chart(fig_pn, use_container_width=True)
+
+            # Tablo
+            st.dataframe(vader_df, use_container_width=True)
+        else:
+            st.info("Veri yok.")
+
+with tab_finbert:
+    st.header("💰 FinBERT Analizi (ProsusAI)")
+    st.info("FinBERT, finansal metinler için eğitilmiş bir BERT modelidir. (Not: Bu model İngilizce metinlerde en iyi sonucu verir. Türkçe metinlerde sonuçlar nötr çıkabilir.)")
+    
+    if not utils.HAS_FINBERT:
+        st.error("Gerekli kütüphaneler (torch, transformers) eksik.")
+    else:
+        # Analizi Çalıştır Butonu (Çünkü yavaş olabilir)
+        if st.button("FinBERT Analizini Başlat (Yavaş Olabilir)", type="primary"):
+            df_logs = utils.fetch_all_data()
+            if not df_logs.empty:
+                df_logs['period_date'] = pd.to_datetime(df_logs['period_date'])
+                df_logs['Donem'] = df_logs['period_date'].dt.strftime('%Y-%m')
+                
+                with st.spinner("FinBERT modeli yükleniyor ve metinler analiz ediliyor..."):
+                    finbert_df = utils.calculate_finbert_series(df_logs)
+                
+                if not finbert_df.empty:
+                    # Zaman Serisi
+                    st.subheader("📈 FinBERT Duygu Skoru (Ağırlıklı)")
+                    fig_fb = go.Figure()
+                    fig_fb.add_trace(go.Scatter(x=finbert_df['period_date'], y=finbert_df['finbert_score'], mode='lines+markers', name='Net Skor', line=dict(color='darkblue')))
+                    fig_fb.add_hline(y=0, line_dash="dash", line_color="gray")
+                    fig_fb.update_layout(title="Net Skor (Pozitif - Negatif)", hovermode="x unified")
+                    st.plotly_chart(fig_fb, use_container_width=True)
+                    
+                    # Bileşenler
+                    st.subheader("📊 Duygu Bileşenleri")
+                    fig_comp = go.Figure()
+                    fig_comp.add_trace(go.Bar(x=finbert_df['period_date'], y=finbert_df['finbert_pos'], name='Pozitif', marker_color='green'))
+                    fig_comp.add_trace(go.Bar(x=finbert_df['period_date'], y=finbert_df['finbert_neg'], name='Negatif', marker_color='red'))
+                    fig_comp.add_trace(go.Scatter(x=finbert_df['period_date'], y=finbert_df['finbert_neu'], name='Nötr', line=dict(color='gray', dash='dot')))
+                    fig_comp.update_layout(barmode='group', hovermode="x unified")
+                    st.plotly_chart(fig_comp, use_container_width=True)
+                    
+                    st.dataframe(finbert_df, use_container_width=True)
+            else:
+                st.info("Analiz edilecek veri yok.")

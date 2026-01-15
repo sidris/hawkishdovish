@@ -1275,7 +1275,7 @@ def analyze_sentences_with_roberta(text):
             score = best_pred['score']
             
             label_tr = labels_map.get(lbl_raw, lbl_raw.capitalize())
-            
+             
             results_list.append({
                 "Cümle": sent,
                 "Etiket": label_tr,

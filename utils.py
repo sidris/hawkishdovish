@@ -919,6 +919,13 @@ class AdvancedMLPredictor:
             self.intervals['overall'], self.intervals['by_dir']
         )
 
+# --- VADER / FINBERT PLACEHOLDERS ---
+def calculate_vader_series(df): 
+    return pd.DataFrame(columns=["period_date", "Donem", "vader_compound", "vader_pos", "vader_neg", "vader_neu"])
+
+def calculate_finbert_series(df): 
+    return pd.DataFrame(columns=["period_date", "finbert_pos", "finbert_neg", "finbert_neu", "finbert_score"])
+
 # =============================================================================
 # 8. YENİ STRUCTURAL HAWK/DOVE ALGORİTMASI (Window & Pattern Matching)
 # =============================================================================
@@ -941,7 +948,7 @@ HAWK_DOVE_DICT_STRUCT = {
         {
            "block": "inflation_pressure",
            "terms": ["inflation pressure"],
-           "hawk": [M_struct("accelerat", True), M_struct("boost", True), M_struct("build", True), M_struct("elevat", True), M_struct("emerg", True), M_struct("great", True), M_struct("height", True), M_struct("high", True), M_struct("increas", True), M_struct("intensif", True), M_struct("mount", True), M_struct("pickup"), M_struct("rise"), M_struct("rose"), M_struct("rising"), M_struct("stok", True), M_struct("strong", True), M_struct("sustain", True)],
+           "hawk": [M_struct("accelerat", True), M_struct("boost", True), M_struct("build", True), M_struct("elevat", True), M_struct("emerg", True), M_struct("great", True), M_struct("height", True), M_struct("high", True), M_struct("increas", True), M_struct("intensif", True), M_struct("mount", True), M_struct("pickup"), M_struct("rise", True), M_struct("rose"), M_struct("rising"), M_struct("stok", True), M_struct("strong", True), M_struct("sustain", True)],
            "dove": [M_struct("abat", True), M_struct("contain", True), M_struct("dampen", True), M_struct("decelerat", True), M_struct("declin", True), M_struct("decreas", True), M_struct("dimin", True), M_struct("eas", True), M_struct("fall", True), M_struct("fell"), M_struct("low", True), M_struct("moderat", True), M_struct("reced", True), M_struct("reduc", True), M_struct("subdued"), M_struct("temper", True)],
         },
     ],

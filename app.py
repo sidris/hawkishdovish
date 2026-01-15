@@ -84,13 +84,11 @@ with tab1:
         abg_df = utils.calculate_abg_scores(df_logs)
         abg_df['abg_dashboard_val'] = (abg_df['abg_index'] - 1.0) * 100
         
-        # --- YENİ EKLENEN KISIM: RoBERTa TIME SERIES ---
+        # --- RoBERTa Time Series ---
         if utils.HAS_FINBERT:
-            # Sadece model yüklü ise hesapla
             roberta_series = utils.calculate_roberta_series(df_logs)
         else:
             roberta_series = pd.DataFrame()
-        # -----------------------------------------------
 
         min_d = df_logs['period_date'].min().date()
         max_d = datetime.date.today()
@@ -100,7 +98,6 @@ with tab1:
         merged = pd.merge(merged, abg_df[['period_date', 'abg_dashboard_val']], on='period_date', how='left')
         
         if not roberta_series.empty:
-            # period_date datetime olmalı
             roberta_series['period_date'] = pd.to_datetime(roberta_series['period_date'])
             merged = pd.merge(merged, roberta_series, on='period_date', how='left')
 
@@ -116,16 +113,15 @@ with tab1:
         fig.add_trace(go.Scatter(x=merged['period_date'], y=merged['score_abg_scaled'], name="Şahin/Güvercin-Hibrit", line=dict(color='black', width=2, dash='dot'), marker=dict(size=6, color='black'), yaxis="y"))
         fig.add_trace(go.Scatter(x=merged['period_date'], y=merged['abg_dashboard_val'], name="Şahin/Güvercin ABG 2019", line=dict(color='navy', width=4), yaxis="y"))
         
-        # --- RoBERTa Çizgisi ---
+        # RoBERTa Çizgisi (Kırmızı, Kalın, Tireli)
         if 'roberta_index' in merged.columns:
             fig.add_trace(go.Scatter(
                 x=merged['period_date'], 
                 y=merged['roberta_index'], 
                 name="AI Sentiment (RoBERTa)", 
-                line=dict(color='red', width=4, dash='dash'), # İstenen Stil
+                line=dict(color='red', width=4, dash='dash'), 
                 yaxis="y"
             ))
-        # -----------------------
 
         if 'Yıllık TÜFE' in merged.columns: fig.add_trace(go.Scatter(x=merged['period_date'], y=merged['Yıllık TÜFE'], name="Yıllık TÜFE (%)", line=dict(color='red', dash='dot'), yaxis="y"))
         if 'PPK Faizi' in merged.columns: fig.add_trace(go.Scatter(x=merged['period_date'], y=merged['PPK Faizi'], name="Faiz (%)", line=dict(color='orange', dash='dot'), yaxis="y"))
@@ -237,7 +233,6 @@ with tab2:
                     st.session_state['form_data'] = {'id': int(orig['id']), 'date': pd.to_datetime(orig['period_date']).date(), 'source': orig['source'], 'text': orig['text_content']}
                     st.rerun()
 
-# (Diğer sekmeler mevcut haliyle kalsın: tab3, tab4, tab5, tab6, tab7 aynı)
 with tab3:
     st.header("Piyasa Verileri"); d1 = st.date_input("Başlangıç", datetime.date(2023, 1, 1)); d2 = st.date_input("Bitiş", datetime.date.today())
     if st.button("Getir"):
@@ -260,6 +255,7 @@ with tab5:
     if not df_logs.empty and len(df_logs) > 10:
         min_d = pd.to_datetime(df_logs['period_date']).min().date()
         df_m, _ = utils.fetch_market_data_adapter(min_d, datetime.date.today())
+        # prepare_ml_dataset artık KeyError hatası vermez
         ml_df = utils.prepare_ml_dataset(df_logs, df_m)
         pred = utils.AdvancedMLPredictor(); stat = pred.train(ml_df)
         if stat == "OK":
@@ -296,6 +292,7 @@ with tab_struct:
             txt = df_all[df_all['period_date'] == sel].iloc[0]['text_content']
             res = utils.analyze_hawk_dove_structural(txt)
             st.metric("Skor", f"{res['net_hawkishness']:.4f}")
+            # KeyError hatası artık yok
             st.dataframe(res['matches_df'])
 
 with tab_roberta:
@@ -309,8 +306,17 @@ with tab_roberta:
                 res = utils.analyze_with_roberta(txt)
                 if isinstance(res, dict):
                     st.metric(res['best_label'], f"%{res['best_score']*100:.1f}")
+                    # Cümle ayrıştırma hatası artık yok
                     df_sent = utils.analyze_sentences_with_roberta(txt)
-                    st.dataframe(df_sent)
+                    
+                    if not df_sent.empty:
+                        def color_coding(val):
+                            color = 'black'
+                            if 'Şahin' in val: color = 'red'
+                            elif 'Güvercin' in val: color = 'green'
+                            return f'color: {color}; font-weight: bold;'
+                        st.dataframe(df_sent.style.map(color_coding, subset=['Etiket']), use_container_width=True)
+                    else: st.info("Cümle bulunamadı.")
                 else: st.error("Hata")
 
 with tab_imp:

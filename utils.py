@@ -670,40 +670,74 @@ def analyze_sentences_with_roberta(text):
 # =============================================================================
 # 10. TARİHSEL RoBERTa HESAPLAMA (DASHBOARD - DÜZ ÇİZGİ FIX)
 # =============================================================================
-@st.cache_data
+# utils.py EN ALTINA EKLENECEK / DEĞİŞTİRİLECEK
+
+@st.cache_data(show_spinner=True)
 def calculate_roberta_series(df):
     """
-    Geçmiş verileri RoBERTa ile puanlar.
-    Düz çizgi (0) sorununu çözmek için 'Weighted Average' yerine 'Argmax' (En yüksek olasılık) kullanılır.
-    Şahin: +100 * Güven
-    Güvercin: -100 * Güven
-    Nötr: 0
+    Geçmişteki tüm verileri RoBERTa ile tarar.
+    Moritz-Pfeifer modelini kullanarak Şahin/Güvercin/Nötr ayrımı yapar.
+    Skor Aralığı: -100 (Güvercin) ... 0 (Nötr) ... +100 (Şahin)
     """
     if df.empty: return pd.DataFrame()
-    clf = load_roberta_pipeline()
-    if not clf: return pd.DataFrame()
+    
+    # Modeli yükle
+    classifier = load_roberta_pipeline()
+    if not classifier or classifier == "MISSING_LIB": return pd.DataFrame()
 
     results = []
-    for _, row in df.iterrows():
+    
+    # Veriyi tarihe göre sırala ki grafik düzgün çıksın
+    df = df.sort_values("period_date")
+
+    # İlerleme çubuğu (Terminalde görünür, arayüzde donmayı engeller)
+    total = len(df)
+    print(f"RoBERTa Geçmiş Analizi Başlıyor... Toplam {total} kayıt.")
+
+    for i, row in df.iterrows():
         text = str(row.get('text_content', ''))
-        if len(text.split()) < 5: continue
+        # Çok kısa veya boş metinleri atla
+        if len(text.split()) < 10: continue
         
         try:
-            res = clf(text[:1500])[0] # [{'label':'hawkish', 'score':0.9}, ...]
+            # Token limitine dikkat ederek metni kes
+            # Merkez bankası metinlerinde baş kısımlar genelde karar içerir, o yüzden baştan alıyoruz.
+            truncated_text = text[:1500] 
             
-            # En yüksek puanlı etiketi bul
-            best = max(res, key=lambda x: x['score'])
-            lbl = best['label'].lower()
-            scr = best['score']
+            # Tahmin
+            res = classifier(truncated_text)[0] # [{'label': 'hawkish', 'score': 0.99}, ...]
             
-            val = 0.0
-            if 'hawkish' in lbl or 'positive' in lbl:
-                val = 100.0 * scr
-            elif 'dovish' in lbl or 'negative' in lbl:
-                val = -100.0 * scr
-            # Neutral 0 kalır
+            # Etiketleri ve skorları ayrıştır
+            scores = {r['label'].lower(): r['score'] for r in res}
             
-            results.append({"period_date": row.get("period_date"), "roberta_index": val})
-        except: continue
+            # En yüksek olasılıklı etiketi bul (Argmax)
+            best_label = max(scores, key=scores.get)
+            confidence = scores[best_label]
+            
+            final_index = 0.0
+            
+            # Puanlama Mantığı:
+            # Hawkish -> +100 * Güven
+            # Dovish  -> -100 * Güven
+            # Neutral -> 0
+            
+            if "hawkish" in best_label:
+                final_index = 100.0 * confidence
+            elif "dovish" in best_label:
+                final_index = -100.0 * confidence
+            elif "positive" in best_label: # Yedek
+                final_index = 100.0 * confidence
+            elif "negative" in best_label: # Yedek
+                final_index = -100.0 * confidence
+            
+            results.append({
+                "period_date": row.get("period_date"),
+                "roberta_index": final_index,
+                "roberta_label": best_label # Tooltip için
+            })
+            
+        except Exception as e:
+            print(f"Hata (Satır {i}): {e}")
+            continue
             
     return pd.DataFrame(results)

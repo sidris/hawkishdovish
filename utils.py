@@ -1228,3 +1228,64 @@ def analyze_with_roberta(text):
         }
     except Exception as e:
         return f"Error: {str(e)}"
+
+# utils.py EN ALTINA EKLENECEK
+
+def analyze_sentences_with_roberta(text):
+    """
+    Metni cümlelere böler ve her bir cümleyi tek tek RoBERTa modeline sorar.
+    Sonuçları bir Pandas DataFrame olarak döndürür.
+    """
+    if not text: return pd.DataFrame()
+    
+    classifier = load_roberta_pipeline()
+    if not classifier or classifier == "MISSING_LIB": return pd.DataFrame()
+
+    # 1. Cümlelere Bölme (Mevcut fonksiyonu kullanıyoruz)
+    sentences = split_sentences_nlp(text)
+    
+    # Çok kısa cümleleri (başlık vs.) filtrele
+    sentences = [s for s in sentences if len(s.split()) > 3]
+    
+    results_list = []
+    
+    # 2. Toplu Analiz (Batch Processing daha hızlıdır)
+    try:
+        # Pipeline'a listeyi veriyoruz
+        predictions = classifier(sentences)
+        
+        # Etiket Haritası
+        labels_map = {
+            "hawkish": "🦅 Şahin", 
+            "dovish": "🕊️ Güvercin", 
+            "neutral": "⚖️ Nötr",
+            "positive": "🦅 Şahin (Pozitif)", # Model versiyonu farklıysa diye yedek
+            "negative": "🕊️ Güvercin (Negatif)"
+        }
+
+        for sent, pred in zip(sentences, predictions):
+            lbl_raw = pred['label'].lower()
+            score = pred['score']
+            
+            label_tr = labels_map.get(lbl_raw, lbl_raw.capitalize())
+            
+            # Sadece yüksek skorlu veya önemli olanları alabiliriz
+            # Amaç tablo ise hepsini ekleyelim
+            results_list.append({
+                "Cümle": sent,
+                "Etiket": label_tr,
+                "Güven Skoru": score,
+                "Ham Etiket": lbl_raw # Sıralama veya renklendirme için
+            })
+            
+        df = pd.DataFrame(results_list)
+        
+        # Sıralama: Önce Şahinler, Sonra Güvercinler gelsin (Nötrler sona)
+        if not df.empty:
+            df = df.sort_values(by=["Ham Etiket", "Güven Skoru"], ascending=[True, False])
+            
+        return df
+
+    except Exception as e:
+        print(f"Cümle analizi hatası: {e}")
+        return pd.DataFrame()

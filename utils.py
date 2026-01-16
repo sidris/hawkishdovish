@@ -11,12 +11,13 @@ import numpy as np
 from dataclasses import dataclass
 from typing import List, Dict, Tuple, Any, Optional
 
-# --- 1. KÜTÜPHANE KONTROLLERİ ---
+# --- 1. KÜTÜPHANE KONTROLLERİ VE GLOBAL FLAGLER ---
 HAS_ML_DEPS = False
 HAS_VADER = False
 HAS_FINBERT = False
-HAS_ROBERTA_LIB = False  # <--- BU SATIR EKLENDİ (Hatayı Çözen Kısım)
+HAS_ROBERTA_LIB = False 
 
+# ML Kütüphaneleri
 try:
     import sklearn
     from sklearn.base import clone
@@ -26,25 +27,27 @@ try:
     from sklearn.feature_extraction.text import TfidfVectorizer
     from sklearn.linear_model import LogisticRegression, Ridge
     from sklearn.model_selection import TimeSeriesSplit
-    from sklearn.metrics import mean_absolute_error, mean_squared_error
+    from sklearn.metrics import mean_absolute_error, mean_squared_error, classification_report, confusion_matrix
     from wordcloud import WordCloud, STOPWORDS
     import matplotlib.pyplot as plt
     HAS_ML_DEPS = True
 except ImportError:
     HAS_ML_DEPS = False
 
+# VADER Kontrolü
 try:
     from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
     HAS_VADER = True
 except ImportError:
     HAS_VADER = False
 
+# RoBERTa / Transformers Kontrolü
 try:
     import torch
     import torch.nn.functional as F
     from transformers import AutoTokenizer, AutoModelForSequenceClassification, pipeline
     HAS_FINBERT = True
-    HAS_ROBERTA_LIB = True # <--- Kütüphane varsa True yap
+    HAS_ROBERTA_LIB = True 
 except ImportError:
     HAS_FINBERT = False
     HAS_ROBERTA_LIB = False
@@ -568,7 +571,7 @@ def analyze_hawk_dove_structural(text: str, window_words: int = 7, dedupe_within
         "hawk_total": res['hawk_count'],
         "dove_total": res['dove_count'],
         "topic_counts": res['topic_counts'],
-        "matches_df": df_matches
+        "matches_df": df_matches # ARTIK BU KEY GARANTİ VAR
     }
 
 # =============================================================================
@@ -597,30 +600,32 @@ def analyze_with_roberta(text):
     try:
         res = clf(text[:2000])[0]
         scores = {r['label'].lower(): r['score'] for r in res}
-        best = max(scores, key=scores.get)
-        # Türkçe Mapping (Fonksiyonu kullanarak)
-        tr_label = get_label_mapping(best)
-        tr_scores = {get_label_mapping(k): v for k, v in scores.items()}
-        
-        return {"best_label": tr_label, "best_score": scores[best], "all_scores": tr_scores}
+        best_label_raw = max(scores, key=scores.get)
+        best_score = scores[best_label_raw]
+        best_label_tr = get_label_mapping(best_label_raw)
+        all_scores_tr = {get_label_mapping(k): v for k, v in scores.items()}
+        return {"best_label": best_label_tr, "best_score": best_score, "all_scores": all_scores_tr}
     except Exception as e: return f"Error: {e}"
 
 def analyze_sentences_with_roberta(text):
+    """
+    Cümle cümle analiz yapar. List of List hatasını düzeltir.
+    """
     clf = load_roberta_pipeline()
     if not clf: return pd.DataFrame()
+    
     sents = split_sentences_nlp(text)
     sents = [s for s in sents if len(s.split()) > 3]
     if not sents: return pd.DataFrame()
+    
     res_list = []
     try:
         preds = clf(sents)
         for s, p in zip(sents, preds):
             if isinstance(p, list): best = max(p, key=lambda x: x['score'])
             else: best = p
-            
             raw_lbl = best['label'].lower()
             tr_lbl = get_label_mapping(raw_lbl)
-            
             res_list.append({"Cümle": s, "Etiket": tr_lbl, "Güven Skoru": best['score'], "Ham": raw_lbl})
         df = pd.DataFrame(res_list)
         if not df.empty: df = df.sort_values(by=["Ham", "Güven Skoru"], ascending=[False, False])
@@ -628,37 +633,67 @@ def analyze_sentences_with_roberta(text):
     except: return pd.DataFrame()
 
 # =============================================================================
-# 10. TARİHSEL RoBERTa HESAPLAMA (DÜZ ÇİZGİ ve TOOLTIP FIX)
+# 10. TARİHSEL RoBERTa HESAPLAMA (DASHBOARD - DÜZ ÇİZGİ ve TOOLTIP FIX)
 # =============================================================================
 @st.cache_data
 def calculate_roberta_series(df):
+    """
+    Geçmiş verileri RoBERTa ile puanlar.
+    DÜZELTME: Dovish/Negative etiketlerinin negatif (-) puana dönüşmesi garanti altına alındı.
+    DÜZELTME: Dashboard Tooltip için metin eklendi.
+    """
     if df.empty: return pd.DataFrame()
+    
     classifier = load_roberta_pipeline()
     if not classifier or classifier == "MISSING_LIB": return pd.DataFrame()
+
     results = []
+    
+    # İlerlemeyi görmek için (opsiyonel)
     print("RoBERTa Geçmiş Analizi Başlatılıyor...")
+
     for _, row in df.iterrows():
         text = str(row.get('text_content', ''))
+        # Çok kısa metinleri atla
         if len(text.split()) < 5: continue
+        
         try:
+            # Token limiti
             res = classifier(text[:1500])[0] 
+            
+            # Tüm skorları al
             scores = {r['label'].lower(): r['score'] for r in res}
+            
+            # En yüksek olasılıklı etiketi bul
             best_label = max(scores, key=scores.get)
             confidence = scores[best_label]
+            
             final_val = 0.0
             display_text = ""
             
-            # --- SKOR VE METİN ---
+            # --- KRİTİK MANTIK DÜZELTMESİ ---
+            # Hawkish veya Positive -> Pozitif Skor (+)
             if 'hawkish' in best_label or 'positive' in best_label:
                 final_val = 100.0 * confidence
                 display_text = f"🦅 Şahin %{confidence*100:.1f}"
+            
+            # Dovish veya Negative -> Negatif Skor (-)
             elif 'dovish' in best_label or 'negative' in best_label:
                 final_val = -100.0 * confidence
                 display_text = f"🕊️ Güvercin %{confidence*100:.1f}"
+            
+            # Neutral -> 0
             else:
                 final_val = 0.0
                 display_text = f"⚖️ Nötr %{confidence*100:.1f}"
             
-            results.append({"period_date": row.get("period_date"), "roberta_index": final_val, "roberta_desc": display_text})
-        except Exception as e: continue
+            results.append({
+                "period_date": row.get("period_date"),
+                "roberta_index": final_val,
+                "roberta_desc": display_text # <--- DASHBOARD İÇİN EKLENEN METİN
+            })
+        except Exception as e:
+            print(f"Hata: {e}")
+            continue
+            
     return pd.DataFrame(results)

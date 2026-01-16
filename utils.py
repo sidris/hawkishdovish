@@ -15,6 +15,7 @@ from typing import List, Dict, Tuple, Any, Optional
 HAS_ML_DEPS = False
 HAS_VADER = False
 HAS_FINBERT = False
+HAS_ROBERTA_LIB = False  # <--- BU SATIR EKLENDİ (Hatayı Çözen Kısım)
 
 try:
     import sklearn
@@ -43,8 +44,10 @@ try:
     import torch.nn.functional as F
     from transformers import AutoTokenizer, AutoModelForSequenceClassification, pipeline
     HAS_FINBERT = True
+    HAS_ROBERTA_LIB = True # <--- Kütüphane varsa True yap
 except ImportError:
     HAS_FINBERT = False
+    HAS_ROBERTA_LIB = False
 
 # --- 2. AYARLAR VE BAĞLANTI ---
 try:
@@ -543,9 +546,6 @@ HAWK_DOVE_DICT_STRUCT = {
    "economic_activity": [{"block": "eco","terms": ["economic activity", "growth"],"hawk": [M_struct("strong", True), M_struct("increase", True)],"dove": [M_struct("weak", True), M_struct("slow", True)]}],
    "employment": [{"block": "emp","terms": ["employment"],"hawk": [M_struct("strong", True)],"dove": [M_struct("weak", True)]}]
 } 
-# NOT: Yukarıdaki sözlük kısaltılmıştır. Asıl Dictionary, Section 5 ile aynıdır.
-# Section 8 için tam sözlük yapısını kullanmak en iyisidir. 
-# Kolaylık için yukarıdaki "DICT" değişkenini burada da kullanacağız.
 
 def normalize_text_struct(t): return normalize_text(t)
 def split_sentences_struct(t): return split_sentences_nlp(t)
@@ -554,7 +554,6 @@ def find_phrase_positions_struct(t, p, w): return find_phrase_positions(t, p, w)
 def select_non_overlapping_terms_struct(t, ti): return select_non_overlapping_terms(t, ti)
 
 def analyze_hawk_dove_structural(text: str, window_words: int = 7, dedupe_within_term_window: bool = True, nearest_only: bool = True):
-    # KeyError 'matches_df' FIX: Always return dict with 'matches_df'
     if not text:
         return {"net_hawkishness": 0.0, "hawk_total": 0, "dove_total": 0, "topic_counts": {}, "matches_df": pd.DataFrame()}
     
@@ -569,7 +568,7 @@ def analyze_hawk_dove_structural(text: str, window_words: int = 7, dedupe_within
         "hawk_total": res['hawk_count'],
         "dove_total": res['dove_count'],
         "topic_counts": res['topic_counts'],
-        "matches_df": df_matches # ARTIK BU KEY GARANTİ VAR
+        "matches_df": df_matches
     }
 
 # =============================================================================
@@ -583,6 +582,15 @@ def load_roberta_pipeline():
         return pipeline("text-classification", model="Moritz-Pfeifer/CentralBankRoBERTa-sentiment-classifier", return_all_scores=True)
     except: return None
 
+def get_label_mapping(label):
+    lbl = label.lower()
+    if "hawkish" in lbl: return "🦅 Şahin"
+    if "dovish" in lbl: return "🕊️ Güvercin"
+    if "positive" in lbl: return "🦅 Şahin (Pozitif)"
+    if "negative" in lbl: return "🕊️ Güvercin (Negatif)"
+    if "neutral" in lbl: return "⚖️ Nötr"
+    return lbl.capitalize()
+
 def analyze_with_roberta(text):
     clf = load_roberta_pipeline()
     if not clf: return None
@@ -590,108 +598,67 @@ def analyze_with_roberta(text):
         res = clf(text[:2000])[0]
         scores = {r['label'].lower(): r['score'] for r in res}
         best = max(scores, key=scores.get)
-        tr_map = {"hawkish": "🦅 Şahin", "dovish": "🕊️ Güvercin", "neutral": "⚖️ Nötr"}
-        tr_scores = {tr_map.get(k, k): v for k, v in scores.items()}
-        return {"best_label": tr_map.get(best, best), "best_score": scores[best], "all_scores": tr_scores}
+        # Türkçe Mapping (Fonksiyonu kullanarak)
+        tr_label = get_label_mapping(best)
+        tr_scores = {get_label_mapping(k): v for k, v in scores.items()}
+        
+        return {"best_label": tr_label, "best_score": scores[best], "all_scores": tr_scores}
     except Exception as e: return f"Error: {e}"
 
 def analyze_sentences_with_roberta(text):
-    """
-    Cümle cümle analiz yapar. List of List hatasını düzeltir.
-    """
     clf = load_roberta_pipeline()
     if not clf: return pd.DataFrame()
-    
     sents = split_sentences_nlp(text)
     sents = [s for s in sents if len(s.split()) > 3]
     if not sents: return pd.DataFrame()
-    
     res_list = []
     try:
         preds = clf(sents)
-        tr_map = {"hawkish": "🦅 Şahin", "dovish": "🕊️ Güvercin", "neutral": "⚖️ Nötr"}
-        
         for s, p in zip(sents, preds):
-            # FIX: p bir liste olabilir [{'label':.., 'score':..}, ..]. Max score'u al.
-            if isinstance(p, list):
-                best = max(p, key=lambda x: x['score'])
-            else:
-                best = p
+            if isinstance(p, list): best = max(p, key=lambda x: x['score'])
+            else: best = p
             
-            res_list.append({
-                "Cümle": s, 
-                "Etiket": tr_map.get(best['label'].lower(), best['label']), 
-                "Güven Skoru": best['score'], 
-                "Ham": best['label'].lower()
-            })
+            raw_lbl = best['label'].lower()
+            tr_lbl = get_label_mapping(raw_lbl)
             
+            res_list.append({"Cümle": s, "Etiket": tr_lbl, "Güven Skoru": best['score'], "Ham": raw_lbl})
         df = pd.DataFrame(res_list)
-        if not df.empty: df = df.sort_values(by=["Ham", "Güven Skoru"], ascending=[True, False])
+        if not df.empty: df = df.sort_values(by=["Ham", "Güven Skoru"], ascending=[False, False])
         return df
     except: return pd.DataFrame()
 
 # =============================================================================
-# 10. TARİHSEL RoBERTa HESAPLAMA (DASHBOARD - DÜZ ÇİZGİ ve TOOLTIP FIX)
+# 10. TARİHSEL RoBERTa HESAPLAMA (DÜZ ÇİZGİ ve TOOLTIP FIX)
 # =============================================================================
 @st.cache_data
 def calculate_roberta_series(df):
-    """
-    Geçmiş verileri RoBERTa ile puanlar.
-    DÜZELTME: Dovish/Negative etiketlerinin negatif (-) puana dönüşmesi garanti altına alındı.
-    DÜZELTME: Dashboard Tooltip için metin eklendi.
-    """
     if df.empty: return pd.DataFrame()
-    
     classifier = load_roberta_pipeline()
     if not classifier or classifier == "MISSING_LIB": return pd.DataFrame()
-
     results = []
-    
-    # İlerlemeyi görmek için (opsiyonel)
     print("RoBERTa Geçmiş Analizi Başlatılıyor...")
-
     for _, row in df.iterrows():
         text = str(row.get('text_content', ''))
-        # Çok kısa metinleri atla
         if len(text.split()) < 5: continue
-        
         try:
-            # Token limiti
             res = classifier(text[:1500])[0] 
-            
-            # Tüm skorları al
             scores = {r['label'].lower(): r['score'] for r in res}
-            
-            # En yüksek olasılıklı etiketi bul
             best_label = max(scores, key=scores.get)
             confidence = scores[best_label]
-            
             final_val = 0.0
             display_text = ""
             
-            # --- KRİTİK MANTIK DÜZELTMESİ ---
-            # Hawkish veya Positive -> Pozitif Skor (+)
+            # --- SKOR VE METİN ---
             if 'hawkish' in best_label or 'positive' in best_label:
                 final_val = 100.0 * confidence
                 display_text = f"🦅 Şahin %{confidence*100:.1f}"
-            
-            # Dovish veya Negative -> Negatif Skor (-)
             elif 'dovish' in best_label or 'negative' in best_label:
                 final_val = -100.0 * confidence
                 display_text = f"🕊️ Güvercin %{confidence*100:.1f}"
-            
-            # Neutral -> 0
             else:
                 final_val = 0.0
                 display_text = f"⚖️ Nötr %{confidence*100:.1f}"
             
-            results.append({
-                "period_date": row.get("period_date"),
-                "roberta_index": final_val,
-                "roberta_desc": display_text # <--- DASHBOARD İÇİN EKLENEN METİN
-            })
-        except Exception as e:
-            print(f"Hata: {e}")
-            continue
-            
+            results.append({"period_date": row.get("period_date"), "roberta_index": final_val, "roberta_desc": display_text})
+        except Exception as e: continue
     return pd.DataFrame(results)

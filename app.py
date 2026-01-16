@@ -3,7 +3,7 @@ import pandas as pd
 import datetime
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-import altair as alt # KALIN ÇİZGİ İÇİN EKLENDİ
+import altair as alt
 import utils 
 import uuid
 
@@ -69,10 +69,10 @@ with c_head2:
     if st.button("Çıkış"): st.session_state['logged_in'] = False; st.rerun()
 
 # SEKME YAPILANDIRMASI
-# "🏗️ Yapısal Analiz" ve "🧠 CB-RoBERTa" sekmeleri eklendi
-tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab_struct, tab_roberta, tab_imp, tab_vader, tab_finbert = st.tabs([
+# "Yapısal Analiz", "VADER", "FinBERT" çıkarıldı.
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab_roberta, tab_imp = st.tabs([
     "📈 Dashboard", "📝 Veri Girişi", "📊 Veriler", "🔍 Frekans", "🤖 Faiz Tahmini", "☁️ WordCloud", "📜 ABF (2019)", 
-    "🏗️ Yapısal Analiz", "🧠 CB-RoBERTa", "📅 Haberler", "😊 VADER", "💰 FinBERT"
+    "🧠 CB-RoBERTa", "📅 Haberler"
 ])
 
 # ==============================================================================
@@ -523,8 +523,8 @@ with tab7:
                 c3.metric("🕊️ Güvercin Eşleşme", d_cnt)
                 
                 if "topic_counts" in res:
-                     with st.expander("Detaylı Kırılım (Topic Counts)"):
-                         st.json(res["topic_counts"])
+                      with st.expander("Detaylı Kırılım (Topic Counts)"):
+                          st.json(res["topic_counts"])
 
                 with st.expander("📝 Detaylı Eşleşme Tablosu (Cümle Bağlamı)", expanded=True):
                     if details:
@@ -540,101 +540,16 @@ with tab7:
     else: st.info("Analiz için veri yok.")
 
 # ==============================================================================
-# TAB STRUCT: YENİ YAPISAL ANALİZ (THICK LINE)
+# TAB ROBERTA: CB-RoBERTa (YAPAY ZEKA) - GÜNCELLENMİŞ HALİ
 # ==============================================================================
-with tab_struct:
-    st.header("🏗️ Yapısal Analiz (Pencere Yöntemi)")
-    st.info("Bu yöntem, kelimeler arası mesafeyi (Window) ölçerek daha hassas bir şahin/güvercin ayrımı yapar.")
-    
-    # Text Seçimi
-    struct_text_input = ""
-    df_all_struct = utils.fetch_all_data()
-    
-    if not df_all_struct.empty:
-        df_all_struct['period_date'] = pd.to_datetime(df_all_struct['period_date'])
-        df_all_struct['Donem'] = df_all_struct['period_date'].dt.strftime('%Y-%m')
-        
-        # Seçenekler
-        opts = df_all_struct['Donem'].tolist()
-        sel_struct_period = st.selectbox("Analiz Edilecek Dönem (Yapısal):", opts, index=0)
-        
-        if sel_struct_period:
-            row = df_all_struct[df_all_struct['Donem'] == sel_struct_period].iloc[0]
-            struct_text_input = row['text_content']
-            
-            # 1. Analizi Çalıştır
-            result = utils.analyze_hawk_dove_structural(struct_text_input, window_words=10)
-            score = result["net_hawkishness"]
-            
-            # 2. Metrikler
-            c1, c2, c3 = st.columns(3)
-            delta_msg = "Şahin" if score > 1.05 else ("Güvercin" if score < 0.95 else "Nötr")
-            c1.metric("Yapısal Şahinlik Skoru", f"{score:.4f}", delta=delta_msg)
-            c2.metric("Toplam Şahin Sinyali", result["hawk_total"])
-            c3.metric("Toplam Güvercin Sinyali", result["dove_total"])
-            
-            st.divider()
-            
-            # 3. KALIN ÇİZGİ GRAFİĞİ (Altair ile)
-            st.subheader("Sentiment Trendi (Simüle)")
-            st.caption("Aşağıdaki grafik, son 5 dönemin skorunu ve mevcut analizinizi 'Kalın Çizgi' formatında gösterir.")
-            
-            # Simülasyon Verisi (Gerçek uygulamada DB'den çekilmeli)
-            # Burada 'Thick Line' efektini göstermek için dummy data kullanıyoruz.
-            trend_data = [1.0, 0.9, 1.1, 0.85, 1.02] 
-            trend_data.append(score) # En son veri şu anki analiz
-            
-            chart_data = pd.DataFrame({
-                'Toplantı': [f"T-{5-i}" for i in range(len(trend_data))],
-                'Skor': trend_data
-            })
-            chart_data.iloc[-1, 0] = "Mevcut"
-            
-            line_chart = alt.Chart(chart_data).mark_line(
-                strokeWidth=10,       # KALIN ÇİZGİ
-                point=True,
-                interpolate='monotone'
-            ).encode(
-                x=alt.X('Toplantı', sort=None),
-                y=alt.Y('Skor', scale=alt.Scale(domain=[0.5, 1.5])),
-                color=alt.value("#FF4B4B"), # Streamlit Kırmızısı / Neon
-                tooltip=['Toplantı', 'Skor']
-            ).properties(height=350)
-            
-            st.altair_chart(line_chart, use_container_width=True)
-            
-            # 4. Konu Dağılımı
-            st.subheader("Konu Bazlı Sinyaller")
-            topics = []
-            for topic, counts in result["topic_counts"].items():
-                topics.append({"Konu": topic, "Yön": "Şahin", "Adet": counts["hawk"]})
-                topics.append({"Konu": topic, "Yön": "Güvercin", "Adet": counts["dove"]})
-                
-            df_topic = pd.DataFrame(topics)
-            bar_chart = alt.Chart(df_topic).mark_bar().encode(
-                x='Konu', y='Adet',
-                color=alt.Color('Yön', scale=alt.Scale(domain=['Şahin', 'Güvercin'], range=['#e74c3c', '#2ecc71'])),
-                tooltip=['Konu', 'Yön', 'Adet']
-            ).properties(height=300)
-            
-            st.altair_chart(bar_chart, use_container_width=True)
-            
-            # 5. Eşleşme Tablosu
-            with st.expander("Detaylı Eşleşmeler"):
-                st.dataframe(result["matches_df"], use_container_width=True)
-
-    else: st.info("Veri yok.")
-
-# ==============================================================================
-# TAB ROBERTA: CB-RoBERTa (YAPAY ZEKA)
-# ==============================================================================
-# app.py içindeki "with tab_roberta:" bloğunu TAMAMEN bununla değiştirin:
 
 with tab_roberta:
     st.header("🧠 CentralBankRoBERTa (Yapay Zeka Analizi)")
-    st.markdown("Bu modül, klasik kelime sayma yöntemleri yerine, cümlenin **bağlamını (context)** anlayan Transformer tabanlı yapay zeka modelini kullanır.")
     
-    # Text Input (Tabstruct ile benzer mantık)
+    # --- 1. Bölüm: Tek Metin Analizi (Mevcut) ---
+    st.subheader("1. Tekil Metin Analizi")
+    st.markdown("Bu modül, metni Transformer tabanlı yapay zeka ile analiz eder.")
+    
     rob_text_input = ""
     df_all_rob = utils.fetch_all_data()
     
@@ -651,23 +566,20 @@ with tab_roberta:
             
             with st.expander("Metni Gör"): st.write(rob_text_input)
             
-            if st.button("Yapay Zeka İle Analiz Et", type="primary"):
-                if not utils.HAS_FINBERT: 
-                     st.error("`transformers` ve `torch` kütüphaneleri yüklü değil. Terminalde `pip install transformers torch` çalıştırın.")
+            if st.button("Seçili Metni Analiz Et", type="primary"):
+                if not utils.HAS_ROBERTA_LIB: 
+                     st.error("`transformers` ve `torch` kütüphaneleri yüklü değil.")
                 else:
-                    with st.spinner("Model yükleniyor ve genel analiz yapılıyor..."):
-                        # 1. Genel Analiz
+                    with st.spinner("Model yükleniyor..."):
+                        # Genel Analiz
                         roberta_res = utils.analyze_with_roberta(rob_text_input)
                     
-                    if roberta_res == "MISSING_LIB":
-                        st.error("Kütüphane hatası.")
-                    elif roberta_res == "ERROR":
-                        st.error("Model indirilemedi.")
+                    if roberta_res == "MISSING_LIB": st.error("Kütüphane hatası.")
+                    elif roberta_res == "ERROR": st.error("Model indirilemedi.")
                     elif isinstance(roberta_res, dict):
                         lbl = roberta_res.get('best_label', 'Bilinmiyor')
                         scr = roberta_res.get('best_score', 0.0)
                         
-                        # --- GENEL SKOR KARTI ---
                         c1, c2 = st.columns([1, 2])
                         with c1:
                             lbl_color = "gray"
@@ -690,14 +602,11 @@ with tab_roberta:
                                 st.altair_chart(c, use_container_width=True)
                         
                         st.divider()
-                        
-                        # --- CÜMLE BAZLI TABLO ---
                         st.subheader("📝 Cümle Bazlı Ayrıştırma")
-                        with st.spinner("Cümleler tek tek inceleniyor..."):
+                        with st.spinner("Cümleler taranıyor..."):
                             df_sentences = utils.analyze_sentences_with_roberta(rob_text_input)
                         
                         if not df_sentences.empty:
-                            # Renklendirme fonksiyonu
                             def color_coding(val):
                                 color = 'black'
                                 if 'Şahin' in val: color = 'red'
@@ -710,13 +619,71 @@ with tab_roberta:
                                 use_container_width=True,
                                 hide_index=True
                             )
-                        else:
-                            st.info("Cümle ayrıştırması yapılamadı.")
+                        else: st.info("Cümle ayrıştırması yapılamadı.")
 
-                        st.info("Not: Bu analiz **Moritz-Pfeifer/CentralBankRoBERTa** modeli kullanılarak yapılmıştır.")
-                    else:
-                        st.error("Beklenmeyen hata oluştu.")
-    else: st.info("Veri yok.")
+    st.divider()
+
+    # --- 2. Bölüm: Zaman Serisi (YENİ) ---
+    st.subheader("2. Zaman Serisi ve Trend Analizi")
+    st.info("⚠️ Dikkat: Bu işlem veritabanındaki tüm metinleri analiz edeceği için biraz zaman alabilir.")
+    
+    if st.button("Tüm Tarihçeyi Analiz Et ve Grafiği Çiz"):
+        if not df_all_rob.empty:
+            with st.spinner("Geçmiş kayıtlar RoBERTa ile analiz ediliyor..."):
+                ts_df = utils.get_roberta_time_series(df_all_rob)
+            
+            if not ts_df.empty:
+                # Renk haritası
+                color_map = {
+                    'Hawkish': 'red', 'Hawk': 'red', 'Şahin': 'red',
+                    'Dovish': 'green', 'Dove': 'green', 'Güvercin': 'green',
+                    'Neutral': 'gray', 'Nötr': 'gray'
+                }
+                colors = ts_df['Label_En'].map(lambda x: color_map.get(x, 'blue'))
+
+                fig_ts = go.Figure()
+                
+                # Çizgi (Score)
+                # Güvercin ise negatife çevirerek çizelim ki görsel olarak ayrılsın
+                # Ancak burada basitlik için Confidence * (1 if Hawk else -1) yapalım
+                ts_df['Plot_Score'] = ts_df.apply(lambda row: row['Score'] if row['Label_En'] == 'Hawkish' else (-row['Score'] if row['Label_En'] == 'Dovish' else 0), axis=1)
+
+                fig_ts.add_trace(go.Bar(
+                    x=ts_df['period_date'], 
+                    y=ts_df['Plot_Score'],
+                    marker_color=colors,
+                    name="Model Skoru",
+                    text=ts_df['Label'],
+                    hoverinfo="x+text+y"
+                ))
+                
+                fig_ts.update_layout(
+                    title="Yapay Zeka Şahin/Güvercin Trendi (Kırmızı: Şahin, Yeşil: Güvercin)",
+                    yaxis_title="Duygu Yoğunluğu (Güvercin < 0 < Şahin)",
+                    height=500
+                )
+                st.plotly_chart(fig_ts, use_container_width=True)
+                st.dataframe(ts_df[['period_date', 'Donem', 'Label', 'Score']], use_container_width=True)
+            else:
+                st.error("Analiz sonucu boş döndü.")
+        else:
+            st.warning("Veri yok.")
+
+    st.divider()
+
+    # --- 3. Bölüm: Açıklama Tablosu (YENİ) ---
+    st.subheader("❓ Model Nasıl Çalışıyor?")
+    with st.expander("Detaylı Açıklama Tablosu", expanded=True):
+        expl_data = [
+            ["Model Mimarisi", "Transformer (RoBERTa). Bu model, klasik yöntemlerin (kelime sayma) aksine cümlenin bağlamını (context) ve kelimelerin sırasını analiz eder. Örneğin 'enflasyon düştü' ile 'enflasyon düşmedi' arasındaki farkı anlar."],
+            ["Karar Mekanizması", "Model, metni sayısal vektörlere dönüştürür ve son katmanda her sınıf (Şahin, Güvercin, Nötr) için bir ham puan (logit) üretir. En yüksek puanı alan sınıf, nihai karar olarak atanır."],
+            ["Güven Skoru (%XX)", "Modelin ürettiği ham puanlar 'Softmax' fonksiyonundan geçirilir. Bu fonksiyon, puanları toplamı %100 olan olasılıklara dönüştürür. Örneğin: Şahin: %81, Güvercin: %10, Nötr: %9. Bu durumda Güven Skoru %81 olur."],
+            ["Neden Moritz-Pfeifer?", "Kullandığımız 'Moritz-Pfeifer/CentralBankRoBERTa' modeli, özellikle merkez bankası metinleri üzerinde eğitilmiş özel bir finansal dil modelidir."],
+            ["Negatif/Pozitif Ayrımı", "Grafiklerde kolaylık olması için; 'Şahin' kararları pozitif, 'Güvercin' kararları negatif eksende gösterilir. Nötr kararlar 0 noktasına yakındır."]
+        ]
+        df_expl = pd.DataFrame(expl_data, columns=["Özellik", "Açıklama"])
+        st.table(df_expl)
+
 
 with tab_imp:
     st.header("📅 Önemli Tarihler ve Haberler")
@@ -758,78 +725,3 @@ with tab_imp:
                         st.rerun()
     else:
         st.info("Henüz kayıtlı bir olay yok.")
-
-with tab_vader:
-    st.header("😊 VADER Duygu Analizi")
-    st.info("VADER, metinlerdeki duygu yoğunluğunu ölçer. (Not: Kütüphane İngilizce odaklıdır, Türkçe metinlerde skorlar düşük kalabilir)")
-    
-    if not utils.HAS_VADER:
-        st.error("vaderSentiment kütüphanesi eksik. Lütfen `pip install vaderSentiment` çalıştırın.")
-    else:
-        df_logs = utils.fetch_all_data()
-        if not df_logs.empty:
-            df_logs['period_date'] = pd.to_datetime(df_logs['period_date'])
-            df_logs['Donem'] = df_logs['period_date'].dt.strftime('%Y-%m')
-            
-            # Analizi çalıştır
-            vader_df = utils.calculate_vader_series(df_logs)
-            
-            # Zaman Serisi Grafiği
-            st.subheader("📈 Duygu Tonu Zaman Serisi (Compound Skor)")
-            fig_v = go.Figure()
-            fig_v.add_trace(go.Scatter(x=vader_df['period_date'], y=vader_df['vader_compound'], mode='lines+markers', name='Compound', line=dict(color='blue')))
-            fig_v.add_hline(y=0, line_dash="dash", line_color="gray")
-            fig_v.update_layout(title="VADER Compound Skoru (-1: Negatif, +1: Pozitif)", hovermode="x unified")
-            st.plotly_chart(fig_v, use_container_width=True)
-            
-            # Bar Grafiği
-            st.subheader("📊 Pozitif ve Negatif Skorlar")
-            fig_pn = go.Figure()
-            fig_pn.add_trace(go.Bar(x=vader_df['period_date'], y=vader_df['vader_pos'], name='Pozitif', marker_color='green'))
-            fig_pn.add_trace(go.Bar(x=vader_df['period_date'], y=vader_df['vader_neg'], name='Negatif', marker_color='red'))
-            fig_pn.update_layout(title="Pozitif ve Negatif Bileşenler", barmode='group', hovermode="x unified")
-            st.plotly_chart(fig_pn, use_container_width=True)
-
-            # Tablo
-            st.dataframe(vader_df, use_container_width=True)
-        else:
-            st.info("Veri yok.")
-
-with tab_finbert:
-    st.header("💰 FinBERT Analizi (ProsusAI)")
-    st.info("FinBERT, finansal metinler için eğitilmiş bir BERT modelidir. (Not: Bu model İngilizce metinlerde en iyi sonucu verir. Türkçe metinlerde sonuçlar nötr çıkabilir.)")
-    
-    if not utils.HAS_FINBERT:
-        st.error("Gerekli kütüphaneler (torch, transformers) eksik.")
-    else:
-        # Analizi Çalıştır Butonu (Çünkü yavaş olabilir)
-        if st.button("FinBERT Analizini Başlat (Yavaş Olabilir)", type="primary"):
-            df_logs = utils.fetch_all_data()
-            if not df_logs.empty:
-                df_logs['period_date'] = pd.to_datetime(df_logs['period_date'])
-                df_logs['Donem'] = df_logs['period_date'].dt.strftime('%Y-%m')
-                
-                with st.spinner("FinBERT modeli yükleniyor ve metinler analiz ediliyor..."):
-                    finbert_df = utils.calculate_finbert_series(df_logs)
-                
-                if not finbert_df.empty:
-                    # Zaman Serisi
-                    st.subheader("📈 FinBERT Duygu Skoru (Ağırlıklı)")
-                    fig_fb = go.Figure()
-                    fig_fb.add_trace(go.Scatter(x=finbert_df['period_date'], y=finbert_df['finbert_score'], mode='lines+markers', name='Net Skor', line=dict(color='darkblue')))
-                    fig_fb.add_hline(y=0, line_dash="dash", line_color="gray")
-                    fig_fb.update_layout(title="Net Skor (Pozitif - Negatif)", hovermode="x unified")
-                    st.plotly_chart(fig_fb, use_container_width=True)
-                    
-                    # Bileşenler
-                    st.subheader("📊 Duygu Bileşenleri")
-                    fig_comp = go.Figure()
-                    fig_comp.add_trace(go.Bar(x=finbert_df['period_date'], y=finbert_df['finbert_pos'], name='Pozitif', marker_color='green'))
-                    fig_comp.add_trace(go.Bar(x=finbert_df['period_date'], y=finbert_df['finbert_neg'], name='Negatif', marker_color='red'))
-                    fig_comp.add_trace(go.Scatter(x=finbert_df['period_date'], y=finbert_df['finbert_neu'], name='Nötr', line=dict(color='gray', dash='dot')))
-                    fig_comp.update_layout(barmode='group', hovermode="x unified")
-                    st.plotly_chart(fig_comp, use_container_width=True)
-                    
-                    st.dataframe(finbert_df, use_container_width=True)
-            else:
-                st.info("Analiz edilecek veri yok.")

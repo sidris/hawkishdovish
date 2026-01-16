@@ -3,7 +3,7 @@ import pandas as pd
 import datetime
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-import altair as alt 
+import altair as alt # KALIN ÇİZGİ İÇİN EKLENDİ
 import utils 
 import uuid
 
@@ -22,33 +22,41 @@ st.markdown("""
 APP_PWD = "SahinGuvercin34"      
 ADMIN_PWD = "SahinGuvercin06"    
 
-if 'logged_in' not in st.session_state: st.session_state['logged_in'] = False
+if 'logged_in' not in st.session_state:
+    st.session_state['logged_in'] = False
+
 if not st.session_state['logged_in']:
     col1, col2, col3 = st.columns([1, 8, 1])
     with col2:
         st.markdown("<br><h3 style='text-align: center;'>🔐 Güvenli Giriş</h3>", unsafe_allow_html=True)
         pwd_input = st.text_input("Uygulama Şifresi", type="password")
         if st.button("Giriş Yap", type="primary"):
-            if pwd_input == APP_PWD: st.session_state['logged_in'] = True; st.success("Başarılı!"); st.rerun()
+            if pwd_input == APP_PWD:
+                st.session_state['logged_in'] = True; st.success("Başarılı!"); st.rerun()
             else: st.error("Hatalı!")
     st.stop()
 
-# --- STATE ---
+# --- SESSION & STATE ---
 if 'form_data' not in st.session_state: st.session_state['form_data'] = {'id': None, 'date': datetime.date.today().replace(day=1), 'source': "TCMB", 'text': ""}
 if 'table_key' not in st.session_state: st.session_state['table_key'] = str(uuid.uuid4())
 if 'collision_state' not in st.session_state: st.session_state['collision_state'] = {'active': False, 'target_id': None, 'pending_text': None, 'target_date': None}
 if 'update_state' not in st.session_state: st.session_state['update_state'] = {'active': False, 'pending_text': None}
+
 if 'stop_words_deep' not in st.session_state: st.session_state['stop_words_deep'] = []
 if 'stop_words_cloud' not in st.session_state: st.session_state['stop_words_cloud'] = []
 
 def add_deep_stop():
     word = st.session_state.get("deep_stop_in", "").strip()
-    if word and word not in st.session_state['stop_words_deep']: st.session_state['stop_words_deep'].append(word)
+    if word and word not in st.session_state['stop_words_deep']:
+        st.session_state['stop_words_deep'].append(word)
     st.session_state["deep_stop_in"] = ""
+
 def add_cloud_stop():
     word = st.session_state.get("cloud_stop_in", "").strip()
-    if word and word not in st.session_state['stop_words_cloud']: st.session_state['stop_words_cloud'].append(word)
+    if word and word not in st.session_state['stop_words_cloud']:
+        st.session_state['stop_words_cloud'].append(word)
     st.session_state["cloud_stop_in"] = ""
+
 def reset_form():
     st.session_state['form_data'] = {'id': None, 'date': datetime.date.today(), 'source': "TCMB", 'text': ""}
     st.session_state['collision_state'] = {'active': False, 'target_id': None, 'pending_text': None, 'target_date': None}
@@ -60,159 +68,108 @@ with c_head1: st.title("🦅 Şahin/Güvercin Paneli")
 with c_head2: 
     if st.button("Çıkış"): st.session_state['logged_in'] = False; st.rerun()
 
-# SEKME YAPISI
-tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab_struct, tab_roberta, tab_imp = st.tabs([
+# SEKME YAPILANDIRMASI
+# "🏗️ Yapısal Analiz" ve "🧠 CB-RoBERTa" sekmeleri eklendi
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab_struct, tab_roberta, tab_imp, tab_vader, tab_finbert = st.tabs([
     "📈 Dashboard", "📝 Veri Girişi", "📊 Veriler", "🔍 Frekans", "🤖 Faiz Tahmini", "☁️ WordCloud", "📜 ABF (2019)", 
-    "🏗️ Yapısal Analiz", "🧠 CB-RoBERTa", "📅 Haberler"
+    "🏗️ Yapısal Analiz", "🧠 CB-RoBERTa", "📅 Haberler", "😊 VADER", "💰 FinBERT"
 ])
 
 # ==============================================================================
 # TAB 1: DASHBOARD
 # ==============================================================================
 with tab1:
-    with st.spinner("Veriler ve Yapay Zeka Analizleri Yükleniyor (İlk açılışta model indirildiği için yavaş olabilir)..."):
+    with st.spinner("Veriler Yükleniyor..."):
         df_logs = utils.fetch_all_data()
         df_events = utils.fetch_events() 
     
     if not df_logs.empty:
-        # Tarih formatlama
         df_logs['period_date'] = pd.to_datetime(df_logs['period_date'])
         df_logs['Donem'] = df_logs['period_date'].dt.strftime('%Y-%m')
-        
-        # Metrik Hesaplamaları
         df_logs['word_count'] = df_logs['text_content'].apply(lambda x: len(str(x).split()) if x else 0)
         df_logs['flesch_score'] = df_logs['text_content'].apply(lambda x: utils.calculate_flesch_reading_ease(str(x)))
         df_logs['score_abg_scaled'] = df_logs['score_abg'].apply(lambda x: x*100 if abs(x) <= 1 else x)
 
-        # ABG (Klasik) Verisi
         abg_df = utils.calculate_abg_scores(df_logs)
         abg_df['abg_dashboard_val'] = (abg_df['abg_index'] - 1.0) * 100
         
-        # RoBERTa (AI) Verisi
-        if utils.HAS_ROBERTA_LIB:
-            roberta_series = utils.calculate_roberta_series(df_logs)
-        else:
-            roberta_series = pd.DataFrame()
-
-        # Piyasa Verisi
         min_d = df_logs['period_date'].min().date()
         max_d = datetime.date.today()
         df_market, err = utils.fetch_market_data_adapter(min_d, max_d)
         
-        # VERİLERİ BİRLEŞTİR (MERGE)
         merged = pd.merge(df_logs, df_market, on="Donem", how="left")
         merged = pd.merge(merged, abg_df[['period_date', 'abg_dashboard_val']], on='period_date', how='left')
         
-        if not roberta_series.empty:
-            roberta_series['period_date'] = pd.to_datetime(roberta_series['period_date'])
-            merged = pd.merge(merged, roberta_series, on='period_date', how='left')
-
         merged = merged.sort_values("period_date")
-        
-        # Sayısal Dönüşümler (Hata önlemek için)
         if 'Yıllık TÜFE' in merged.columns: merged['Yıllık TÜFE'] = pd.to_numeric(merged['Yıllık TÜFE'], errors='coerce')
         if 'PPK Faizi' in merged.columns: merged['PPK Faizi'] = pd.to_numeric(merged['PPK Faizi'], errors='coerce')
         
-        # --- GRAFİK OLUŞTURMA (PLOTLY) ---
         fig = make_subplots(specs=[[{"secondary_y": True}]])
         
-        # 1. Arka Plan: Metin Uzunluğu (Gri Bar) - Sağ Eksen
-        fig.add_trace(go.Bar(
-            x=merged['period_date'], 
-            y=merged['word_count'], 
-            name="Metin Uzunluğu", 
-            marker=dict(color='rgba(200, 200, 200, 0.3)'), # Şeffaf gri
-            yaxis="y3", 
-            hoverinfo="x+y+name"
-        ))
+        # Word Count
+        fig.add_trace(go.Bar(x=merged['period_date'], y=merged['word_count'], name="Metin Uzunluğu", marker=dict(color='gray'), opacity=0.10, yaxis="y3", hoverinfo="x+y+name"))
         
-        # 2. Okunabilirlik (Flesch) - Yeşil Baloncuklar - Sağ Eksen (Y3)
-        fig.add_trace(go.Scatter(
-            x=merged['period_date'], 
-            y=merged['flesch_score'], 
-            name="Okunabilirlik (Flesch)", 
-            mode='markers', 
-            marker=dict(color='#2ecc71', size=8, symbol='circle', opacity=0.9),
-            yaxis="y3" 
-        ))
+        # --- SKORLAR ---
+        fig.add_trace(go.Scatter(x=merged['period_date'], y=merged['score_abg_scaled'], name="Şahin/Güvercin-Hibrit", line=dict(color='black', width=2, dash='dot'), marker=dict(size=6, color='black'), yaxis="y"))
+        fig.add_trace(go.Scatter(x=merged['period_date'], y=merged['abg_dashboard_val'], name="Şahin/Güvercin ABG 2019", line=dict(color='navy', width=4), yaxis="y"))
         
-        # 3. Klasik ABG Skoru (Lacivert Çizgi)
-        fig.add_trace(go.Scatter(
-            x=merged['period_date'], 
-            y=merged['abg_dashboard_val'], 
-            name="ABF Endeksi (Klasik)", 
-            line=dict(color='#000080', width=3), # Navy Blue
-            yaxis="y"
-        ))
-        
-        # 4. RoBERTa AI Skoru (Kırmızı, Kalın, Tireli)
-        # GÜNCELLEME: Tooltip'e doğrudan "Güvercin %56.4" gibi metni basıyoruz.
-        if 'roberta_index' in merged.columns:
-            fig.add_trace(go.Scatter(
-                x=merged['period_date'], 
-                y=merged['roberta_index'], 
-                name="AI Sentiment (RoBERTa)", 
-                line=dict(color='#FF0000', width=4, dash='dash'), 
-                mode='lines+markers', # Noktaların üzerine gelmeyi kolaylaştırır
-                yaxis="y",
-                text=merged['roberta_desc'] if 'roberta_desc' in merged.columns else "", # <--- ÖZEL METİN BURADA
-                hovertemplate='<b>%{text}</b><br>Endeks: %{y:.1f}<extra></extra>' # Tooltip formatı
-            ))
+        if 'Yıllık TÜFE' in merged.columns: fig.add_trace(go.Scatter(x=merged['period_date'], y=merged['Yıllık TÜFE'], name="Yıllık TÜFE (%)", line=dict(color='red', dash='dot'), yaxis="y"))
+        if 'PPK Faizi' in merged.columns: fig.add_trace(go.Scatter(x=merged['period_date'], y=merged['PPK Faizi'], name="Faiz (%)", line=dict(color='orange', dash='dot'), yaxis="y"))
+        fig.add_trace(go.Scatter(x=merged['period_date'], y=merged['flesch_score'], name="Okunabilirlik (Flesch)", mode='markers', marker=dict(color='teal', size=8, opacity=0.8), yaxis="y"))
 
-        # 5. Piyasa Verileri (İnce Çizgiler)
-        if 'Yıllık TÜFE' in merged.columns: 
-            fig.add_trace(go.Scatter(x=merged['period_date'], y=merged['Yıllık TÜFE'], name="Yıllık TÜFE (%)", line=dict(color='gray', dash='dot', width=1), yaxis="y"))
-        if 'PPK Faizi' in merged.columns: 
-            fig.add_trace(go.Scatter(x=merged['period_date'], y=merged['PPK Faizi'], name="Faiz (%)", line=dict(color='orange', dash='dot', width=1), yaxis="y"))
-
-        # Düzen (Layout)
         layout_shapes = [
-            dict(type="line", xref="paper", yref="y", x0=0, x1=1, y0=0, y1=0, line=dict(color="black", width=2), layer="below"),
+            dict(type="rect", xref="paper", yref="y", x0=0, x1=1, y0=0, y1=150, fillcolor="rgba(255, 0, 0, 0.08)", line_width=0, layer="below"),
+            dict(type="rect", xref="paper", yref="y", x0=0, x1=1, y0=-150, y1=0, fillcolor="rgba(0, 0, 255, 0.08)", line_width=0, layer="below"),
+            dict(type="line", xref="paper", yref="y", x0=0, x1=1, y0=0, y1=0, line=dict(color="black", width=3), layer="below"),
         ]
-        
         layout_annotations = [
-            dict(x=0.02, y=110, xref="paper", yref="y", text="🦅 ŞAHİN BÖLGESİ", showarrow=False, font=dict(size=12, color="darkred", weight="bold"), xanchor="left"),
-            dict(x=0.02, y=-110, xref="paper", yref="y", text="🕊️ GÜVERCİN BÖLGESİ", showarrow=False, font=dict(size=12, color="darkblue", weight="bold"), xanchor="left")
+            dict(x=0.02, y=130, xref="paper", yref="y", text="🦅 ŞAHİN", showarrow=False, font=dict(size=14, color="darkred", weight="bold"), xanchor="left"),
+            dict(x=0.02, y=-130, xref="paper", yref="y", text="🕊️ GÜVERCİN", showarrow=False, font=dict(size=14, color="darkblue", weight="bold"), xanchor="left")
         ]
-        
-        governors = [("2020-11-01", "N.Ağbal"), ("2021-04-01", "Ş.Kavcıoğlu"), ("2023-06-01", "H.G.Erkan"), ("2024-02-01", "F.Karahan")]
+        governors = [("2020-11-01", "Naci Ağbal"), ("2021-04-01", "Şahap Kavcıoğlu"), ("2023-06-01", "Hafize Gaye Erkan"), ("2024-02-01", "Fatih Karahan")]
         for start_date, name in governors:
             layout_shapes.append(dict(type="line", xref="x", yref="paper", x0=start_date, x1=start_date, y0=0, y1=1, line=dict(color="gray", width=1, dash="longdash"), layer="below"))
-            layout_annotations.append(dict(x=start_date, y=1.05, xref="x", yref="paper", text=f"<b>{name}</b>", showarrow=False, xanchor="left", font=dict(size=9, color="#555")))
+            layout_annotations.append(dict(x=start_date, y=1.02, xref="x", yref="paper", text=f" <b>{name.split()[0][0]}.{name.split()[-1]}</b>", showarrow=False, xanchor="left", font=dict(size=9, color="#555")))
 
         event_links_display = []
         if not df_events.empty:
             for _, ev in df_events.iterrows():
                 ev_date = pd.to_datetime(ev['event_date']).strftime('%Y-%m-%d')
-                layout_shapes.append(dict(type="line", xref="x", yref="paper", x0=ev_date, x1=ev_date, y0=0, y1=1, line=dict(color="purple", width=2, dash="dot")))
+                layout_shapes.append(dict(
+                    type="line", xref="x", yref="paper",
+                    x0=ev_date, x1=ev_date, y0=0, y1=1,
+                    line=dict(color="purple", width=2, dash="dot")
+                ))
                 first_link = ev['links'].split('\n')[0] if ev['links'] else ""
-                layout_annotations.append(dict(x=ev_date, y=0.05, xref="x", yref="paper", text=f"ℹ️", showarrow=False, xanchor="left", font=dict(size=14, color="purple")))
-                if ev['links']: event_links_display.append({"Tarih": ev_date, "Linkler": [l.strip() for l in ev['links'].split('\n') if l.strip()]})
+                layout_annotations.append(dict(
+                    x=ev_date, y=0.05, xref="x", yref="paper",
+                    text=f"ℹ️ <a href='{first_link}' target='_blank'>Haber</a>",
+                    showarrow=False, xanchor="left",
+                    font=dict(size=10, color="purple"),
+                    bgcolor="rgba(255,255,255,0.7)"
+                ))
+                if ev['links']:
+                    links_list = [l.strip() for l in ev['links'].split('\n') if l.strip()]
+                    event_links_display.append({"Tarih": ev_date, "Linkler": links_list})
 
         fig.update_layout(
-            title="Merkez Bankası Sentiment Analizi (AI vs Klasik)", 
-            hovermode="x unified", 
-            height=650,
-            shapes=layout_shapes, 
-            annotations=layout_annotations, 
-            showlegend=True,
-            legend=dict(orientation="h", yanchor="top", y=-0.1, xanchor="center", x=0.5),
-            yaxis=dict(title="Sentiment Endeksi (-100 / +100)", range=[-130, 130], zeroline=False),
+            title="Merkez Bankası Analiz Paneli", hovermode="x unified", height=600,
+            shapes=layout_shapes, annotations=layout_annotations, showlegend=True,
+            legend=dict(orientation="h", yanchor="top", y=-0.15, xanchor="center", x=0.5),
+            yaxis=dict(title="Skor & Oranlar", range=[-150, 150], zeroline=False),
             yaxis2=dict(visible=False, overlaying="y", side="right"),
-            yaxis3=dict(title="Kelime / Okunabilirlik", overlaying="y", side="right", showgrid=False, visible=False, range=[0, merged['word_count'].max() * 2])
+            yaxis3=dict(title="Kelime", overlaying="y", side="right", showgrid=False, visible=False, range=[0, merged['word_count'].max() * 2])
         )
         st.plotly_chart(fig, use_container_width=True)
         
         if event_links_display:
-            with st.expander("📅 Grafikteki Önemli Tarihler ve Haber Linkleri"):
+            with st.expander("📅 Grafikteki Önemli Tarihler ve Haber Linkleri", expanded=False):
                 for item in event_links_display:
                     st.markdown(f"**{item['Tarih']}**")
-                    for link in item['Linkler']: st.markdown(f"- [Haber Linki]({link})")
+                    for link in item['Linkler']:
+                        st.markdown(f"- [Haber Linki]({link})")
                         
-        if st.button("🔄 Verileri Yenile (Cache Temizle)"): 
-            st.cache_data.clear()
-            st.rerun()
-            
+        if st.button("🔄 Yenile"): st.cache_data.clear(); st.rerun()
     else: st.info("Kayıt yok.")
 
 # ==============================================================================
@@ -220,10 +177,12 @@ with tab1:
 # ==============================================================================
 with tab2:
     st.subheader("Veri İşlemleri")
+    st.info("ℹ️ **BİLGİ:** Aşağıdaki geçmiş kayıtlar listesinden istediğiniz dönemi seçerek, hangi cümlelerin hesaplamaya alındığını görebilirsiniz.")
     with st.container():
         df_all = utils.fetch_all_data()
         if not df_all.empty: 
-            df_all['period_date'] = pd.to_datetime(df_all['period_date']); df_all['date_only'] = df_all['period_date'].dt.date
+            df_all['period_date'] = pd.to_datetime(df_all['period_date'])
+            df_all['date_only'] = df_all['period_date'].dt.date
             current_id = st.session_state['form_data']['id']
             with st.container(border=True):
                 if st.button("➕ YENİ VERİ GİRİŞİ (Temizle)", type="secondary"): reset_form(); st.rerun()
@@ -232,15 +191,16 @@ with tab2:
                 with c1:
                     val_date = st.session_state['form_data']['date']; selected_date = st.date_input("Tarih", value=val_date)
                     val_source = st.session_state['form_data']['source']; source = st.text_input("Kaynak", value=val_source)
+                    st.caption(f"Dönem: **{selected_date.strftime('%Y-%m')}**")
                 with c2:
-                    val_text = st.session_state['form_data']['text']; txt = st.text_area("Metin", value=val_text, height=200)
+                    val_text = st.session_state['form_data']['text']; txt = st.text_area("Metin", value=val_text, height=200, placeholder="Metni buraya yapıştırın...")
                 st.markdown("---")
                 if st.session_state['collision_state']['active']:
                     st.error("⚠️ Kayıt Çakışması"); admin_pass = st.text_input("Admin Şifresi", type="password", key="overwrite_pass")
                     if st.button("🚨 Üzerine Yaz", type="primary"):
                         if admin_pass == ADMIN_PWD:
                             p_txt = st.session_state['collision_state']['pending_text']; t_id = st.session_state['collision_state']['target_id']
-                            s_abg, _, _, _, _, _, _, _ = utils.run_full_analysis(p_txt)
+                            s_abg, h_cnt, d_cnt, hawks, doves, h_ctx, d_ctx, flesch = utils.run_full_analysis(p_txt)
                             utils.update_entry(t_id, selected_date, p_txt, source, s_abg, s_abg); st.success("Başarılı!"); reset_form(); st.rerun()
                         else: st.error("Hatalı!")
                     if st.button("❌ İptal"): st.session_state['collision_state']['active'] = False; st.rerun()
@@ -249,12 +209,13 @@ with tab2:
                     if st.button("💾 Güncelle", type="primary"):
                         if update_pass == ADMIN_PWD:
                             p_txt = st.session_state['update_state']['pending_text']
-                            s_abg, _, _, _, _, _, _, _ = utils.run_full_analysis(p_txt)
+                            s_abg, h_cnt, d_cnt, hawks, doves, h_ctx, d_ctx, flesch = utils.run_full_analysis(p_txt)
                             utils.update_entry(current_id, selected_date, p_txt, source, s_abg, s_abg); st.success("Güncellendi!"); reset_form(); st.rerun()
                         else: st.error("Hatalı!")
                     if st.button("❌ İptal"): st.session_state['update_state']['active'] = False; st.rerun()
                 else:
-                    if st.button("💾 Güncelle" if current_id else "💾 Kaydet", type="primary"):
+                    btn_label = "💾 Güncelle" if current_id else "💾 Kaydet"
+                    if st.button(btn_label, type="primary"):
                         if txt:
                             collision_record = None
                             if not df_all.empty:
@@ -264,7 +225,7 @@ with tab2:
                             if is_self_update: st.session_state['update_state'] = {'active': True, 'pending_text': txt}; st.rerun()
                             elif collision_record is not None: st.session_state['collision_state'] = {'active': True, 'target_id': int(collision_record['id']), 'target_date': selected_date, 'pending_text': txt}; st.rerun()
                             else:
-                                s_abg, _, _, _, _, _, _, _ = utils.run_full_analysis(txt)
+                                s_abg, h_cnt, d_cnt, hawks, doves, h_ctx, d_ctx, flesch = utils.run_full_analysis(txt)
                                 utils.insert_entry(selected_date, txt, source, s_abg, s_abg); st.success("Eklendi!"); reset_form(); st.rerun()
                         else: st.error("Metin boş.")
                     if current_id:
@@ -273,105 +234,602 @@ with tab2:
                             if st.button("🔥 Sil"):
                                 if del_pass == ADMIN_PWD: utils.delete_entry(current_id); st.success("Silindi!"); reset_form(); st.rerun()
                                 else: st.error("Hatalı!")
+                if txt:
+                    s_live, h_cnt, d_cnt, h_list, d_list, h_ctx, d_ctx, flesch_live = utils.run_full_analysis(txt)
+                    st.markdown("---"); st.subheader("🔍 Analiz Detayları")
+                    c1, c2, c3 = st.columns(3)
+                    with c1: st.metric("Şahin", f"{h_cnt}")
+                    with c2: st.metric("Güvercin", f"{d_cnt}")
+                    with c3: st.metric("Flesch", f"{flesch_live:.1f}")
+                    st.caption(f"**Net Skor:** {s_live:.2f}")
+                    with st.expander("📄 Tespit Edilen Cümleler", expanded=True):
+                        k1, k2 = st.columns(2)
+                        with k1:
+                            st.markdown("#### 🦅 Şahin")
+                            if h_list:
+                                for item in h_list:
+                                    t = item.split(' (')[0]; st.markdown(f"**{item}**")
+                                    if t in h_ctx: 
+                                        for s in h_ctx[t]: st.caption(f"📝 {s}")
+                            else: st.write("- Yok")
+                        with k2:
+                            st.markdown("#### 🕊️ Güvercin")
+                            if d_list:
+                                for item in d_list:
+                                    t = item.split(' (')[0]; st.markdown(f"**{item}**")
+                                    if t in d_ctx: 
+                                        for s in d_ctx[t]: st.caption(f"📝 {s}")
+                            else: st.write("- Yok")
             st.markdown("### 📋 Kayıtlar")
-            df_show = df_all.copy(); df_show['Dönem'] = df_show['period_date'].dt.strftime('%Y-%m'); df_show['Skor'] = df_show['score_abg'].apply(lambda x: x*100 if abs(x)<=1 else x)
-            event = st.dataframe(df_show[['id', 'Dönem', 'Skor']], on_select="rerun", selection_mode="single-row", use_container_width=True, hide_index=True, key=st.session_state['table_key'])
+            df_show = df_all.copy()
+            df_show['Dönem'] = df_show['period_date'].dt.strftime('%Y-%m')
+            df_show['Görsel Skor'] = df_show['score_abg'].apply(lambda x: x*100 if abs(x)<=1 else x)
+            event = st.dataframe(df_show[['id', 'Dönem', 'Görsel Skor']], on_select="rerun", selection_mode="single-row", use_container_width=True, hide_index=True, key=st.session_state['table_key'])
             if len(event.selection.rows) > 0:
                 sel_id = df_show.iloc[event.selection.rows[0]]['id']
+                if st.session_state['collision_state']['active'] or st.session_state['update_state']['active']: st.session_state['collision_state']['active'] = False; st.session_state['update_state']['active'] = False
                 if st.session_state['form_data']['id'] != sel_id:
                     orig = df_all[df_all['id'] == sel_id].iloc[0]
                     st.session_state['form_data'] = {'id': int(orig['id']), 'date': pd.to_datetime(orig['period_date']).date(), 'source': orig['source'], 'text': orig['text_content']}
                     st.rerun()
 
 with tab3:
-    st.header("Piyasa Verileri"); d1 = st.date_input("Başlangıç", datetime.date(2023, 1, 1)); d2 = st.date_input("Bitiş", datetime.date.today())
-    if st.button("Getir"):
+    st.header("Piyasa Verileri")
+    d1 = st.date_input("Başlangıç", datetime.date(2023, 1, 1))
+    d2 = st.date_input("Bitiş", datetime.date.today())
+    if st.button("Getir", key="get_market"):
         df, err = utils.fetch_market_data_adapter(d1, d2)
-        if not df.empty: st.plotly_chart(go.Figure(data=[go.Scatter(x=df['Donem'], y=df[c], name=c) for c in df.columns if c not in ['Donem','SortDate']]), use_container_width=True); st.dataframe(df)
-        else: st.error(err)
+        if not df.empty:
+            fig_m = go.Figure()
+            if 'Yıllık TÜFE' in df.columns: fig_m.add_trace(go.Scatter(x=df['Donem'], y=df['Yıllık TÜFE'], name="Yıllık TÜFE", line=dict(color='red')))
+            if 'Aylık TÜFE' in df.columns: fig_m.add_trace(go.Scatter(x=df['Donem'], y=df['Aylık TÜFE'], name="Aylık TÜFE", line=dict(color='blue', dash='dot')))
+            if 'PPK Faizi' in df.columns: fig_m.add_trace(go.Scatter(x=df['Donem'], y=df['PPK Faizi'], name="Faiz", line=dict(color='orange')))
+            st.plotly_chart(fig_m, use_container_width=True)
+            st.dataframe(df, use_container_width=True)
+        else: st.error(f"Hata: {err}")
 
 with tab4:
-    st.header("🔍 Frekans")
+    st.header("🔍 Frekans ve Diff Analizi")
     df_all = utils.fetch_all_data()
     if not df_all.empty:
         df_all['period_date'] = pd.to_datetime(df_all['period_date'])
-        freq_df, terms = utils.get_top_terms_series(df_all, 7)
-        st.plotly_chart(go.Figure(data=[go.Scatter(x=freq_df['period_date'], y=freq_df[t], name=t) for t in terms]), use_container_width=True)
-    else: st.info("Veri yok")
+        df_all['Donem'] = df_all['period_date'].dt.strftime('%Y-%m')
+        df_all = df_all.sort_values('period_date', ascending=False)
+        st.subheader("📊 En Çok Tekrar Eden Ekonomi Terimleri")
+        st.text_input("🚫 Grafikten Çıkarılacak Kelimeler (Enter)", key="deep_stop_in", on_change=add_deep_stop)
+        if st.session_state['stop_words_deep']:
+            st.write("Filtreler:")
+            cols = st.columns(8)
+            for i, word in enumerate(st.session_state['stop_words_deep']):
+                if cols[i % 8].button(f"{word} ✖", key=f"del_deep_{word}"):
+                    st.session_state['stop_words_deep'].remove(word)
+                    st.rerun()
+        st.divider()
+        freq_df, top_terms = utils.get_top_terms_series(df_all, 7, st.session_state['stop_words_deep'])
+        if not freq_df.empty:
+            fig_freq = go.Figure()
+            for term in top_terms:
+                fig_freq.add_trace(go.Scatter(x=freq_df['period_date'], y=freq_df[term], name=term, mode='lines+markers'))
+            fig_freq.update_layout(title="Kelime Kullanım Sıklığı Trendi", hovermode="x unified", height=400)
+            st.plotly_chart(fig_freq, use_container_width=True)
+        st.divider()
+        st.subheader("🔄 Metin Farkı (Diff) Analizi")
+        c_diff1, c_diff2 = st.columns(2)
+        with c_diff1: sel_date1 = st.selectbox("Eski Metin:", df_all['Donem'].tolist(), index=min(1, len(df_all)-1))
+        with c_diff2: sel_date2 = st.selectbox("Yeni Metin:", df_all['Donem'].tolist(), index=0)
+        if st.button("Farkları Göster", type="primary"):
+            if sel_date1 and sel_date2:
+                t1 = df_all[df_all['Donem'] == sel_date1].iloc[0]['text_content']
+                t2 = df_all[df_all['Donem'] == sel_date2].iloc[0]['text_content']
+                diff_html = utils.generate_diff_html(t1, t2)
+                st.markdown(f"**Kırmızı:** {sel_date1}'den silinenler | **Yeşil:** {sel_date2}'ye eklenenler")
+                with st.container(border=True, height=400): st.markdown(diff_html, unsafe_allow_html=True)
+    else: st.info("Yeterli veri yok.")
 
 with tab5:
-    st.header("🤖 Faiz Tahmini")
+    st.header("🤖 Gelişmiş PPK Faiz Tahmin Modeli")
+    st.info("Bu model, veritabanındaki tüm veriyi eğitir ancak aşağıda seçtiğiniz metin üzerinden 'sonraki' adımı tahmin eder.")
+    
+    with st.expander("ℹ️ Model Detayları", expanded=False):
+        st.markdown("""
+        * **Algoritma:** Ridge Regresyon (Sürekli Tahmin) + Logistic Regresyon (Yön Tahmini)
+        * **Özellikler:** TF-IDF (Metin), Anahtar Kelimeler (Enflasyon, Büyüme vb.), Geçmiş Faiz Değişimleri, Volatilite.
+        * **Validasyon:** Walk-Forward Validation (Zaman serisine duyarlı doğrulama).
+        * **Güven Aralığı:** Model hatalarına dayalı dinamik bant genişliği.
+        """)
+
+    # 1. Veri Hazırlığı
     df_logs = utils.fetch_all_data()
-    if not df_logs.empty and len(df_logs) > 10:
-        min_d = pd.to_datetime(df_logs['period_date']).min().date()
-        df_m, _ = utils.fetch_market_data_adapter(min_d, datetime.date.today())
-        # prepare_ml_dataset artık KeyError hatası vermez
-        ml_df = utils.prepare_ml_dataset(df_logs, df_m)
-        pred = utils.AdvancedMLPredictor(); stat = pred.train(ml_df)
-        if stat == "OK":
-            st.success("Model Eğitildi")
-            sel_p = st.selectbox("Test Dönemi", df_logs['period_date'].astype(str).tolist())
-            if sel_p:
-                txt = df_logs[df_logs['period_date'] == sel_p].iloc[0]['text_content']
-                res = pred.predict(txt)
-                if res: st.json(res)
-        else: st.error(stat)
-    else: st.info("Yetersiz veri")
+    
+    min_d = datetime.date(2020, 1, 1)
+    if not df_logs.empty:
+        df_logs['period_date'] = pd.to_datetime(df_logs['period_date'], errors='coerce')
+        df_logs = df_logs.dropna(subset=['period_date'])
+        
+        if not df_logs.empty:
+            # Tarih aralığı seçicisi için min/max
+            min_avail_date = df_logs['period_date'].min().date()
+            max_avail_date = df_logs['period_date'].max().date()
+            
+            # Min_d, market verisi çekmek için
+            min_val = df_logs['period_date'].min()
+            if isinstance(min_val, pd.Timestamp): min_d = min_val.date()
+            elif isinstance(min_val, str): min_d = pd.to_datetime(min_val).date()
+            elif isinstance(min_val, datetime.date): min_d = min_val
+
+    # Market Verisi
+    df_market, err = utils.fetch_market_data_adapter(min_d, datetime.date.today())
+    ml_df = utils.prepare_ml_dataset(df_logs, df_market)
+
+    if not ml_df.empty and len(ml_df) > 10:
+        # 2. Modeli Eğit
+        predictor = utils.AdvancedMLPredictor()
+        status = predictor.train(ml_df)
+        
+        if status == "OK":
+            # 3. KULLANICI SEÇİMİ
+            st.markdown("### 📅 Analiz İçin Dönem Seçimi")
+            c_d1, c_d2 = st.columns(2)
+            start_date_sel = c_d1.date_input("Başlangıç", value=min_avail_date, min_value=min_avail_date, max_value=max_avail_date)
+            end_date_sel = c_d2.date_input("Bitiş", value=max_avail_date, min_value=min_avail_date, max_value=max_avail_date)
+            
+            filtered_logs = df_logs[(df_logs['period_date'].dt.date >= start_date_sel) & (df_logs['period_date'].dt.date <= end_date_sel)].copy()
+            filtered_logs = filtered_logs.sort_values("period_date", ascending=False)
+            filtered_logs['Dönem'] = filtered_logs['period_date'].dt.strftime('%Y-%m')
+            
+            period_options = filtered_logs['Dönem'].tolist()
+            
+            if period_options:
+                selected_period = st.selectbox("Analiz Edilecek Toplantıyı Seçin:", period_options, index=0)
+                
+                target_row = filtered_logs[filtered_logs['Dönem'] == selected_period].iloc[0]
+                target_text = target_row['text_content']
+                target_source = f"Seçilen Kayıt: {target_row['Dönem']}"
+                selected_date_for_chart = target_row['period_date']
+                
+                st.divider()
+                st.subheader(f"Analiz Edilen Metin: {target_source}")
+                
+                # 4. Tahmin Yap
+                prediction = predictor.predict(target_text)
+                
+                if prediction:
+                    c1, c2, c3 = st.columns(3)
+                    direction = prediction['pred_direction']
+                    color = "green" if direction == "ARTIRIM" else "red" if direction == "İNDİRİM" else "gray"
+                    with c1:
+                        st.markdown(f"### Yön: :{color}[{direction}]")
+                        st.caption(f"Güven Skoru: %{prediction['direction_confidence']*100:.1f}")
+                    bps = prediction['pred_change_bps']
+                    with c2: st.metric("Tahmini Değişim", f"{bps:.0f} bps")
+                    lo = prediction['pred_interval_lo']
+                    hi = prediction['pred_interval_hi']
+                    with c3: st.metric("Tahmin Aralığı", f"{lo:.0f} / {hi:.0f} bps")
+                    
+                    st.divider()
+                    
+                    # 5. Grafik
+                    st.subheader("📊 Model Performansı (Geçmiş)")
+                    
+                    if predictor.df_hist is not None:
+                        hist = predictor.df_hist.copy()
+                        hist['date'] = pd.to_datetime(hist['date'])
+                        
+                        chart_start = pd.to_datetime(start_date_sel) - pd.Timedelta(days=90)
+                        chart_end = pd.to_datetime(end_date_sel) + pd.Timedelta(days=90)
+                        
+                        hist_view = hist[(hist['date'] >= chart_start) & (hist['date'] <= chart_end)]
+                        
+                        if not hist_view.empty:
+                            fig = go.Figure()
+                            # Gerçekleşen
+                            fig.add_trace(go.Bar(
+                                x=hist_view['date'], y=hist_view['y_bps'],
+                                name="Gerçekleşen Değişim", marker_color='gray', opacity=0.5
+                            ))
+                            # Geçmiş Tahminler
+                            if 'predicted_bps' in hist_view.columns:
+                                hist_pred = hist_view.dropna(subset=['predicted_bps'])
+                                fig.add_trace(go.Scatter(
+                                    x=hist_pred['date'], y=hist_pred['predicted_bps'],
+                                    name="Model Geçmiş Tahminleri", 
+                                    line=dict(color='blue', width=2, dash='dot')
+                                ))
+                            
+                            # Şu anki tahmin noktası
+                            if chart_start <= selected_date_for_chart <= chart_end:
+                                fig.add_trace(go.Scatter(
+                                    x=[selected_date_for_chart], 
+                                    y=[bps],
+                                    mode='markers',
+                                    marker=dict(color=color, size=15, symbol='star'),
+                                    name=f"Seçilen ({target_source}) Tahmini"
+                                ))
+                            
+                            fig.update_layout(hovermode="x unified", title="Faiz Değişimleri ve Tahminler")
+                            st.plotly_chart(fig, use_container_width=True)
+                        else:
+                            st.warning("Seçilen tarih aralığında görüntülenecek grafik verisi yok.")
+                else:
+                    st.error("Tahmin üretilemedi.")
+            else:
+                st.info("Bu tarih aralığında kayıt bulunamadı.")
+        else:
+            st.warning(f"Model eğitilemedi: {status}")
+    else:
+        st.warning("Model eğitimi için yeterli veri yok (En az 10 toplantı kaydı ve piyasa verisi gerekli).")
 
 with tab6:
-    st.header("☁️ WordCloud")
-    df_all = utils.fetch_all_data()
+    st.header("☁️ Kelime Bulutu (WordCloud)")
     if not df_all.empty:
-        sel = st.selectbox("Dönem", ["Tüm"] + df_all['period_date'].astype(str).tolist())
-        txt = " ".join(df_all['text_content'].tolist()) if sel == "Tüm" else df_all[df_all['period_date'] == sel].iloc[0]['text_content']
-        fig = utils.generate_wordcloud_img(txt)
-        if fig: st.pyplot(fig)
+        st.text_input("🚫 Buluttan Çıkarılacak Kelimeler (Enter)", key="cloud_stop_in", on_change=add_cloud_stop)
+        if st.session_state['stop_words_cloud']:
+            st.write("Filtreler:")
+            cols = st.columns(8)
+            for i, word in enumerate(st.session_state['stop_words_cloud']):
+                if cols[i % 8].button(f"{word} ✖", key=f"del_cloud_{word}"):
+                    st.session_state['stop_words_cloud'].remove(word)
+                    st.rerun()
+        st.divider()
+        dates = df_all['Donem'].tolist()
+        sel_cloud_date = st.selectbox("Dönem Seçin:", ["Tüm Zamanlar"] + dates)
+        if st.button("Bulutu Oluştur", type="primary"):
+            if sel_cloud_date == "Tüm Zamanlar": text_cloud = " ".join(df_all['text_content'].astype(str).tolist())
+            else: text_cloud = df_all[df_all['Donem'] == sel_cloud_date].iloc[0]['text_content']
+            fig_wc = utils.generate_wordcloud_img(text_cloud, st.session_state['stop_words_cloud'])
+            if fig_wc: st.pyplot(fig_wc)
+            else: st.error("Kütüphane eksik veya metin boş.")
+    else: st.info("Veri yok.")
 
 with tab7:
-    st.header("📜 ABF (2019)"); df_all = utils.fetch_all_data()
-    if not df_all.empty:
-        abg = utils.calculate_abg_scores(df_all)
-        st.plotly_chart(go.Figure(data=go.Scatter(x=abg['period_date'], y=abg['abg_index'])), use_container_width=True)
+    st.header("📜 Apel, Blix ve Grimaldi (2019) Analizi")
+    st.info("Bu yöntem, kelimeleri 'enflasyon', 'büyüme', 'istihdam' gibi kategorilere ayırarak, yanlarındaki sıfatlara göre 'Şahin' veya 'Güvercin' olarak puanlar.")
+    df_abg_source = utils.fetch_all_data()
+    if not df_abg_source.empty:
+        df_abg_source = df_abg_source.copy()
+        df_abg_source['period_date'] = pd.to_datetime(df_abg_source['period_date'])
+        df_abg_source['Donem'] = df_abg_source['period_date'].dt.strftime('%Y-%m')
+        abg_df = utils.calculate_abg_scores(df_abg_source)
+        fig_abg = go.Figure()
+        fig_abg.add_trace(go.Scatter(x=abg_df['period_date'], y=abg_df['abg_index'], name="ABF Net Hawkishness", line=dict(color='purple', width=3), marker=dict(size=8)))
+        fig_abg.add_shape(type="line", x0=abg_df['period_date'].min(), x1=abg_df['period_date'].max(), y0=1, y1=1, line=dict(color="gray", dash="dash"))
+        fig_abg.update_layout(title="ABF (2019) Endeksi Zaman Serisi (Nötr=1.0)", yaxis_title="Hawkishness Index (0 - 2)", hovermode="x unified")
+        st.plotly_chart(fig_abg, use_container_width=True)
+        st.divider()
+        st.subheader("🔍 Dönem Bazlı Detaylar")
+        sel_abg_period = st.selectbox("İncelenecek Dönem:", abg_df['Donem'].tolist())
+        if sel_abg_period:
+            subset = df_abg_source[df_abg_source['Donem'] == sel_abg_period]
+            if not subset.empty:
+                text_abg = subset.iloc[0]['text_content']
+                
+                # Analiz fonksiyonunu çağır
+                res = utils.analyze_hawk_dove(
+                    text_abg, 
+                    DICT=utils.DICT, 
+                    window_words=10, 
+                    dedupe_within_term_window=True, 
+                    nearest_only=True
+                )
+                
+                net_h = res.get('net_hawkishness', 0)
+                h_cnt = res.get('hawk_count', 0)
+                d_cnt = res.get('dove_count', 0)
+                details = res.get('match_details', [])
+                
+                c1, c2, c3 = st.columns(3)
+                c1.metric("Net Endeks", f"{net_h:.4f}")
+                c2.metric("🦅 Şahin Eşleşme", h_cnt)
+                c3.metric("🕊️ Güvercin Eşleşme", d_cnt)
+                
+                if "topic_counts" in res:
+                     with st.expander("Detaylı Kırılım (Topic Counts)"):
+                         st.json(res["topic_counts"])
 
+                with st.expander("📝 Detaylı Eşleşme Tablosu (Cümle Bağlamı)", expanded=True):
+                    if details:
+                        detail_data = []
+                        for m in details:
+                            detail_data.append({"Tip": "🦅 ŞAHİN" if m['type'] == "HAWK" else "🕊️ GÜVERCİN", "Eşleşen Terim": m['term'], "Cümle": m['sentence']})
+                        st.dataframe(pd.DataFrame(detail_data), use_container_width=True, hide_index=True)
+                    else: 
+                        st.info("Bu metinde herhangi bir ABF sözlük eşleşmesi bulunamadı.")
+                
+                with st.expander("Metin Önizleme"): st.write(text_abg)
+            else: st.error("Seçilen dönem için metin bulunamadı.")
+    else: st.info("Analiz için veri yok.")
+
+# ==============================================================================
+# TAB STRUCT: YENİ YAPISAL ANALİZ (THICK LINE)
+# ==============================================================================
 with tab_struct:
-    st.header("🏗️ Yapısal Analiz")
-    df_all = utils.fetch_all_data()
-    if not df_all.empty:
-        sel = st.selectbox("Dönem", df_all['period_date'].astype(str).tolist(), key="str_sel")
-        if sel:
-            txt = df_all[df_all['period_date'] == sel].iloc[0]['text_content']
-            res = utils.analyze_hawk_dove_structural(txt)
-            st.metric("Skor", f"{res['net_hawkishness']:.4f}")
-            # KeyError hatası artık yok
-            st.dataframe(res['matches_df'])
+    st.header("🏗️ Yapısal Analiz (Pencere Yöntemi)")
+    st.info("Bu yöntem, kelimeler arası mesafeyi (Window) ölçerek daha hassas bir şahin/güvercin ayrımı yapar.")
+    
+    # Text Seçimi
+    struct_text_input = ""
+    df_all_struct = utils.fetch_all_data()
+    
+    if not df_all_struct.empty:
+        df_all_struct['period_date'] = pd.to_datetime(df_all_struct['period_date'])
+        df_all_struct['Donem'] = df_all_struct['period_date'].dt.strftime('%Y-%m')
+        
+        # Seçenekler
+        opts = df_all_struct['Donem'].tolist()
+        sel_struct_period = st.selectbox("Analiz Edilecek Dönem (Yapısal):", opts, index=0)
+        
+        if sel_struct_period:
+            row = df_all_struct[df_all_struct['Donem'] == sel_struct_period].iloc[0]
+            struct_text_input = row['text_content']
+            
+            # 1. Analizi Çalıştır
+            result = utils.analyze_hawk_dove_structural(struct_text_input, window_words=10)
+            score = result["net_hawkishness"]
+            
+            # 2. Metrikler
+            c1, c2, c3 = st.columns(3)
+            delta_msg = "Şahin" if score > 1.05 else ("Güvercin" if score < 0.95 else "Nötr")
+            c1.metric("Yapısal Şahinlik Skoru", f"{score:.4f}", delta=delta_msg)
+            c2.metric("Toplam Şahin Sinyali", result["hawk_total"])
+            c3.metric("Toplam Güvercin Sinyali", result["dove_total"])
+            
+            st.divider()
+            
+            # 3. KALIN ÇİZGİ GRAFİĞİ (Altair ile)
+            st.subheader("Sentiment Trendi (Simüle)")
+            st.caption("Aşağıdaki grafik, son 5 dönemin skorunu ve mevcut analizinizi 'Kalın Çizgi' formatında gösterir.")
+            
+            # Simülasyon Verisi (Gerçek uygulamada DB'den çekilmeli)
+            # Burada 'Thick Line' efektini göstermek için dummy data kullanıyoruz.
+            trend_data = [1.0, 0.9, 1.1, 0.85, 1.02] 
+            trend_data.append(score) # En son veri şu anki analiz
+            
+            chart_data = pd.DataFrame({
+                'Toplantı': [f"T-{5-i}" for i in range(len(trend_data))],
+                'Skor': trend_data
+            })
+            chart_data.iloc[-1, 0] = "Mevcut"
+            
+            line_chart = alt.Chart(chart_data).mark_line(
+                strokeWidth=10,       # KALIN ÇİZGİ
+                point=True,
+                interpolate='monotone'
+            ).encode(
+                x=alt.X('Toplantı', sort=None),
+                y=alt.Y('Skor', scale=alt.Scale(domain=[0.5, 1.5])),
+                color=alt.value("#FF4B4B"), # Streamlit Kırmızısı / Neon
+                tooltip=['Toplantı', 'Skor']
+            ).properties(height=350)
+            
+            st.altair_chart(line_chart, use_container_width=True)
+            
+            # 4. Konu Dağılımı
+            st.subheader("Konu Bazlı Sinyaller")
+            topics = []
+            for topic, counts in result["topic_counts"].items():
+                topics.append({"Konu": topic, "Yön": "Şahin", "Adet": counts["hawk"]})
+                topics.append({"Konu": topic, "Yön": "Güvercin", "Adet": counts["dove"]})
+                
+            df_topic = pd.DataFrame(topics)
+            bar_chart = alt.Chart(df_topic).mark_bar().encode(
+                x='Konu', y='Adet',
+                color=alt.Color('Yön', scale=alt.Scale(domain=['Şahin', 'Güvercin'], range=['#e74c3c', '#2ecc71'])),
+                tooltip=['Konu', 'Yön', 'Adet']
+            ).properties(height=300)
+            
+            st.altair_chart(bar_chart, use_container_width=True)
+            
+            # 5. Eşleşme Tablosu
+            with st.expander("Detaylı Eşleşmeler"):
+                st.dataframe(result["matches_df"], use_container_width=True)
+
+    else: st.info("Veri yok.")
+
+# ==============================================================================
+# TAB ROBERTA: CB-RoBERTa (YAPAY ZEKA)
+# ==============================================================================
+# app.py içindeki "with tab_roberta:" bloğunu TAMAMEN bununla değiştirin:
 
 with tab_roberta:
-    st.header("🧠 CB-RoBERTa")
-    df_all = utils.fetch_all_data()
-    if not df_all.empty:
-        sel = st.selectbox("Dönem", df_all['period_date'].astype(str).tolist(), key="rob_sel")
-        if sel and st.button("Analiz Et"):
-            txt = df_all[df_all['period_date'] == sel].iloc[0]['text_content']
-            with st.spinner("Analiz ediliyor..."):
-                res = utils.analyze_with_roberta(txt)
-                if isinstance(res, dict):
-                    st.metric(res['best_label'], f"%{res['best_score']*100:.1f}")
-                    # Cümle ayrıştırma hatası artık yok
-                    df_sent = utils.analyze_sentences_with_roberta(txt)
+    st.header("🧠 CentralBankRoBERTa (Yapay Zeka Analizi)")
+    st.markdown("Bu modül, klasik kelime sayma yöntemleri yerine, cümlenin **bağlamını (context)** anlayan Transformer tabanlı yapay zeka modelini kullanır.")
+    
+    # Text Input (Tabstruct ile benzer mantık)
+    rob_text_input = ""
+    df_all_rob = utils.fetch_all_data()
+    
+    if not df_all_rob.empty:
+        df_all_rob['period_date'] = pd.to_datetime(df_all_rob['period_date'])
+        df_all_rob['Donem'] = df_all_rob['period_date'].dt.strftime('%Y-%m')
+        rob_opts = df_all_rob['Donem'].tolist()
+        
+        sel_rob_period = st.selectbox("Analiz Edilecek Dönem (AI):", rob_opts, index=0, key="rob_sel")
+        
+        if sel_rob_period:
+            row_rob = df_all_rob[df_all_rob['Donem'] == sel_rob_period].iloc[0]
+            rob_text_input = row_rob['text_content']
+            
+            with st.expander("Metni Gör"): st.write(rob_text_input)
+            
+            if st.button("Yapay Zeka İle Analiz Et", type="primary"):
+                if not utils.HAS_FINBERT: 
+                     st.error("`transformers` ve `torch` kütüphaneleri yüklü değil. Terminalde `pip install transformers torch` çalıştırın.")
+                else:
+                    with st.spinner("Model yükleniyor ve genel analiz yapılıyor..."):
+                        # 1. Genel Analiz
+                        roberta_res = utils.analyze_with_roberta(rob_text_input)
                     
-                    if not df_sent.empty:
-                        def color_coding(val):
-                            color = 'black'
-                            if 'Şahin' in val: color = 'red'
-                            elif 'Güvercin' in val: color = 'green'
-                            return f'color: {color}; font-weight: bold;'
-                        st.dataframe(df_sent.style.map(color_coding, subset=['Etiket']), use_container_width=True)
-                    else: st.info("Cümle bulunamadı.")
-                else: st.error("Hata")
+                    if roberta_res == "MISSING_LIB":
+                        st.error("Kütüphane hatası.")
+                    elif roberta_res == "ERROR":
+                        st.error("Model indirilemedi.")
+                    elif isinstance(roberta_res, dict):
+                        lbl = roberta_res.get('best_label', 'Bilinmiyor')
+                        scr = roberta_res.get('best_score', 0.0)
+                        
+                        # --- GENEL SKOR KARTI ---
+                        c1, c2 = st.columns([1, 2])
+                        with c1:
+                            lbl_color = "gray"
+                            if "Şahin" in lbl: lbl_color = "red"
+                            elif "Güvercin" in lbl: lbl_color = "green"
+                            
+                            st.markdown(f"### Karar: :{lbl_color}[{lbl}]")
+                            st.metric("Model Güveni", f"%{scr*100:.2f}")
+                        
+                        with c2:
+                            scores = roberta_res.get('all_scores', {})
+                            if scores:
+                                chart_data = pd.DataFrame(list(scores.items()), columns=['Etiket', 'Olasılık'])
+                                c = alt.Chart(chart_data).mark_bar().encode(
+                                    x=alt.X('Olasılık', scale=alt.Scale(domain=[0, 1])),
+                                    y=alt.Y('Etiket', sort='-x'),
+                                    color=alt.Color('Etiket', legend=None),
+                                    tooltip=['Etiket', alt.Tooltip('Olasılık', format='.2%')]
+                                ).properties(height=200)
+                                st.altair_chart(c, use_container_width=True)
+                        
+                        st.divider()
+                        
+                        # --- CÜMLE BAZLI TABLO ---
+                        st.subheader("📝 Cümle Bazlı Ayrıştırma")
+                        with st.spinner("Cümleler tek tek inceleniyor..."):
+                            df_sentences = utils.analyze_sentences_with_roberta(rob_text_input)
+                        
+                        if not df_sentences.empty:
+                            # Renklendirme fonksiyonu
+                            def color_coding(val):
+                                color = 'black'
+                                if 'Şahin' in val: color = 'red'
+                                elif 'Güvercin' in val: color = 'green'
+                                return f'color: {color}; font-weight: bold;'
+
+                            st.dataframe(
+                                df_sentences.style.map(color_coding, subset=['Etiket'])
+                                .format({"Güven Skoru": "{:.2%}"}),
+                                use_container_width=True,
+                                hide_index=True
+                            )
+                        else:
+                            st.info("Cümle ayrıştırması yapılamadı.")
+
+                        st.info("Not: Bu analiz **Moritz-Pfeifer/CentralBankRoBERTa** modeli kullanılarak yapılmıştır.")
+                    else:
+                        st.error("Beklenmeyen hata oluştu.")
+    else: st.info("Veri yok.")
 
 with tab_imp:
-    st.header("📅 Haberler")
-    evs = utils.fetch_events()
-    st.dataframe(evs)
-    d = st.date_input("Tarih"); l = st.text_area("Linkler")
-    if st.button("Ekle") and l: utils.add_event(d, l); st.rerun()
+    st.header("📅 Önemli Tarihler ve Haberler")
+    st.info("Buraya girdiğiniz tarihler Dashboard grafiğinde işaretlenecek ve haber linkleri eklenecektir.")
+    
+    with st.container(border=True):
+        st.subheader("Yeni Olay Ekle")
+        c1, c2 = st.columns([1, 2])
+        with c1:
+            new_ev_date = st.date_input("Olay Tarihi", datetime.date.today())
+        with c2:
+            new_ev_links = st.text_area("Haber Linkleri (Her satıra bir link)", height=100)
+            
+        if st.button("Kaydet", type="primary"):
+            if new_ev_links:
+                utils.add_event(new_ev_date, new_ev_links)
+                st.success("Kaydedildi!")
+                st.rerun()
+            else:
+                st.error("Lütfen en az bir link giriniz.")
+    
+    st.divider()
+    st.subheader("Kayıtlı Olaylar")
+    events = utils.fetch_events()
+    
+    if not events.empty:
+        for idx, row in events.iterrows():
+            with st.container(border=True):
+                col1, col2, col3 = st.columns([2, 5, 1])
+                with col1:
+                    st.write(f"**{row['event_date']}**")
+                with col2:
+                    links = row['links'].split('\n') if row['links'] else []
+                    for l in links:
+                        st.markdown(f"- [{l}]({l})")
+                with col3:
+                    if st.button("Sil", key=f"del_ev_{row['id']}"):
+                        utils.delete_event(row['id'])
+                        st.rerun()
+    else:
+        st.info("Henüz kayıtlı bir olay yok.")
+
+with tab_vader:
+    st.header("😊 VADER Duygu Analizi")
+    st.info("VADER, metinlerdeki duygu yoğunluğunu ölçer. (Not: Kütüphane İngilizce odaklıdır, Türkçe metinlerde skorlar düşük kalabilir)")
+    
+    if not utils.HAS_VADER:
+        st.error("vaderSentiment kütüphanesi eksik. Lütfen `pip install vaderSentiment` çalıştırın.")
+    else:
+        df_logs = utils.fetch_all_data()
+        if not df_logs.empty:
+            df_logs['period_date'] = pd.to_datetime(df_logs['period_date'])
+            df_logs['Donem'] = df_logs['period_date'].dt.strftime('%Y-%m')
+            
+            # Analizi çalıştır
+            vader_df = utils.calculate_vader_series(df_logs)
+            
+            # Zaman Serisi Grafiği
+            st.subheader("📈 Duygu Tonu Zaman Serisi (Compound Skor)")
+            fig_v = go.Figure()
+            fig_v.add_trace(go.Scatter(x=vader_df['period_date'], y=vader_df['vader_compound'], mode='lines+markers', name='Compound', line=dict(color='blue')))
+            fig_v.add_hline(y=0, line_dash="dash", line_color="gray")
+            fig_v.update_layout(title="VADER Compound Skoru (-1: Negatif, +1: Pozitif)", hovermode="x unified")
+            st.plotly_chart(fig_v, use_container_width=True)
+            
+            # Bar Grafiği
+            st.subheader("📊 Pozitif ve Negatif Skorlar")
+            fig_pn = go.Figure()
+            fig_pn.add_trace(go.Bar(x=vader_df['period_date'], y=vader_df['vader_pos'], name='Pozitif', marker_color='green'))
+            fig_pn.add_trace(go.Bar(x=vader_df['period_date'], y=vader_df['vader_neg'], name='Negatif', marker_color='red'))
+            fig_pn.update_layout(title="Pozitif ve Negatif Bileşenler", barmode='group', hovermode="x unified")
+            st.plotly_chart(fig_pn, use_container_width=True)
+
+            # Tablo
+            st.dataframe(vader_df, use_container_width=True)
+        else:
+            st.info("Veri yok.")
+
+with tab_finbert:
+    st.header("💰 FinBERT Analizi (ProsusAI)")
+    st.info("FinBERT, finansal metinler için eğitilmiş bir BERT modelidir. (Not: Bu model İngilizce metinlerde en iyi sonucu verir. Türkçe metinlerde sonuçlar nötr çıkabilir.)")
+    
+    if not utils.HAS_FINBERT:
+        st.error("Gerekli kütüphaneler (torch, transformers) eksik.")
+    else:
+        # Analizi Çalıştır Butonu (Çünkü yavaş olabilir)
+        if st.button("FinBERT Analizini Başlat (Yavaş Olabilir)", type="primary"):
+            df_logs = utils.fetch_all_data()
+            if not df_logs.empty:
+                df_logs['period_date'] = pd.to_datetime(df_logs['period_date'])
+                df_logs['Donem'] = df_logs['period_date'].dt.strftime('%Y-%m')
+                
+                with st.spinner("FinBERT modeli yükleniyor ve metinler analiz ediliyor..."):
+                    finbert_df = utils.calculate_finbert_series(df_logs)
+                
+                if not finbert_df.empty:
+                    # Zaman Serisi
+                    st.subheader("📈 FinBERT Duygu Skoru (Ağırlıklı)")
+                    fig_fb = go.Figure()
+                    fig_fb.add_trace(go.Scatter(x=finbert_df['period_date'], y=finbert_df['finbert_score'], mode='lines+markers', name='Net Skor', line=dict(color='darkblue')))
+                    fig_fb.add_hline(y=0, line_dash="dash", line_color="gray")
+                    fig_fb.update_layout(title="Net Skor (Pozitif - Negatif)", hovermode="x unified")
+                    st.plotly_chart(fig_fb, use_container_width=True)
+                    
+                    # Bileşenler
+                    st.subheader("📊 Duygu Bileşenleri")
+                    fig_comp = go.Figure()
+                    fig_comp.add_trace(go.Bar(x=finbert_df['period_date'], y=finbert_df['finbert_pos'], name='Pozitif', marker_color='green'))
+                    fig_comp.add_trace(go.Bar(x=finbert_df['period_date'], y=finbert_df['finbert_neg'], name='Negatif', marker_color='red'))
+                    fig_comp.add_trace(go.Scatter(x=finbert_df['period_date'], y=finbert_df['finbert_neu'], name='Nötr', line=dict(color='gray', dash='dot')))
+                    fig_comp.update_layout(barmode='group', hovermode="x unified")
+                    st.plotly_chart(fig_comp, use_container_width=True)
+                    
+                    st.dataframe(finbert_df, use_container_width=True)
+            else:
+                st.info("Analiz edilecek veri yok.")

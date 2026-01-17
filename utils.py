@@ -1126,3 +1126,71 @@ def analyze_sentences_with_roberta(text: str) -> pd.DataFrame:
         return pd.DataFrame()
 
 
+def create_ai_trend_chart(df_res: pd.DataFrame):
+    """
+    AI trend sonuçlarını (calculate_ai_trend_series çıktısı) Plotly ile çizer.
+    Beklenen kolonlar:
+      - 'Dönem' (string)
+      - 'Net Skor' (float)
+    Opsiyonel:
+      - 'Şahin Olasılık'
+      - 'Güvercin Olasılık'
+    """
+    try:
+        import plotly.graph_objects as go
+    except Exception:
+        return None
+
+    if df_res is None or df_res.empty:
+        return None
+
+    # Kolon kontrolü (bazı durumlarda isimler farklı olabiliyor)
+    if "Dönem" not in df_res.columns or "Net Skor" not in df_res.columns:
+        return None
+
+    df_res = df_res.copy()
+
+    fig_trend = go.Figure()
+
+    # Çizgi
+    fig_trend.add_trace(go.Scatter(
+        x=df_res["Dönem"],
+        y=df_res["Net Skor"],
+        mode="lines",
+        name="Trend",
+        line=dict(width=2, dash="dot")
+    ))
+
+    # Noktalar
+    fig_trend.add_trace(go.Scatter(
+        x=df_res["Dönem"],
+        y=df_res["Net Skor"],
+        mode="markers",
+        name="Aylık Durum",
+        marker=dict(
+            size=12,
+            color=df_res["Net Skor"],
+            colorscale="RdBu_r",
+            cmin=-100,
+            cmax=100,
+            showscale=True,
+            colorbar=dict(title="Duruş")
+        ),
+        hovertemplate="<b>%{x}</b><br>Net Skor: %{y:.1f}<extra></extra>"
+    ))
+
+    # Sıfır çizgisi
+    fig_trend.add_hline(y=0, line_width=2, opacity=0.25)
+
+    fig_trend.update_layout(
+        title="🇹🇷 TCMB Metin Analizi (mrince RoBERTa)",
+        yaxis=dict(title="Net Skor", range=[-110, 110]),
+        height=450,
+        margin=dict(l=20, r=20, t=40, b=20),
+        hovermode="x unified"
+    )
+
+    return fig_trend
+
+
+

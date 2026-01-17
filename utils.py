@@ -1105,7 +1105,7 @@ def calculate_ai_trend_series(df_all):
 
 # =============================================================================
 # 8. CENTRAL BANK ANALİZİ (KARARLI SÜRÜM / STABLE VERSION)
-# Model: mrince/CBRT-RoBERTa-HawkishDovish-Classifier
+# Model: mrince/CBRT-RoBERTa-Large-HawkishDovish-Classifier
 # =============================================================================
 import gc
 import time
@@ -1115,103 +1115,117 @@ import time
 def load_roberta_pipeline():
     try:
         from transformers import pipeline
-        # İSTEDİĞİNİZ MODEL
-        model_name = "mrince/CBRT-RoBERTa-HawkishDovish-Classifier"
-        
-        # Modeli pipeline olarak yüklüyoruz
-        classifier = pipeline("text-classification", model=model_name, top_k=None)
+        # İSTEDİĞİN MODEL (LINKTEKİ)
+        model_name = "mrince/CBRT-RoBERTa-Large-HawkishDovish-Classifier"
+        classifier = pipeline("text-classification", model=model_name, top_k=None, truncation=True)
         return classifier
     except Exception as e:
         print(f"Model Yükleme Hatası: {e}")
         return None
 
 def normalize_label_mrince(raw_label):
+    """
+    DOĞRU LABEL MAP:
+      LABEL_0 = neutral
+      LABEL_1 = hawkish
+      LABEL_2 = dovish
+    """
     lbl = str(raw_label).lower().strip()
-    # Modelin etiketlerini standart hale getiriyoruz
-    if "hawkish" in lbl or "label_2" in lbl: return "HAWK"
-    if "dovish" in lbl or "label_0" in lbl: return "DOVE"
-    if "neutral" in lbl or "label_1" in lbl: return "NEUT"
+
+    if "label_0" in lbl or "neutral" in lbl:
+        return "NEUT"
+    if "label_1" in lbl or "hawkish" in lbl:
+        return "HAWK"
+    if "label_2" in lbl or "dovish" in lbl:
+        return "DOVE"
     return "NEUT"
 
 def analyze_with_roberta(text):
-    if not text: return None
-    
-    # Pipeline'ı çağır
-    classifier = load_roberta_pipeline()
-    if classifier is None: return "ERROR"
+    if not text:
+        return None
 
-    # RAM KORUMASI: Metni 1000 karakterle sınırlıyoruz.
-    # Uzun metinler RAM'i patlatır. Özeti almak yeterli.
-    truncated_text = text[:1000] 
-    
+    classifier = load_roberta_pipeline()
+    if classifier is None:
+        return "ERROR"
+
+    # RAM KORUMASI
+    truncated_text = str(text)[:1500]
+
     try:
         raw_results = classifier(truncated_text)
-        
+
         # Sonuç formatını düzelt
-        if isinstance(raw_results, list) and isinstance(raw_results[0], list):
+        if isinstance(raw_results, list) and raw_results and isinstance(raw_results[0], list):
             results = raw_results[0]
         else:
             results = raw_results
 
         scores_map = {"HAWK": 0.0, "DOVE": 0.0, "NEUT": 0.0}
-        
+
         for r in results:
-            lbl_raw = str(r['label'])
-            score = float(r['score'])
+            lbl_raw = str(r.get('label', ''))
+            score = float(r.get('score', 0.0))
             std_lbl = normalize_label_mrince(lbl_raw)
             scores_map[std_lbl] = score
-        
-        return {"scores_map": scores_map}
+
+        # app.py iki farklı format bekliyor gibi; ikisini de sağlıyoruz:
+        best_std = max(scores_map, key=lambda k: scores_map[k])
+        best_label = "⚖️ Nötr"
+        if best_std == "HAWK":
+            best_label = "🦅 Şahin"
+        elif best_std == "DOVE":
+            best_label = "🕊️ Güvercin"
+
+        return {
+            "best_label": best_label,
+            "best_score": float(scores_map[best_std]),
+            "scores_map": scores_map,
+            # app.py'de bazen all_scores aranıyor, uyumluluk için ekliyoruz:
+            "all_scores": {
+                "🦅 Şahin (Hawkish)": float(scores_map["HAWK"]),
+                "🕊️ Güvercin (Dovish)": float(scores_map["DOVE"]),
+                "⚖️ Nötr (Neutral)": float(scores_map["NEUT"]),
+            }
+        }
+
     except Exception as e:
         return f"Error: {str(e)}"
 
 def calculate_ai_trend_series(df_all):
-    # Veri yoksa boş dön
     if df_all is None or df_all.empty:
         return pd.DataFrame()
 
-    # Tarihe göre sırala
     df_all = df_all.copy()
     df_all['period_date'] = pd.to_datetime(df_all['period_date'])
     df_all = df_all.sort_values('period_date')
-    
+
     results = []
-    
-    # Kullanıcıya bilgi ver
+
     st.toast("Analiz başladı...", icon="⏳")
     progress_bar = st.progress(0)
     total_rows = len(df_all)
-    
-    # DÖNGÜ BAŞLIYOR
-    for i, (idx, row) in enumerate(df_all.iterrows()):
-        text = str(row['text_content'])
-        date_str = row['period_date'].strftime('%Y-%m')
-        
-        # İlerleme çubuğunu güncelle
-        progress_bar.progress((i + 1) / total_rows, text=f"İşleniyor: {date_str}")
-        
-        # Metin boşsa atla
-        if len(text) < 10: continue
 
-        # ANALİZ FONKSİYONUNU ÇAĞIR
+    for i, (idx, row) in enumerate(df_all.iterrows()):
+        text = str(row.get('text_content', ''))
+        date_str = row['period_date'].strftime('%Y-%m')
+
+        progress_bar.progress((i + 1) / total_rows, text=f"İşleniyor: {date_str}")
+
+        if len(text) < 10:
+            continue
+
         ai_res = analyze_with_roberta(text)
-        
-        # BELLEK TEMİZLİĞİ (BEYAZ EKRANI ÖNLEYEN KISIM)
-        gc.collect() 
-        
-        if isinstance(ai_res, str): continue
-            
-        # Skorları hesapla
-        hawk_prob = 0.0
-        dove_prob = 0.0
-        net_score = 0.0
-        
-        if isinstance(ai_res, dict) and 'scores_map' in ai_res:
-            scores = ai_res['scores_map']
-            hawk_prob = scores.get("HAWK", 0.0)
-            dove_prob = scores.get("DOVE", 0.0)
-            net_score = (hawk_prob - dove_prob) * 100
-        
+
+        gc.collect()
+
+        if isinstance(ai_res, str):
+            continue
+
+        scores = ai_res.get('scores_map', {}) if isinstance(ai_res, dict) else {}
+        hawk_prob = float(scores.get("HAWK", 0.0))
+        dove_prob = float(scores.get("DOVE", 0.0))
+        net_score = (hawk_prob - dove_prob) * 100
+
         results.append({
             "Dönem": date_str,
             "period_date": row['period_date'],
@@ -1219,29 +1233,27 @@ def calculate_ai_trend_series(df_all):
             "Şahin Olasılık": hawk_prob,
             "Güvercin Olasılık": dove_prob
         })
-    
+
     progress_bar.empty()
     st.toast("Analiz tamamlandı!", icon="✅")
-    
+
     return pd.DataFrame(results)
 
-# GRAFİK FONKSİYONU
 def create_ai_trend_chart(df_res):
     import plotly.graph_objects as go
-    if df_res is None or df_res.empty: return None
+    if df_res is None or df_res.empty:
+        return None
 
     fig_trend = go.Figure()
-    
-    # Çizgi
+
     fig_trend.add_trace(go.Scatter(
-        x=df_res['Dönem'], 
+        x=df_res['Dönem'],
         y=df_res['Net Skor'],
         mode='lines',
         name='Trend',
         line=dict(color='gray', width=1, dash='dot')
     ))
 
-    # Noktalar (Renkli)
     fig_trend.add_trace(go.Scatter(
         x=df_res['Dönem'],
         y=df_res['Net Skor'],
@@ -1250,7 +1262,7 @@ def create_ai_trend_chart(df_res):
         marker=dict(
             size=14,
             color=df_res['Net Skor'],
-            colorscale='RdBu_r', 
+            colorscale='RdBu_r',
             cmin=-100,
             cmax=100,
             showscale=True,
@@ -1260,7 +1272,7 @@ def create_ai_trend_chart(df_res):
     ))
 
     fig_trend.add_hline(y=0, line_color="black", opacity=0.3)
-    
+
     fig_trend.update_layout(
         title="🇹🇷 TCMB Metin Analizi (mrince Model)",
         yaxis=dict(title="Net Skor", range=[-110, 110]),

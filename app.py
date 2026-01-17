@@ -74,6 +74,10 @@ tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab_roberta, tab_imp = st.tabs([
     "🧠 CB-RoBERTa", "📅 Haberler"
 ])
 
+
+# --- SESSION & STATE --- bloğunun içine ekleyin:
+if 'ai_trend_df' not in st.session_state: st.session_state['ai_trend_df'] = None
+
 # ==============================================================================
 # TAB 1: DASHBOARD
 # ==============================================================================
@@ -165,6 +169,29 @@ with tab1:
             yaxis3=dict(title="Kelime", overlaying="y", side="right", showgrid=False, visible=False, range=[0, merged['word_count'].max() * 2])
         )
         st.plotly_chart(fig, use_container_width=True)
+
+        st.markdown("---")
+    st.subheader("🤖 Yapay Zeka (RoBERTa) Trendi")
+    
+    # Eğer veri session_state'de varsa direkt çiz
+    if st.session_state['ai_trend_df'] is not None:
+        fig_ai = utils.create_ai_trend_chart(st.session_state['ai_trend_df'])
+        st.plotly_chart(fig_ai, use_container_width=True)
+    else:
+        # Veri yoksa hesapla butonu göster (Dashboard'u yavaşlatmamak için)
+        st.info("Yapay zeka analizi hesaplama gücü gerektirir. Görüntülemek için aşağıdaki butonu kullanın.")
+        if st.button("🚀 AI Analizini Başlat (Dashboard)", key="btn_ai_dash"):
+            if not utils.HAS_TRANSFORMERS:
+                st.error("Kütüphaneler eksik.")
+            else:
+                with st.spinner("AI Modeli tüm geçmişi tarıyor... Lütfen bekleyin..."):
+                    df_all_data = utils.fetch_all_data()
+                    # Hesaplamayı yap ve kaydet
+                    res_df = utils.calculate_ai_trend_series(df_all_data)
+                    st.session_state['ai_trend_df'] = res_df
+                    st.rerun()
+
+    # ... (Mevcut event_links_display kodları vb. burada devam edebilir) ...
         
         if event_links_display:
             with st.expander("📅 Grafikteki Önemli Tarihler ve Haber Linkleri", expanded=False):
@@ -543,200 +570,70 @@ with tab7:
     else: st.info("Analiz için veri yok.")
 
 # ==============================================================================
-# TAB ROBERTA: CB-RoBERTa (YAPAY ZEKA - TREND ANALİZİ)
+# TAB ROBERTA: CB-RoBERTa
 # ==============================================================================
 with tab_roberta:
     st.header("🧠 CentralBankRoBERTa (Yapay Zeka Analizi)")
-    st.markdown("Bu modül, cümlelerin bağlamını (context) anlayan Transformer tabanlı yapay zeka modelini kullanır.")
-
+    
     if not utils.HAS_TRANSFORMERS:
-        st.error("`transformers` ve `torch` kütüphaneleri yüklü değil. Terminalde `pip install transformers torch` çalıştırın.")
+        st.error("Kütüphaneler eksik.")
     else:
-        # --- 1. SEÇENEK: TÜM ZAMANLARIN GRAFİĞİ (AĞIRLIKLI SKOR) ---
-        st.subheader("📈 Tarihsel Trend Analizi (Ağırlıklı Net Skor)")
-        st.info("Bu analiz, modelin Şahin ve Güvercin olasılıklarını birbirinden çıkararak (-100 ile +100 arası) hassas bir net skor üretir.")
+        # 1. BÖLÜM: GENEL TREND (State Kullanır)
+        st.subheader("📈 Tarihsel Trend (Ağırlıklı Skor)")
         
-        if st.button("🚀 Tüm Geçmişi Analiz Et ve Grafiği Çiz (Zaman Alabilir)", type="primary"):
-            df_all_rob = utils.fetch_all_data()
-            if not df_all_rob.empty:
-                # Tarih sırasına koy (Eskiden yeniye)
-                df_all_rob['period_date'] = pd.to_datetime(df_all_rob['period_date'])
-                df_all_rob = df_all_rob.sort_values('period_date')
-                
-                results = []
-                progress_bar = st.progress(0)
-                status_text = st.empty()
-                total_rows = len(df_all_rob)
-
-                for i, row in enumerate(df_all_rob.iterrows()):
-                    # row[0] index, row[1] series
-                    data = row[1]
-                    text = data['text_content']
-                    date_str = data['period_date'].strftime('%Y-%m')
-                    
-                    status_text.text(f"Analiz ediliyor: {date_str} ({i+1}/{total_rows})")
-                    
-                    # Modelden sonucu al (utils.py içindeki fonksiyon dict döner)
-                    ai_res = utils.analyze_with_roberta(text)
-                    
-                    net_score = 0.0
-                    hawk_prob = 0.0
-                    dove_prob = 0.0
-                    
-                    if isinstance(ai_res, dict) and 'all_scores' in ai_res:
-                        scores = ai_res['all_scores']
-                        # Utils.py içindeki etiket haritasına göre anahtarları alıyoruz
-                        # Anahtarlar: "🦅 Şahin (Hawkish)", "🕊️ Güvercin (Dovish)", "⚖️ Nötr (Neutral)"
-                        
-                        hawk_prob = scores.get("🦅 Şahin (Hawkish)", 0.0)
-                        # Yedek kontrol (eski utils versiyonları için)
-                        if hawk_prob == 0: hawk_prob = scores.get("Şahin (Pozitif)", 0.0)
-                            
-                        dove_prob = scores.get("🕊️ Güvercin (Dovish)", 0.0)
-                        if dove_prob == 0: dove_prob = scores.get("Güvercin (Negatif)", 0.0)
-                        
-                        # FORMÜL: (Şahin - Güvercin) * 100
-                        net_score = (hawk_prob - dove_prob) * 100
-                    
-                    results.append({
-                        "Dönem": date_str,
-                        "Net Skor": net_score,
-                        "Şahin Olasılık": hawk_prob,
-                        "Güvercin Olasılık": dove_prob
-                    })
-                    
-                    # Progress güncelle
-                    progress_bar.progress((i + 1) / total_rows)
-
-                status_text.success("Analiz Tamamlandı!")
-                df_res = pd.DataFrame(results)
-
-                # --- GRAFİK ÇİZİMİ ---
-                fig_trend = go.Figure()
-                
-                # Çizgi (Gradient renklendirme Plotly line'da zordur, o yüzden gri çizgi + renkli nokta yapıyoruz)
-                fig_trend.add_trace(go.Scatter(
-                    x=df_res['Dönem'], 
-                    y=df_res['Net Skor'],
-                    mode='lines',
-                    name='Trend',
-                    line=dict(color='gray', width=1, dash='dot')
-                ))
-
-                # Renkli Markerlar (Skora göre renk değişir)
-                # Kırmızı (+100) -> Gri (0) -> Mavi (-100)
-                fig_trend.add_trace(go.Scatter(
-                    x=df_res['Dönem'],
-                    y=df_res['Net Skor'],
-                    mode='markers',
-                    name='Net Skor',
-                    marker=dict(
-                        size=14,
-                        color=df_res['Net Skor'],
-                        colorscale='RdBu_r', # Red-Blue Reverse (Red high, Blue low)
-                        cmin=-100,
-                        cmax=100,
-                        showscale=True,
-                        colorbar=dict(title="Şahinlik Gücü")
-                    ),
-                    text=[f"Şahin: %{r['Şahin Olasılık']*100:.1f}<br>Güvercin: %{r['Güvercin Olasılık']*100:.1f}" for r in results],
-                    hovertemplate="<b>%{x}</b><br>Net Skor: %{y:.1f}<br>%{text}<extra></extra>"
-                ))
-
-                # Referans çizgileri
-                fig_trend.add_hline(y=0, line_width=2, line_color="black", opacity=0.3)
-                fig_trend.add_hrect(y0=0, y1=100, fillcolor="red", opacity=0.05, layer="below", line_width=0)
-                fig_trend.add_hrect(y0=-100, y1=0, fillcolor="blue", opacity=0.05, layer="below", line_width=0)
-
-                fig_trend.update_layout(
-                    title="Merkez Bankası Söylem Analizi (Ağırlıklı Net Skor)",
-                    yaxis=dict(
-                        title="Net Skor (Şahin - Güvercin)",
-                        range=[-110, 110],
-                        zeroline=False
-                    ),
-                    hovermode="closest",
-                    height=550
-                )
-                
-                # Açıklamalar
-                fig_trend.add_annotation(x=0.01, y=95, xref="paper", yref="y", text="🦅 ŞAHİN BÖLGESİ", showarrow=False, font=dict(color="darkred"))
-                fig_trend.add_annotation(x=0.01, y=-95, xref="paper", yref="y", text="🕊️ GÜVERCİN BÖLGESİ", showarrow=False, font=dict(color="darkblue"))
-
-                st.plotly_chart(fig_trend, use_container_width=True)
-                
-                with st.expander("📊 Hesaplama Detaylarını Gör"):
-                    st.write("Hesaplama Yöntemi: `(Şahin Olasılığı - Güvercin Olasılığı) * 100`")
-                    st.dataframe(df_res.style.format({
-                        "Net Skor": "{:.2f}",
-                        "Şahin Olasılık": "{:.2%}",
-                        "Güvercin Olasılık": "{:.2%}"
-                    }), use_container_width=True)
-            else:
-                st.warning("Analiz edilecek veri bulunamadı.")
+        # Grafik zaten hesaplanmışsa göster
+        if st.session_state['ai_trend_df'] is not None:
+            fig_trend = utils.create_ai_trend_chart(st.session_state['ai_trend_df'])
+            st.plotly_chart(fig_trend, use_container_width=True)
+            
+            # Yeniden hesaplama opsiyonu
+            if st.button("🔄 Tekrar Hesapla"):
+                st.session_state['ai_trend_df'] = None
+                st.rerun()
+        else:
+            # Hesaplanmamışsa buton göster
+            if st.button("🚀 Tüm Geçmişi Analiz Et", type="primary"):
+                with st.spinner("Model çalışıyor..."):
+                    df_all_rob = utils.fetch_all_data()
+                    res_df = utils.calculate_ai_trend_series(df_all_rob)
+                    st.session_state['ai_trend_df'] = res_df
+                    st.rerun()
 
         st.divider()
 
-        # --- 2. SEÇENEK: TEKİL ANALİZ (ESKİ MODÜL) ---
+        # 2. BÖLÜM: TEKİL ANALİZ (Sayfa yenilense de üstteki grafik kalır)
         st.subheader("🔍 Tekil Dönem Detay Analizi")
-        rob_text_input = ""
         df_all_rob = utils.fetch_all_data()
-        
         if not df_all_rob.empty:
             df_all_rob['period_date'] = pd.to_datetime(df_all_rob['period_date'])
             df_all_rob['Donem'] = df_all_rob['period_date'].dt.strftime('%Y-%m')
-            rob_opts = df_all_rob['Donem'].tolist()
             
-            sel_rob_period = st.selectbox("İncelenecek Dönemi Seçin:", rob_opts, index=0, key="rob_sel_single")
+            sel_rob_period = st.selectbox("İncelenecek Dönem:", df_all_rob['Donem'].tolist(), index=0, key="rob_single_sel")
             
             if sel_rob_period:
                 row_rob = df_all_rob[df_all_rob['Donem'] == sel_rob_period].iloc[0]
-                rob_text_input = row_rob['text_content']
+                txt_input = row_rob['text_content']
                 
-                with st.expander("Seçilen Metni Gör"): st.write(rob_text_input)
+                with st.expander("Metni Gör"): st.write(txt_input)
                 
-                if st.button("Bu Metni Detaylı Analiz Et", type="secondary"):
-                    with st.spinner("Model çalışıyor..."):
-                        roberta_res = utils.analyze_with_roberta(rob_text_input)
-                    
-                    if isinstance(roberta_res, dict):
-                        lbl = roberta_res.get('best_label', 'Bilinmiyor')
-                        scr = roberta_res.get('best_score', 0.0)
+                if st.button("Bu Metni Detaylandır", type="secondary"):
+                    with st.spinner("Analiz ediliyor..."):
+                        # Tekil analiz (Bu state'e kaydedilmez, anlık gösterilir)
+                        roberta_res = utils.analyze_with_roberta(txt_input)
                         
-                        # Skorları al
-                        scores = roberta_res.get('all_scores', {})
-                        h_p = scores.get("🦅 Şahin (Hawkish)", 0.0)
-                        d_p = scores.get("🕊️ Güvercin (Dovish)", 0.0)
-                        net_s = (h_p - d_p) * 100
-                        
-                        c1, c2, c3 = st.columns(3)
-                        c1.metric("Karar", lbl)
-                        c2.metric("Model Güveni", f"%{scr*100:.2f}")
-                        c3.metric("Net Skor", f"{net_s:.2f}")
-                        
-                        st.divider()
-                        
-                        if scores:
-                            chart_data = pd.DataFrame(list(scores.items()), columns=['Etiket', 'Olasılık'])
-                            c = alt.Chart(chart_data).mark_bar().encode(
-                                x=alt.X('Olasılık', scale=alt.Scale(domain=[0, 1])),
-                                y=alt.Y('Etiket', sort='-x'),
-                                color=alt.Color('Etiket', legend=None)
-                            ).properties(height=150)
-                            st.altair_chart(c, use_container_width=True)
-                        
-                        st.subheader("Cümle Bazlı Ayrıştırma")
-                        df_sentences = utils.analyze_sentences_with_roberta(rob_text_input)
-                        if not df_sentences.empty:
-                            def color_coding(val):
-                                color = 'black'
-                                if 'Şahin' in val: color = 'red'
-                                elif 'Güvercin' in val: color = 'blue'
-                                return f'color: {color}; font-weight: bold;'
-
-                            st.dataframe(
-                                df_sentences.style.map(color_coding, subset=['Etiket'])
-                                .format({"Güven Skoru": "{:.2%}"}),
-                                use_container_width=True, hide_index=True
-                            )
-        else: st.info("Veri yok.")
+                        if isinstance(roberta_res, dict):
+                            scores = roberta_res.get('all_scores', {})
+                            h = scores.get("🦅 Şahin (Hawkish)", 0)
+                            d = scores.get("🕊️ Güvercin (Dovish)", 0)
+                            net = (h - d) * 100
+                            
+                            c1, c2, c3 = st.columns(3)
+                            c1.metric("Karar", roberta_res.get('best_label'))
+                            c2.metric("Güven", f"%{roberta_res.get('best_score',0)*100:.1f}")
+                            c3.metric("Net Skor", f"{net:.2f}")
+                            
+                            # Cümle bazlı tablo
+                            st.write("Cümle Bazlı Ayrıştırma:")
+                            df_sent = utils.analyze_sentences_with_roberta(txt_input)
+                            if not df_sent.empty:
+                                st.dataframe(df_sent, use_container_width=True)

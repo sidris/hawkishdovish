@@ -1160,5 +1160,77 @@ def create_ai_trend_chart(df_res: pd.DataFrame):
     )
     return fig
 
+def analyze_sentences_with_roberta(text: str, max_sentences: int = 30) -> pd.DataFrame:
+    """
+    Metni cümlelere bölüp her cümleyi mrince modeliyle sınıflandırır.
+    max_sentences: RAM/CPU koruması için üst limit.
+    """
+    if not text:
+        return pd.DataFrame()
+
+    clf = load_roberta_pipeline()
+    if clf is None:
+        return pd.DataFrame()
+
+    # split_sentences_nlp zaten utils'te var (sende mevcut)
+    sentences = split_sentences_nlp(str(text))
+    sentences = [s.strip() for s in sentences if s.strip() and len(s.split()) > 3]
+    if not sentences:
+        return pd.DataFrame()
+
+    # Koruma: çok uzunsa kırp
+    sentences = sentences[:max_sentences]
+
+    try:
+        # pipeline liste alır -> her cümle için skor döndürür
+        preds = clf(sentences)
+
+        rows = []
+        for sent, pred in zip(sentences, preds):
+            # bazen [[...]] döner
+            if isinstance(pred, list) and pred and isinstance(pred[0], list):
+                pred = pred[0]
+
+            scores_map = {"HAWK": 0.0, "DOVE": 0.0, "NEUT": 0.0}
+
+            if isinstance(pred, list):
+                for r in pred:
+                    lbl = _normalize_label_mrince(r.get("label", ""))
+                    sc = float(r.get("score", 0.0))
+                    scores_map[lbl] = sc
+            else:
+                lbl = _normalize_label_mrince(pred.get("label", ""))
+                sc = float(pred.get("score", 0.0))
+                scores_map[lbl] = sc
+
+            h = float(scores_map["HAWK"])
+            d = float(scores_map["DOVE"])
+            n = float(scores_map["NEUT"])
+            diff = h - d
+
+            stance = _stance_from_diff(diff)
+            net_raw = diff * 100.0
+            net_smooth = _smooth_net_score(diff, scale=0.35)
+
+            rows.append({
+                "Cümle": sent,
+                "Duruş": stance,
+                "Net (Yumuşatılmış)": net_smooth,
+                "Net (Ham)": net_raw,
+                "HAWK": h,
+                "DOVE": d,
+                "NEUT": n
+            })
+
+        df = pd.DataFrame(rows)
+        if not df.empty:
+            df = df.sort_values(["Net (Yumuşatılmış)"], ascending=False).reset_index(drop=True)
+        return df
+
+    except Exception as e:
+        print(f"[RoBERTa] Cümle analizi hatası: {repr(e)}")
+        return pd.DataFrame()
+    finally:
+        gc.collect()
 
 

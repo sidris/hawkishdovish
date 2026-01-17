@@ -658,7 +658,8 @@ if st.button("Bu Metni Detaylandır", type="secondary"):
 
         if isinstance(roberta_res, dict):
             scores = roberta_res.get("scores_map", {})
-            def _safe_float(x, default=0.0):
+
+        def _safe_float(x, default=0.0):
     try:
         if x is None:
             return float(default)
@@ -675,6 +676,7 @@ c1.metric("Karar", roberta_res.get("best_label", "—"))
 c2.metric("Güven", f"%{_safe_float(roberta_res.get('best_score',0))*100:.1f}")
 c3.metric("Net Skor", f"{net:.2f}")
 
+            
 
 
             st.write("Sınıf Skorları:")

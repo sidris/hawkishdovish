@@ -1115,7 +1115,7 @@ def load_roberta_pipeline():
         from huggingface_hub import login # Giriş fonksiyonunu çağırıyoruz
         
         # --- TOKEN'I BURAYA YAPIŞTIRIN ---
-        hf_token = "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" 
+        hf_token = "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" 
         # (Yukarıya kendi token'ınızı tırnaklar içinde yapıştırın)
         
         # 1. ÖNCE SİSTEME GİRİŞ YAPIYORUZ (En garanti yöntem)

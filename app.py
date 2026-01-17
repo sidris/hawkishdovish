@@ -648,21 +648,30 @@ with tab_roberta:
                 
 if st.button("Bu Metni Detaylandır", type="secondary"):
     with st.spinner("Analiz ediliyor..."):
-        roberta_res = utils.analyze_with_roberta(txt_input)
+       roberta_res = utils.analyze_with_roberta(txt_input)
 
-        if isinstance(roberta_res, dict):
-            scores = roberta_res.get('all_scores', {})
-            h = scores.get("🦅 Şahin (Hawkish)", 0)
-            d = scores.get("🕊️ Güvercin (Dovish)", 0)
-            net = (h - d) * 100
+if isinstance(roberta_res, dict):
+    scores = roberta_res.get("scores_map", {})
+    h = float(scores.get("HAWK", 0.0))
+    d = float(scores.get("DOVE", 0.0))
+    n = float(scores.get("NEUT", 0.0))
+    net = (h - d) * 100
 
-            c1, c2, c3 = st.columns(3)
-            c1.metric("Karar", roberta_res.get('best_label'))
-            c2.metric("Güven", f"%{roberta_res.get('best_score',0)*100:.1f}")
-            c3.metric("Net Skor", f"{net:.2f}")
+    # en yüksek etiketi bul
+    best_key = max(scores, key=scores.get) if scores else "NEUT"
+    best_label = "⚖️ Nötr"
+    if best_key == "HAWK": best_label = "🦅 Şahin"
+    elif best_key == "DOVE": best_label = "🕊️ Güvercin"
+    best_score = scores.get(best_key, 0.0)
 
-            st.write("Cümle Bazlı Ayrıştırma:")
-            df_sent = utils.analyze_sentences_with_roberta(txt_input)
-            if not df_sent.empty:
-                st.dataframe(df_sent, use_container_width=True)
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Karar", best_label)
+    c2.metric("Güven", f"%{best_score*100:.1f}")
+    c3.metric("Net Skor", f"{net:.2f}")
 
+    st.write("Cümle Bazlı Ayrıştırma:")
+    df_sent = utils.analyze_sentences_with_roberta(txt_input)
+    if not df_sent.empty:
+        st.dataframe(df_sent, use_container_width=True)
+else:
+    st.error(f"AI analiz hatası: {roberta_res}")

@@ -1046,4 +1046,83 @@ def calculate_ai_trend_series(df_all):
     st.toast("Analiz tamamlandı!", icon="✅")
     return pd.DataFrame(results)
 
+def analyze_sentences_with_roberta(text: str) -> pd.DataFrame:
+    """
+    Metni cümlelere bölüp her cümleyi mrince modeliyle sınıflandırır.
+    Çıktı: Cümle, Etiket, Güven, HAWK/DOVE/NEUT skorları, Net Skor
+    """
+    if not text:
+        return pd.DataFrame()
+
+    clf = load_roberta_pipeline()
+    if clf is None:
+        return pd.DataFrame()
+
+    # Cümlelere böl
+    sents = split_sentences_nlp(str(text))
+    sents = [s.strip() for s in sents if s.strip() and len(s.split()) > 3]
+    if not sents:
+        return pd.DataFrame()
+
+    try:
+        out_rows = []
+
+        # Streamlit Cloud RAM koruması: çok fazla cümle olursa kes
+        sents = sents[:40]
+
+        preds = clf(sents)
+
+        for sent, pred in zip(sents, preds):
+            # pred bazen [[...]] gibi olabilir
+            if isinstance(pred, list) and pred and isinstance(pred[0], list):
+                pred = pred[0]
+
+            scores_map = {"HAWK": 0.0, "DOVE": 0.0, "NEUT": 0.0}
+
+            if isinstance(pred, list):
+                for r in pred:
+                    raw = r.get("label")
+                    sc = float(r.get("score", 0.0))
+                    mapped = _map_mrince_label(raw)  # LABEL_1->HAWK, LABEL_2->DOVE, LABEL_0->NEUT
+                    scores_map[mapped] = sc
+            else:
+                raw = pred.get("label")
+                sc = float(pred.get("score", 0.0))
+                mapped = _map_mrince_label(raw)
+                scores_map[mapped] = sc
+
+            h = float(scores_map["HAWK"])
+            d = float(scores_map["DOVE"])
+            n = float(scores_map["NEUT"])
+
+            # en iyi sınıf
+            best_class = max(scores_map, key=lambda k: scores_map[k])
+            best_score = float(scores_map[best_class])
+
+            label_tr = "⚖️ Nötr"
+            if best_class == "HAWK":
+                label_tr = "🦅 Şahin"
+            elif best_class == "DOVE":
+                label_tr = "🕊️ Güvercin"
+
+            out_rows.append({
+                "Cümle": sent,
+                "Etiket": label_tr,
+                "Güven": best_score,
+                "HAWK": h,
+                "DOVE": d,
+                "NEUT": n,
+                "Net Skor": (h - d) * 100.0
+            })
+
+        df = pd.DataFrame(out_rows)
+        if not df.empty:
+            # en şahin -> en güvercin sıralama
+            df = df.sort_values(["Net Skor", "Güven"], ascending=[False, False]).reset_index(drop=True)
+        return df
+
+    except Exception as e:
+        print(f"[RoBERTa] Cümle analizi hatası: {repr(e)}")
+        return pd.DataFrame()
+
 

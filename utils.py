@@ -1047,3 +1047,103 @@ def analyze_sentences_with_roberta(text):
     except Exception as e:
         print(f"Cümle analizi hatası (Log): {e}") # Hata detayını terminalde görebilirsiniz
         return pd.DataFrame()
+
+
+# utils.py EN ALTINA EKLENECEK YENİ FONKSİYONLAR
+
+def calculate_ai_trend_series(df_all):
+    """
+    Tüm veri setini tarayıp AI skorlarını hesaplar ve DataFrame döner.
+    """
+    if not HAS_TRANSFORMERS or df_all.empty:
+        return pd.DataFrame()
+
+    df_all = df_all.copy()
+    df_all['period_date'] = pd.to_datetime(df_all['period_date'])
+    df_all = df_all.sort_values('period_date')
+    
+    results = []
+    # Not: Streamlit progress bar'ı burada kullanamayız, dışarıdan yönetilmeli.
+    
+    for i, row in df_all.iterrows():
+        text = row['text_content']
+        date_str = row['period_date'].strftime('%Y-%m')
+        
+        ai_res = analyze_with_roberta(text)
+        
+        net_score = 0.0
+        hawk_prob = 0.0
+        dove_prob = 0.0
+        
+        if isinstance(ai_res, dict) and 'all_scores' in ai_res:
+            scores = ai_res['all_scores']
+            hawk_prob = scores.get("🦅 Şahin (Hawkish)", 0.0)
+            if hawk_prob == 0: hawk_prob = scores.get("Şahin (Pozitif)", 0.0)
+                
+            dove_prob = scores.get("🕊️ Güvercin (Dovish)", 0.0)
+            if dove_prob == 0: dove_prob = scores.get("Güvercin (Negatif)", 0.0)
+            
+            # Weighted Net Score
+            net_score = (hawk_prob - dove_prob) * 100
+        
+        results.append({
+            "Dönem": date_str,
+            "period_date": row['period_date'], # Sıralama için
+            "Net Skor": net_score,
+            "Şahin Olasılık": hawk_prob,
+            "Güvercin Olasılık": dove_prob
+        })
+        
+    return pd.DataFrame(results)
+
+def create_ai_trend_chart(df_res):
+    """
+    AI Trend DataFrame'ini alır ve Plotly Figure döner.
+    """
+    import plotly.graph_objects as go
+    
+    if df_res.empty: return None
+
+    fig_trend = go.Figure()
+    
+    # Çizgi
+    fig_trend.add_trace(go.Scatter(
+        x=df_res['Dönem'], 
+        y=df_res['Net Skor'],
+        mode='lines',
+        name='Trend',
+        line=dict(color='gray', width=1, dash='dot')
+    ))
+
+    # Renkli Markerlar
+    fig_trend.add_trace(go.Scatter(
+        x=df_res['Dönem'],
+        y=df_res['Net Skor'],
+        mode='markers',
+        name='Net Skor',
+        marker=dict(
+            size=14,
+            color=df_res['Net Skor'],
+            colorscale='RdBu_r', 
+            cmin=-100,
+            cmax=100,
+            showscale=True,
+            colorbar=dict(title="Şahinlik", thickness=10)
+        ),
+        text=[f"Şahin: %{r['Şahin Olasılık']*100:.1f}<br>Güvercin: %{r['Güvercin Olasılık']*100:.1f}" for _, r in df_res.iterrows()],
+        hovertemplate="<b>%{x}</b><br>Net Skor: %{y:.1f}<br>%{text}<extra></extra>"
+    ))
+
+    # Referanslar
+    fig_trend.add_hline(y=0, line_width=2, line_color="black", opacity=0.3)
+    fig_trend.add_hrect(y0=0, y1=100, fillcolor="red", opacity=0.05, layer="below", line_width=0)
+    fig_trend.add_hrect(y0=-100, y1=0, fillcolor="blue", opacity=0.05, layer="below", line_width=0)
+
+    fig_trend.update_layout(
+        title="🤖 AI Söylem Analizi (Ağırlıklı Net Skor)",
+        yaxis=dict(title="Net Skor", range=[-110, 110], zeroline=False),
+        hovermode="closest",
+        height=450,
+        margin=dict(l=20, r=20, t=40, b=20)
+    )
+    return fig_trend

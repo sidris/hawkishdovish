@@ -658,19 +658,19 @@ if st.button("Bu Metni Detaylandır", type="secondary"):
 
         if isinstance(roberta_res, dict):
            # utils.py stable sürüm: roberta_res = {"scores_map": {"HAWK":..,"DOVE":..,"NEUT":..}}
-scores = roberta_res.get("scores_map", {}) if isinstance(roberta_res, dict) else {}
+            scores = roberta_res.get("scores_map", {}) if isinstance(roberta_res, dict) else {}
 
-h = float(scores.get("HAWK") or 0.0)
-d = float(scores.get("DOVE") or 0.0)
+            h = float(scores.get("HAWK") or 0.0)
+            d = float(scores.get("DOVE") or 0.0)
 
-n = float(scores.get("NEUT") or 0.0)
+            n = float(scores.get("NEUT") or 0.0)
 
-net = float(((h or 0.0) - (d or 0.0)) * 100.0)
+            net = float(((h or 0.0) - (d or 0.0)) * 100.0)
 
 
-c1.metric("Karar", f"🦅 Şahin" if h >= max(d, n) else ("🕊️ Güvercin" if d >= max(h, n) else "⚖️ Nötr"))
-c2.metric("Güven", f"%{max(h, d, n) * 100.0:.1f}")
-c3.metric("Net Skor", f"{float(net) if net == net else 0.0:.2f}")
+            c1.metric("Karar", f"🦅 Şahin" if h >= max(d, n) else ("🕊️ Güvercin" if d >= max(h, n) else "⚖️ Nötr"))
+            c2.metric("Güven", f"%{max(h, d, n) * 100.0:.1f}")
+            c3.metric("Net Skor", f"{float(net) if net == net else 0.0:.2f}")
 
 
 

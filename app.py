@@ -587,24 +587,26 @@ with tab7:
 # ==============================================================================
 # TAB ROBERTA: CB-RoBERTa
 # ==============================================================================
+
 with tab_roberta:
     st.header("🧠 CentralBankRoBERTa (Yapay Zeka Analizi)")
     
     if not utils.HAS_TRANSFORMERS:
         st.error("Kütüphaneler eksik.")
     else:
-        # 1. BÖLÜM: GENEL TREND (State Kullanır)
+        # 1. BÖLÜM: GENEL TREND
         st.subheader("📈 Tarihsel Trend (Ağırlıklı Skor)")
         
-        # Grafik zaten hesaplanmışsa göster
-        if st.session_state['ai_trend_df'] is not None:
+        if st.session_state.get('ai_trend_df') is not None:
             fig_trend = utils.create_ai_trend_chart(st.session_state['ai_trend_df'])
-            st.plotly_chart(fig_trend, use_container_width=True)
             
-            # Yeniden hesaplama opsiyonu
+            # DÜZELTME BURADA: key="ai_chart_roberta" EKLENDİ
+            st.plotly_chart(fig_trend, use_container_width=True, key="ai_chart_roberta")
+            
             if st.button("🔄 Tekrar Hesapla"):
                 st.session_state['ai_trend_df'] = None
                 st.rerun()
+
         else:
             # Hesaplanmamışsa buton göster
             if st.button("🚀 Tüm Geçmişi Analiz Et", type="primary"):

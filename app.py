@@ -636,7 +636,6 @@ with tab_roberta:
 
         st.divider()
         # ... (Geri kalan kodlar aynı) ...
-
         # 2. BÖLÜM: TEKİL ANALİZ (Sayfa yenilense de üstteki grafik kalır)
         st.subheader("🔍 Tekil Dönem Detay Analizi")
         df_all_rob = utils.fetch_all_data()
@@ -655,6 +654,10 @@ with tab_roberta:
 if st.button("Bu Metni Detaylandır", type="secondary"):
     with st.spinner("Analiz ediliyor..."):
         roberta_res = utils.analyze_with_roberta(txt_input)
+        st.write("DEBUG: roberta_res =", roberta_res)
+        clf = utils.load_roberta_pipeline()
+        st.write("Model id2label:", clf.model.config.id2label)
+
 
         if isinstance(roberta_res, dict):
            # utils.py stable sürüm: roberta_res = {"scores_map": {"HAWK":..,"DOVE":..,"NEUT":..}}

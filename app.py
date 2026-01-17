@@ -86,6 +86,7 @@ with tab1:
         df_logs = utils.fetch_all_data()
         df_events = utils.fetch_events() 
     
+    # 1. Ana Veri Kontrolü
     if not df_logs.empty:
         df_logs['period_date'] = pd.to_datetime(df_logs['period_date'])
         df_logs['Donem'] = df_logs['period_date'].dt.strftime('%Y-%m')
@@ -139,14 +140,13 @@ with tab1:
             for _, ev in df_events.iterrows():
                 ev_date = pd.to_datetime(ev['event_date']).strftime('%Y-%m-%d')
                 
-                # --- GÜNCELLENEN KISIM BAŞLANGIÇ ---
+                # Olay çizgisi (%20 kısa versiyon)
                 layout_shapes.append(dict(
                     type="line", xref="x", yref="paper",
                     x0=ev_date, x1=ev_date, 
-                    y0=0, y1=0.2,  # BURASI DEĞİŞTİ: y1=1 yerine y1=0.2 (%20 yükseklik)
+                    y0=0, y1=0.2, 
                     line=dict(color="purple", width=2, dash="dot")
                 ))
-                # --- GÜNCELLENEN KISIM BİTİŞ ---
 
                 first_link = ev['links'].split('\n')[0] if ev['links'] else ""
                 layout_annotations.append(dict(
@@ -169,30 +169,27 @@ with tab1:
             yaxis3=dict(title="Kelime", overlaying="y", side="right", showgrid=False, visible=False, range=[0, merged['word_count'].max() * 2])
         )
         st.plotly_chart(fig, use_container_width=True)
-
-        st.markdown("---")
-    st.subheader("🤖 Yapay Zeka (RoBERTa) Trendi")
-    
-    # Eğer veri session_state'de varsa direkt çiz
-    if st.session_state['ai_trend_df'] is not None:
-        fig_ai = utils.create_ai_trend_chart(st.session_state['ai_trend_df'])
-        st.plotly_chart(fig_ai, use_container_width=True)
-    else:
-        # Veri yoksa hesapla butonu göster (Dashboard'u yavaşlatmamak için)
-        st.info("Yapay zeka analizi hesaplama gücü gerektirir. Görüntülemek için aşağıdaki butonu kullanın.")
-        if st.button("🚀 AI Analizini Başlat (Dashboard)", key="btn_ai_dash"):
-            if not utils.HAS_TRANSFORMERS:
-                st.error("Kütüphaneler eksik.")
-            else:
-                with st.spinner("AI Modeli tüm geçmişi tarıyor... Lütfen bekleyin..."):
-                    df_all_data = utils.fetch_all_data()
-                    # Hesaplamayı yap ve kaydet
-                    res_df = utils.calculate_ai_trend_series(df_all_data)
-                    st.session_state['ai_trend_df'] = res_df
-                    st.rerun()
-
-    # ... (Mevcut event_links_display kodları vb. burada devam edebilir) ...
         
+        # --- YENİ EKLENEN AI TREND GRAFİĞİ (BURASI IF BLOĞUNUN İÇİNDE OLMALI) ---
+        st.markdown("---")
+        st.subheader("🤖 Yapay Zeka (RoBERTa) Trendi")
+        
+        if st.session_state.get('ai_trend_df') is not None:
+            fig_ai = utils.create_ai_trend_chart(st.session_state['ai_trend_df'])
+            st.plotly_chart(fig_ai, use_container_width=True)
+        else:
+            st.info("Yapay zeka analizi hesaplama gücü gerektirir. Görüntülemek için aşağıdaki butonu kullanın.")
+            if st.button("🚀 AI Analizini Başlat (Dashboard)", key="btn_ai_dash"):
+                if not utils.HAS_TRANSFORMERS:
+                    st.error("Kütüphaneler eksik.")
+                else:
+                    with st.spinner("AI Modeli tüm geçmişi tarıyor... Lütfen bekleyin..."):
+                        df_all_data = utils.fetch_all_data()
+                        res_df = utils.calculate_ai_trend_series(df_all_data)
+                        st.session_state['ai_trend_df'] = res_df
+                        st.rerun()
+        # -----------------------------------------------------------------------
+
         if event_links_display:
             with st.expander("📅 Grafikteki Önemli Tarihler ve Haber Linkleri", expanded=False):
                 for item in event_links_display:
@@ -201,7 +198,10 @@ with tab1:
                         st.markdown(f"- [Haber Linki]({link})")
                         
         if st.button("🔄 Yenile"): st.cache_data.clear(); st.rerun()
-    else: st.info("Kayıt yok.")
+
+    # 2. Veri Yoksa Çalışacak ELSE Bloğu (IF ile aynı hizada)
+    else: 
+        st.info("Kayıt yok.")
 # ==============================================================================
 # TAB 2: VERİ GİRİŞİ
 # ==============================================================================

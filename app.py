@@ -671,19 +671,10 @@ d = _safe_float(scores.get("DOVE", 0.0))
 n = _safe_float(scores.get("NEUT", 0.0))
 net = _safe_float((h - d) * 100)
 
+c1.metric("Karar", roberta_res.get("best_label", "—"))
+c2.metric("Güven", f"%{_safe_float(roberta_res.get('best_score',0))*100:.1f}")
+c3.metric("Net Skor", f"{net:.2f}")
 
-            best_key = max(scores, key=scores.get) if scores else "NEUT"
-            best_label = "⚖️ Nötr"
-            if best_key == "HAWK":
-                best_label = "🦅 Şahin"
-            elif best_key == "DOVE":
-                best_label = "🕊️ Güvercin"
-            best_score = float(scores.get(best_key, 0.0))
-
-            c1, c2, c3 = st.columns(3)
-            c1.metric("Karar", best_label)
-            c2.metric("Güven", f"%{best_score*100:.1f}")
-            c3.metric("Net Skor", f"{float(net):.2f}")
 
 
             st.write("Sınıf Skorları:")

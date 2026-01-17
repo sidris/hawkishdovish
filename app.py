@@ -668,25 +668,25 @@ with tab_roberta:
                 
                 with st.expander("Metni Gör"): st.write(txt_input)
                 
-if st.button("Bu Metni Detaylandır", type="secondary"):
-    with st.spinner("Analiz ediliyor..."):
-        roberta_res = utils.analyze_with_roberta(txt_input)
-
-if isinstance(roberta_res, dict):
-    scores = roberta_res.get("scores_map", {})
-    h = scores.get("HAWK", 0.0)
-    d = scores.get("DOVE", 0.0)
-    net = roberta_res.get("net_score", (h - d) * 100)
-
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Karar", roberta_res.get("best_label", ""))
-    c2.metric("Güven", f"%{roberta_res.get('best_score',0)*100:.1f}")
-    c3.metric("Net Skor", f"{net:.2f}")
-
-    with st.expander("DEBUG"):
-        st.json(roberta_res)
-else:
-    st.error(f"Model hata döndürdü: {roberta_res}")
+            if st.button("Bu Metni Detaylandır", type="secondary"):
+                with st.spinner("Analiz ediliyor..."):
+                    roberta_res = utils.analyze_with_roberta(txt_input)
+            
+            if isinstance(roberta_res, dict):
+                scores = roberta_res.get("scores_map", {})
+                h = scores.get("HAWK", 0.0)
+                d = scores.get("DOVE", 0.0)
+                net = roberta_res.get("net_score", (h - d) * 100)
+            
+                c1, c2, c3 = st.columns(3)
+                c1.metric("Karar", roberta_res.get("best_label", ""))
+                c2.metric("Güven", f"%{roberta_res.get('best_score',0)*100:.1f}")
+                c3.metric("Net Skor", f"{net:.2f}")
+            
+                with st.expander("DEBUG"):
+                    st.json(roberta_res)
+            else:
+                st.error(f"Model hata döndürdü: {roberta_res}")
 
 
 
@@ -709,5 +709,5 @@ else:
             if df_sent is not None and not df_sent.empty:
                 st.write("Cümle Bazlı Ayrıştırma:")
                 st.dataframe(df_sent, use_container_width=True)
-        else:
-            st.error(f"AI analiz hatası: {roberta_res}")
+            else:
+                st.error(f"AI analiz hatası: {roberta_res}")

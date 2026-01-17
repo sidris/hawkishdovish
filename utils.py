@@ -1104,20 +1104,21 @@ def calculate_ai_trend_series(df_all):
     return pd.DataFrame(results)
 
 # =============================================================================
-# 8. CENTRAL BANK ANALİZİ (VERİTABANI TARAMA / TREND MODU)
-# Model: mrince/CBRT-RoBERTa-HawkishDovish-Classifier (Base - Hafif)
+# 8. CENTRAL BANK ANALİZİ (KARARLI SÜRÜM / STABLE VERSION)
+# Model: mrince/CBRT-RoBERTa-HawkishDovish-Classifier
 # =============================================================================
 import gc
 import time
 
+# Modeli önbelleğe alıyoruz ki her defasında RAM şişirmesin
 @st.cache_resource(show_spinner=False)
 def load_roberta_pipeline():
     try:
         from transformers import pipeline
-        # Hafif ve Hızlı Model (Token istemez)
+        # İSTEDİĞİNİZ MODEL
         model_name = "mrince/CBRT-RoBERTa-HawkishDovish-Classifier"
         
-        # Modeli yükle
+        # Modeli pipeline olarak yüklüyoruz
         classifier = pipeline("text-classification", model=model_name, top_k=None)
         return classifier
     except Exception as e:
@@ -1126,6 +1127,7 @@ def load_roberta_pipeline():
 
 def normalize_label_mrince(raw_label):
     lbl = str(raw_label).lower().strip()
+    # Modelin etiketlerini standart hale getiriyoruz
     if "hawkish" in lbl or "label_2" in lbl: return "HAWK"
     if "dovish" in lbl or "label_0" in lbl: return "DOVE"
     if "neutral" in lbl or "label_1" in lbl: return "NEUT"
@@ -1133,94 +1135,81 @@ def normalize_label_mrince(raw_label):
 
 def analyze_with_roberta(text):
     if not text: return None
+    
+    # Pipeline'ı çağır
     classifier = load_roberta_pipeline()
     if classifier is None: return "ERROR"
 
-    # RAM KORUMASI: Metin çok uzunsa kırpıyoruz (1200 karakter güvenlidir)
-    truncated_text = text[:1200] 
+    # RAM KORUMASI: Metni 1000 karakterle sınırlıyoruz.
+    # Uzun metinler RAM'i patlatır. Özeti almak yeterli.
+    truncated_text = text[:1000] 
     
     try:
         raw_results = classifier(truncated_text)
         
+        # Sonuç formatını düzelt
         if isinstance(raw_results, list) and isinstance(raw_results[0], list):
             results = raw_results[0]
         else:
             results = raw_results
 
         scores_map = {"HAWK": 0.0, "DOVE": 0.0, "NEUT": 0.0}
-        best_score = -1
         
         for r in results:
             lbl_raw = str(r['label'])
             score = float(r['score'])
             std_lbl = normalize_label_mrince(lbl_raw)
             scores_map[std_lbl] = score
-            if score > best_score: best_score = score
         
-        # İşlem bitince RAM'i temizle
-        gc.collect()
         return {"scores_map": scores_map}
     except Exception as e:
         return f"Error: {str(e)}"
 
-# --- BU FONKSİYON TÜM VERİTABANINI TEK TEK TARAR ---
 def calculate_ai_trend_series(df_all):
-    if not HAS_TRANSFORMERS:
-        st.error("Transformers kütüphanesi yok!")
-        return pd.DataFrame()
-    
-    # 1. VERİ KONTROLÜ
+    # Veri yoksa boş dön
     if df_all is None or df_all.empty:
-        st.warning("⚠️ Veri tablosu boş. Lütfen önce veri ekleyin.")
         return pd.DataFrame()
-    
-    # 2. SIRALAMA VE HAZIRLIK
-    # Tarihe göre eskiden yeniye sıralayalım ki grafik düzgün çıksın
+
+    # Tarihe göre sırala
     df_all = df_all.copy()
     df_all['period_date'] = pd.to_datetime(df_all['period_date'])
     df_all = df_all.sort_values('period_date')
     
-    total_rows = len(df_all)
     results = []
     
-    st.info(f"📊 Toplam {total_rows} adet dönem analiz ediliyor...")
-    
-    # 3. İLERLEME ÇUBUĞU (Kullanıcı dondu sanmasın diye)
+    # Kullanıcıya bilgi ver
+    st.toast("Analiz başladı...", icon="⏳")
     progress_bar = st.progress(0)
+    total_rows = len(df_all)
     
-    # 4. DÖNGÜ (Her satırı tek tek işle)
+    # DÖNGÜ BAŞLIYOR
     for i, (idx, row) in enumerate(df_all.iterrows()):
         text = str(row['text_content'])
         date_str = row['period_date'].strftime('%Y-%m')
         
-        # Yüzdeyi güncelle
-        percent = int(((i + 1) / total_rows) * 100)
-        progress_bar.progress(percent, text=f"Analiz ediliyor: {date_str} ({i+1}/{total_rows})")
+        # İlerleme çubuğunu güncelle
+        progress_bar.progress((i + 1) / total_rows, text=f"İşleniyor: {date_str}")
         
         # Metin boşsa atla
-        if len(text) < 5:
-            continue
+        if len(text) < 10: continue
 
-        # Analiz Et
+        # ANALİZ FONKSİYONUNU ÇAĞIR
         ai_res = analyze_with_roberta(text)
         
-        # --- KRİTİK NOKTA: BELLEK TEMİZLİĞİ ---
-        # Her analizden sonra python'un çöp toplayıcısını çalıştırıyoruz
+        # BELLEK TEMİZLİĞİ (BEYAZ EKRANI ÖNLEYEN KISIM)
         gc.collect() 
         
-        if isinstance(ai_res, str): continue # Hata varsa geç
+        if isinstance(ai_res, str): continue
             
-        net_score = 0.0
+        # Skorları hesapla
         hawk_prob = 0.0
         dove_prob = 0.0
+        net_score = 0.0
         
         if isinstance(ai_res, dict) and 'scores_map' in ai_res:
             scores = ai_res['scores_map']
             hawk_prob = scores.get("HAWK", 0.0)
             dove_prob = scores.get("DOVE", 0.0)
-            
-            # Net Skor Formülü: (Şahin - Güvercin) * 100
-            # +100'e yaklaşırsa Çok Şahin, -100'e yaklaşırsa Çok Güvercin
             net_score = (hawk_prob - dove_prob) * 100
         
         results.append({
@@ -1231,69 +1220,51 @@ def calculate_ai_trend_series(df_all):
             "Güvercin Olasılık": dove_prob
         })
     
-    # İşlem bitince çubuğu temizle
     progress_bar.empty()
+    st.toast("Analiz tamamlandı!", icon="✅")
     
-    if not results:
-        st.error("Hiçbir sonuç üretilemedi.")
-        return pd.DataFrame()
-
-    st.success("✅ Tüm dönemler başarıyla analiz edildi!")
     return pd.DataFrame(results)
 
-# GRAFİK FONKSİYONU (ZAMAN SERİSİ / TREND GRAFİĞİ)
+# GRAFİK FONKSİYONU
 def create_ai_trend_chart(df_res):
     import plotly.graph_objects as go
     if df_res is None or df_res.empty: return None
 
     fig_trend = go.Figure()
     
-    # 1. Çizgi Grafiği (Trendi gösterir)
+    # Çizgi
     fig_trend.add_trace(go.Scatter(
         x=df_res['Dönem'], 
         y=df_res['Net Skor'],
         mode='lines',
         name='Trend',
-        line=dict(color='gray', width=2, dash='dot') # Kesik çizgi
+        line=dict(color='gray', width=1, dash='dot')
     ))
 
-    # 2. Noktalar (Her dönemi renklendirir)
-    # Kırmızı = Şahin, Mavi = Güvercin
-    hover_texts = []
-    for _, r in df_res.iterrows():
-        hover_texts.append(f"Şahin: %{r['Şahin Olasılık']*100:.1f}<br>Güvercin: %{r['Güvercin Olasılık']*100:.1f}")
-
+    # Noktalar (Renkli)
     fig_trend.add_trace(go.Scatter(
         x=df_res['Dönem'],
         y=df_res['Net Skor'],
         mode='markers',
-        name='Aylık Skor',
+        name='Aylık Durum',
         marker=dict(
-            size=16,
+            size=14,
             color=df_res['Net Skor'],
-            colorscale='RdBu_r', # Kırmızı (Hawk) yukarıda, Mavi (Dove) aşağıda
+            colorscale='RdBu_r', 
             cmin=-100,
             cmax=100,
             showscale=True,
-            colorbar=dict(title="Duruş (Stance)")
+            colorbar=dict(title="Duruş")
         ),
-        text=hover_texts,
-        hovertemplate="<b>%{x}</b><br>Net Skor: %{y:.1f}<br>%{text}<extra></extra>"
+        hovertemplate="<b>%{x}</b><br>Net Skor: %{y:.1f}<extra></extra>"
     ))
 
-    # 3. Referans Çizgileri
-    fig_trend.add_hline(y=0, line_width=2, line_color="black", opacity=0.5)
-    # Şahin Bölge (Hafif Kırmızı Arka Plan)
-    fig_trend.add_hrect(y0=0, y1=110, fillcolor="red", opacity=0.05, layer="below", line_width=0)
-    # Güvercin Bölge (Hafif Mavi Arka Plan)
-    fig_trend.add_hrect(y0=-110, y1=0, fillcolor="blue", opacity=0.05, layer="below", line_width=0)
-
+    fig_trend.add_hline(y=0, line_color="black", opacity=0.3)
+    
     fig_trend.update_layout(
-        title="🇹🇷 TCMB Tarihsel Duruş Analizi (Şahin vs Güvercin)",
-        yaxis=dict(title="Net Skor (Şahin - Güvercin)", range=[-110, 110]),
-        xaxis=dict(title="Dönemler"),
-        hovermode="closest",
-        height=500,
-        margin=dict(l=20, r=20, t=50, b=20)
+        title="🇹🇷 TCMB Metin Analizi (mrince Model)",
+        yaxis=dict(title="Net Skor", range=[-110, 110]),
+        height=450,
+        margin=dict(l=20, r=20, t=40, b=20)
     )
     return fig_trend

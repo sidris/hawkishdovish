@@ -934,23 +934,17 @@ def load_roberta_pipeline():
         print(f"[RoBERTa] Model yükleme hatası: {repr(e)}")
         return None
 
-def _map_mrince_label(raw_label: str) -> str:
-    lbl = str(raw_label).strip().upper()
-    # doğrulanmış mapping:
-    if lbl == "LABEL_1":
-        return "HAWK"
-    if lbl == "LABEL_2":
-        return "DOVE"
-    if lbl == "LABEL_0":
-        return "NEUT"
-    # bazen model farklı string döndürürse diye güvenli fallback:
-    if "HAWK" in lbl:
-        return "HAWK"
-    if "DOV" in lbl:
-        return "DOVE"
-    if "NEU" in lbl:
-        return "NEUT"
+def _map_mrince_label(lbl: str) -> str:
+    s = str(lbl).upper().strip()
+    if s == "LABEL_1": return "HAWK"
+    if s == "LABEL_2": return "DOVE"
+    if s == "LABEL_0": return "NEUT"
+    # fallback
+    if "HAWK" in s: return "HAWK"
+    if "DOVE" in s: return "DOVE"
+    if "NEUT" in s: return "NEUT"
     return "NEUT"
+
 
 def analyze_with_roberta(text: str):
     if not text:

@@ -543,51 +543,152 @@ with tab7:
     else: st.info("Analiz için veri yok.")
 
 # ==============================================================================
-# TAB ROBERTA: CB-RoBERTa (YAPAY ZEKA)
+# TAB ROBERTA: CB-RoBERTa (YAPAY ZEKA - TREND ANALİZİ)
 # ==============================================================================
 with tab_roberta:
     st.header("🧠 CentralBankRoBERTa (Yapay Zeka Analizi)")
-    st.markdown("Bu modül, klasik kelime sayma yöntemleri yerine, cümlenin **bağlamını (context)** anlayan Transformer tabanlı yapay zeka modelini kullanır.")
-    
-    # Text Input (Tabstruct ile benzer mantık)
-    rob_text_input = ""
-    df_all_rob = utils.fetch_all_data()
-    
-    if not df_all_rob.empty:
-        df_all_rob['period_date'] = pd.to_datetime(df_all_rob['period_date'])
-        df_all_rob['Donem'] = df_all_rob['period_date'].dt.strftime('%Y-%m')
-        rob_opts = df_all_rob['Donem'].tolist()
+    st.markdown("Bu modül, cümlelerin bağlamını (context) anlayan Transformer tabanlı yapay zeka modelini kullanır.")
+
+    if not utils.HAS_TRANSFORMERS:
+        st.error("`transformers` ve `torch` kütüphaneleri yüklü değil. Terminalde `pip install transformers torch` çalıştırın.")
+    else:
+        # --- 1. SEÇENEK: TÜM ZAMANLARIN GRAFİĞİ ---
+        st.subheader("📈 Tarihsel Trend Analizi (Tüm Kayıtlar)")
+        st.info("Aşağıdaki butona bastığınızda sistem tüm geçmiş kayıtları tarar, her biri için AI modelini çalıştırır ve Şahin (+100) / Güvercin (-100) skorlaması yapar.")
         
-        sel_rob_period = st.selectbox("Analiz Edilecek Dönem (AI):", rob_opts, index=0, key="rob_sel")
+        if st.button("🚀 Tüm Geçmişi Analiz Et ve Grafiği Çiz (Zaman Alabilir)", type="primary"):
+            df_all_rob = utils.fetch_all_data()
+            if not df_all_rob.empty:
+                # Tarih sırasına koy (Eskiden yeniye)
+                df_all_rob['period_date'] = pd.to_datetime(df_all_rob['period_date'])
+                df_all_rob = df_all_rob.sort_values('period_date')
+                
+                results = []
+                progress_bar = st.progress(0)
+                status_text = st.empty()
+                total_rows = len(df_all_rob)
+
+                for i, row in enumerate(df_all_rob.iterrows()):
+                    # row[0] index, row[1] series
+                    data = row[1]
+                    text = data['text_content']
+                    date_str = data['period_date'].strftime('%Y-%m')
+                    
+                    status_text.text(f"Analiz ediliyor: {date_str} ({i+1}/{total_rows})")
+                    
+                    # Modelden sonucu al
+                    ai_res = utils.analyze_with_roberta(text)
+                    
+                    score_val = 0
+                    label_val = "Nötr"
+                    
+                    if isinstance(ai_res, dict):
+                        lbl = ai_res.get('best_label', '')
+                        if "Şahin" in lbl:
+                            score_val = 100
+                            label_val = "Şahin"
+                        elif "Güvercin" in lbl:
+                            score_val = -100
+                            label_val = "Güvercin"
+                        else:
+                            score_val = 0
+                            label_val = "Nötr"
+                    
+                    results.append({
+                        "Dönem": date_str,
+                        "Tarih": data['period_date'],
+                        "Skor": score_val,
+                        "Karar": label_val
+                    })
+                    
+                    # Progress güncelle
+                    progress_bar.progress((i + 1) / total_rows)
+
+                status_text.success("Analiz Tamamlandı!")
+                df_res = pd.DataFrame(results)
+
+                # --- GRAFİK ÇİZİMİ ---
+                fig_trend = go.Figure()
+                
+                # Çizgi
+                fig_trend.add_trace(go.Scatter(
+                    x=df_res['Dönem'], 
+                    y=df_res['Skor'],
+                    mode='lines+markers',
+                    name='AI Skoru',
+                    line=dict(color='gray', width=1, dash='dot')
+                ))
+
+                # Renkli Markerlar (Şahin=Kırmızı, Güvercin=Yeşil/Mavi, Nötr=Gri)
+                colors = df_res['Skor'].map({100: 'red', -100: 'blue', 0: 'gray'})
+                
+                fig_trend.add_trace(go.Scatter(
+                    x=df_res['Dönem'],
+                    y=df_res['Skor'],
+                    mode='markers',
+                    marker=dict(color=colors, size=12),
+                    text=df_res['Karar'],
+                    hovertemplate="<b>%{x}</b><br>Karar: %{text}<br>Skor: %{y}<extra></extra>",
+                    showlegend=False
+                ))
+
+                # Referans çizgileri
+                fig_trend.add_hline(y=0, line_width=1, line_color="black")
+                fig_trend.add_hline(y=100, line_width=0.5, line_dash="dash", line_color="red", annotation_text="ŞAHİN (+100)", annotation_position="top left")
+                fig_trend.add_hline(y=-100, line_width=0.5, line_dash="dash", line_color="blue", annotation_text="GÜVERCİN (-100)", annotation_position="bottom left")
+
+                fig_trend.update_layout(
+                    title="Yapay Zeka Karar Trendi (Şahin vs Güvercin)",
+                    yaxis=dict(
+                        title="Skor",
+                        range=[-120, 120],
+                        tickvals=[-100, 0, 100],
+                        ticktext=["Güvercin", "Nötr", "Şahin"]
+                    ),
+                    hovermode="x unified",
+                    height=500
+                )
+                
+                st.plotly_chart(fig_trend, use_container_width=True)
+                
+                with st.expander("📊 Verileri Tablo Olarak Gör"):
+                    st.dataframe(df_res, use_container_width=True)
+            else:
+                st.warning("Analiz edilecek veri bulunamadı.")
+
+        st.divider()
+
+        # --- 2. SEÇENEK: TEKİL ANALİZ (ESKİ MODÜL) ---
+        st.subheader("🔍 Tekil Dönem Detay Analizi")
+        rob_text_input = ""
+        df_all_rob = utils.fetch_all_data()
         
-        if sel_rob_period:
-            row_rob = df_all_rob[df_all_rob['Donem'] == sel_rob_period].iloc[0]
-            rob_text_input = row_rob['text_content']
+        if not df_all_rob.empty:
+            df_all_rob['period_date'] = pd.to_datetime(df_all_rob['period_date'])
+            df_all_rob['Donem'] = df_all_rob['period_date'].dt.strftime('%Y-%m')
+            rob_opts = df_all_rob['Donem'].tolist()
             
-            with st.expander("Metni Gör"): st.write(rob_text_input)
+            sel_rob_period = st.selectbox("İncelenecek Dönemi Seçin:", rob_opts, index=0, key="rob_sel_single")
             
-            if st.button("Yapay Zeka İle Analiz Et", type="primary"):
-                if not utils.HAS_TRANSFORMERS: 
-                      st.error("`transformers` ve `torch` kütüphaneleri yüklü değil. Terminalde `pip install transformers torch` çalıştırın.")
-                else:
-                    with st.spinner("Model yükleniyor ve genel analiz yapılıyor..."):
-                        # 1. Genel Analiz
+            if sel_rob_period:
+                row_rob = df_all_rob[df_all_rob['Donem'] == sel_rob_period].iloc[0]
+                rob_text_input = row_rob['text_content']
+                
+                with st.expander("Seçilen Metni Gör"): st.write(rob_text_input)
+                
+                if st.button("Bu Metni Detaylı Analiz Et", type="secondary"):
+                    with st.spinner("Model çalışıyor..."):
                         roberta_res = utils.analyze_with_roberta(rob_text_input)
                     
-                    if roberta_res == "MISSING_LIB":
-                        st.error("Kütüphane hatası.")
-                    elif roberta_res == "ERROR":
-                        st.error("Model indirilemedi.")
-                    elif isinstance(roberta_res, dict):
+                    if isinstance(roberta_res, dict):
                         lbl = roberta_res.get('best_label', 'Bilinmiyor')
                         scr = roberta_res.get('best_score', 0.0)
                         
-                        # --- GENEL SKOR KARTI ---
                         c1, c2 = st.columns([1, 2])
                         with c1:
                             lbl_color = "gray"
                             if "Şahin" in lbl: lbl_color = "red"
-                            elif "Güvercin" in lbl: lbl_color = "green"
+                            elif "Güvercin" in lbl: lbl_color = "blue"
                             
                             st.markdown(f"### Karar: :{lbl_color}[{lbl}]")
                             st.metric("Model Güveni", f"%{scr*100:.2f}")
@@ -599,77 +700,22 @@ with tab_roberta:
                                 c = alt.Chart(chart_data).mark_bar().encode(
                                     x=alt.X('Olasılık', scale=alt.Scale(domain=[0, 1])),
                                     y=alt.Y('Etiket', sort='-x'),
-                                    color=alt.Color('Etiket', legend=None),
-                                    tooltip=['Etiket', alt.Tooltip('Olasılık', format='.2%')]
-                                ).properties(height=200)
+                                    color=alt.Color('Etiket', legend=None)
+                                ).properties(height=150)
                                 st.altair_chart(c, use_container_width=True)
                         
-                        st.divider()
-                        
-                        # --- CÜMLE BAZLI TABLO ---
-                        st.subheader("📝 Cümle Bazlı Ayrıştırma")
-                        with st.spinner("Cümleler tek tek inceleniyor..."):
-                            df_sentences = utils.analyze_sentences_with_roberta(rob_text_input)
-                        
+                        st.subheader("Cümle Bazlı Ayrıştırma")
+                        df_sentences = utils.analyze_sentences_with_roberta(rob_text_input)
                         if not df_sentences.empty:
-                            # Renklendirme fonksiyonu
                             def color_coding(val):
                                 color = 'black'
                                 if 'Şahin' in val: color = 'red'
-                                elif 'Güvercin' in val: color = 'green'
+                                elif 'Güvercin' in val: color = 'blue'
                                 return f'color: {color}; font-weight: bold;'
 
                             st.dataframe(
                                 df_sentences.style.map(color_coding, subset=['Etiket'])
                                 .format({"Güven Skoru": "{:.2%}"}),
-                                use_container_width=True,
-                                hide_index=True
+                                use_container_width=True, hide_index=True
                             )
-                        else:
-                            st.info("Cümle ayrıştırması yapılamadı.")
-
-                        st.info("Not: Bu analiz **Moritz-Pfeifer/CentralBankRoBERTa** modeli kullanılarak yapılmıştır.")
-                    else:
-                        st.error("Beklenmeyen hata oluştu.")
-    else: st.info("Veri yok.")
-
-with tab_imp:
-    st.header("📅 Önemli Tarihler ve Haberler")
-    st.info("Buraya girdiğiniz tarihler Dashboard grafiğinde işaretlenecek ve haber linkleri eklenecektir.")
-    
-    with st.container(border=True):
-        st.subheader("Yeni Olay Ekle")
-        c1, c2 = st.columns([1, 2])
-        with c1:
-            new_ev_date = st.date_input("Olay Tarihi", datetime.date.today())
-        with c2:
-            new_ev_links = st.text_area("Haber Linkleri (Her satıra bir link)", height=100)
-            
-        if st.button("Kaydet", type="primary"):
-            if new_ev_links:
-                utils.add_event(new_ev_date, new_ev_links)
-                st.success("Kaydedildi!")
-                st.rerun()
-            else:
-                st.error("Lütfen en az bir link giriniz.")
-    
-    st.divider()
-    st.subheader("Kayıtlı Olaylar")
-    events = utils.fetch_events()
-    
-    if not events.empty:
-        for idx, row in events.iterrows():
-            with st.container(border=True):
-                col1, col2, col3 = st.columns([2, 5, 1])
-                with col1:
-                    st.write(f"**{row['event_date']}**")
-                with col2:
-                    links = row['links'].split('\n') if row['links'] else []
-                    for l in links:
-                        st.markdown(f"- [{l}]({l})")
-                with col3:
-                    if st.button("Sil", key=f"del_ev_{row['id']}"):
-                        utils.delete_event(row['id'])
-                        st.rerun()
-    else:
-        st.info("Henüz kayıtlı bir olay yok.")
+        else: st.info("Veri yok.")

@@ -1104,7 +1104,7 @@ def calculate_ai_trend_series(df_all):
     return pd.DataFrame(results)
 
 # =============================================================================
-# 8. CENTRAL BANK RoBERTa ENTEGRASYONU (TCMB ÖZEL MODELİ)
+# 8. CENTRAL BANK RoBERTa ENTEGRASYONU (TCMB ÖZEL MODELİ - GATED/KİLİTLİ)
 # Model: gtfintechlab/model_central_bank_republic_of_turkey_stance_label
 # =============================================================================
 
@@ -1112,42 +1112,45 @@ def calculate_ai_trend_series(df_all):
 def load_roberta_pipeline():
     try:
         from transformers import pipeline
-        # KULLANICI İSTEĞİ: TCMB ÖZEL MODELİ
+        import os
+        
+        # Streamlit Secrets'tan Token'ı alıyoruz
+        # Eğer lokalde secrets.toml yoksa hata vermesin diye try-except veya get kullanıyoruz
+        hf_token = st.secrets.get("HF_TOKEN", None)
+        
+        if not hf_token:
+            st.error("Hugging Face Token bulunamadı! Lütfen secrets ayarlarını yapın.")
+            return None
+
+        # TCMB İÇİN EĞİTİLMİŞ ÖZEL MODEL
         model_name = "gtfintechlab/model_central_bank_republic_of_turkey_stance_label"
         
-        # 'top_k=None' ile tüm olasılıkları çekiyoruz
-        classifier = pipeline("text-classification", model=model_name, top_k=None)
+        # token parametresi ile giriş yapıyoruz
+        classifier = pipeline("text-classification", model=model_name, top_k=None, token=hf_token)
         return classifier
+
     except ImportError:
         return "MISSING_LIB"
     except Exception as e:
+        # 401 Hatası alırsanız token yanlış veya modele onay verilmemiş demektir.
         st.error(f"Model Yükleme Hatası: {e}")
         return None
 
-def normalize_label_tr(raw_label):
+def normalize_label_tcmb(raw_label):
     """
-    TCMB Özel Modeli Etiketlerini Bizim Sisteme (HAWK/DOVE) Çevirir.
-    Bu model genelde şu çıktıları üretir:
-    - Positive / Hawkish -> Sıkı duruş, istikrar vurgusu
-    - Negative / Dovish -> Riskler, gevşeme ihtiyacı
-    - Neutral -> Veri seti açıklaması
+    Bu modelin etiketleri: 
+    - LABEL_0: Negative / Dovish (Güvercin)
+    - LABEL_1: Positive / Hawkish (Şahin)
+    - LABEL_2: Neutral (Nötr)
+    (Model kartındaki bilgilere ve finansal sentiment mantığına göre)
     """
     lbl = str(raw_label).lower().strip()
     
-    # 1. ŞAHİN (HAWKISH) SİNYALLERİ
-    # TCMB literatüründe "Positive" genelde "İstikrar", "Sıkı Duruş", "İyileşme" demektir -> ŞAHİN
-    if any(x in lbl for x in ["hawkish", "positive", "label_2", "label_1"]): 
-        # Not: Bazı modellerde Label_1 Positive, Label_0 Negative'dir.
-        # Bu modelin huggingface kartına göre Positive/Hawkish eşleşmesi yapılır.
-        if "label_0" in lbl: return "DOVE" # Genelde 0 negatiftir
-        return "HAWK"
-
-    # 2. GÜVERCİN (DOVISH) SİNYALLERİ
-    # "Negative" genelde "Risk", "Bozulma", "Enflasyonist Baskı (Kötü anlamda değil, risk anlamında)" -> GÜVERCİN
-    if any(x in lbl for x in ["dovish", "negative", "label_0"]): 
-        return "DOVE"
-
-    # 3. NÖTR
+    # GTFintechLab TCMB Modeli Eşleştirmesi:
+    if "label_1" in lbl or "positive" in lbl: return "HAWK"
+    if "label_0" in lbl or "negative" in lbl: return "DOVE"
+    if "label_2" in lbl or "neutral" in lbl: return "NEUT"
+    
     return "NEUT"
 
 def analyze_with_roberta(text):
@@ -1157,13 +1160,11 @@ def analyze_with_roberta(text):
     if classifier == "MISSING_LIB": return "MISSING_LIB"
     if classifier is None: return "ERROR"
 
-    # Metni çok uzunsa kırp (Model limiti genelde 512 token)
     truncated_text = text[:1500] 
     
     try:
         raw_results = classifier(truncated_text)
         
-        # Liste düzeltmesi
         if isinstance(raw_results, list) and isinstance(raw_results[0], list):
             results = raw_results[0]
         else:
@@ -1177,20 +1178,15 @@ def analyze_with_roberta(text):
             lbl_raw = str(r['label'])
             score = float(r['score'])
             
-            std_lbl = normalize_label_tr(lbl_raw)
-            
-            # Olasılığı ilgili sepete ekle (veya direkt ata)
-            # Bu modelde genelde 3 label döner, biz en baskın olanı değil,
-            # olasılık dağılımını kullanırsak daha hassas olur.
-            scores_map[std_lbl] += score
+            std_lbl = normalize_label_tcmb(lbl_raw)
+            scores_map[std_lbl] = score
             
             if score > best_score:
                 best_score = score
                 best_raw_label = lbl_raw
         
-        # İnsan tarafından okunabilir etiket
         human_label = "⚖️ Nötr"
-        final_lbl = normalize_label_tr(best_raw_label)
+        final_lbl = normalize_label_tcmb(best_raw_label)
         if final_lbl == "HAWK": human_label = "🦅 Şahin (Sıkı Duruş)"
         elif final_lbl == "DOVE": human_label = "🕊️ Güvercin (Gevşeme/Risk)"
         
@@ -1221,7 +1217,7 @@ def analyze_sentences_with_roberta(text):
             else: best_pred = pred
             
             lbl_raw = str(best_pred['label'])
-            std_lbl = normalize_label_tr(lbl_raw)
+            std_lbl = normalize_label_tcmb(lbl_raw)
             
             label_tr = "⚖️ Nötr"
             if std_lbl == "HAWK": label_tr = "🦅 Şahin"
@@ -1268,7 +1264,7 @@ def calculate_ai_trend_series(df_all):
             hawk_prob = scores.get("HAWK", 0.0)
             dove_prob = scores.get("DOVE", 0.0)
             
-            # Formül: (Şahin - Güvercin) * 100
+            # Net Skor: (Şahin - Güvercin) * 100
             net_score = (hawk_prob - dove_prob) * 100
         
         results.append({
@@ -1281,7 +1277,7 @@ def calculate_ai_trend_series(df_all):
         
     return pd.DataFrame(results)
 
-# GRAFİK FONKSİYONU (EĞER SİLİNDİYSE UTILS.PY EN ALTINA EKLEYİN)
+# GRAFİK FONKSİYONU AYNI KALACAK (UTILS.PY EN ALTINDA)
 def create_ai_trend_chart(df_res):
     import plotly.graph_objects as go
     if df_res is None or df_res.empty: return None
@@ -1298,7 +1294,7 @@ def create_ai_trend_chart(df_res):
     for _, r in df_res.iterrows():
         s_prob = r.get('Şahin Olasılık', 0.0)
         g_prob = r.get('Güvercin Olasılık', 0.0)
-        hover_texts.append(f"Şahin (Pos): %{s_prob*100:.1f}<br>Güvercin (Neg): %{g_prob*100:.1f}")
+        hover_texts.append(f"Şahin: %{s_prob*100:.1f}<br>Güvercin: %{g_prob*100:.1f}")
 
     fig_trend.add_trace(go.Scatter(
         x=df_res['Dönem'], y=df_res['Net Skor'],
@@ -1306,7 +1302,7 @@ def create_ai_trend_chart(df_res):
         marker=dict(
             size=14, color=df_res['Net Skor'], colorscale='RdBu_r', 
             cmin=-100, cmax=100, showscale=True,
-            colorbar=dict(title="Duruş (Stance)", thickness=10)
+            colorbar=dict(title="TCMB Duruşu", thickness=10)
         ),
         text=hover_texts,
         hovertemplate="<b>%{x}</b><br>Net Skor: %{y:.1f}<br>%{text}<extra></extra>"
@@ -1317,7 +1313,7 @@ def create_ai_trend_chart(df_res):
     fig_trend.add_hrect(y0=-100, y1=0, fillcolor="blue", opacity=0.05, layer="below", line_width=0)
 
     fig_trend.update_layout(
-        title="🤖 TCMB Özel Model Analizi (GTFintechLab)",
+        title="🇹🇷 TCMB Özel Model Analizi (GTFintechLab)",
         yaxis=dict(title="Net Skor (Sıkı Duruş - Gevşeme)", range=[-110, 110], zeroline=False),
         hovermode="closest", height=450, margin=dict(l=20, r=20, t=40, b=20)
     )

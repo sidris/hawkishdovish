@@ -703,3 +703,15 @@ with tab_roberta:
                 st.json(roberta_res)
 
     st.info("Not: Cümle bazlı analiz bu sürümde devre dışı bırakıldı.")
+
+    st.divider()
+    st.subheader("🧩 Cümle Bazlı Analiz")
+    
+    max_sent = st.slider("Maksimum cümle", 10, 60, 30, 5, key="sent_limit")
+    
+    df_sent = utils.analyze_sentences_with_roberta(txt_input, max_sentences=max_sent)
+    if df_sent is None or df_sent.empty:
+        st.info("Cümle bazlı analiz sonucu boş (metin kısa olabilir).")
+    else:
+        st.dataframe(df_sent, use_container_width=True)
+

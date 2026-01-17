@@ -658,10 +658,19 @@ if st.button("Bu Metni Detaylandır", type="secondary"):
 
         if isinstance(roberta_res, dict):
             scores = roberta_res.get("scores_map", {})
-            h = float(scores.get("HAWK", 0.0))
-            d = float(scores.get("DOVE", 0.0))
-            n = float(scores.get("NEUT", 0.0))
-            net = (h - d) * 100
+            def _safe_float(x, default=0.0):
+    try:
+        if x is None:
+            return float(default)
+        return float(x)
+    except Exception:
+        return float(default)
+
+h = _safe_float(scores.get("HAWK", 0.0))
+d = _safe_float(scores.get("DOVE", 0.0))
+n = _safe_float(scores.get("NEUT", 0.0))
+net = _safe_float((h - d) * 100)
+
 
             best_key = max(scores, key=scores.get) if scores else "NEUT"
             best_label = "⚖️ Nötr"
@@ -674,7 +683,8 @@ if st.button("Bu Metni Detaylandır", type="secondary"):
             c1, c2, c3 = st.columns(3)
             c1.metric("Karar", best_label)
             c2.metric("Güven", f"%{best_score*100:.1f}")
-            c3.metric("Net Skor", f"{net:.2f}")
+            c3.metric("Net Skor", f"{float(net):.2f}")
+
 
             st.write("Sınıf Skorları:")
             st.json({"HAWK": h, "DOVE": d, "NEUT": n})

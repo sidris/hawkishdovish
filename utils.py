@@ -1112,49 +1112,39 @@ def calculate_ai_trend_series(df_all):
 def load_roberta_pipeline():
     try:
         from transformers import pipeline
-        from huggingface_hub import login
         
-        # --- TOKEN KISMI (Eğer model kilitliyse buraya token yapıştırın) ---
-        # Model herkese açıksa burası boş kalabilir veya eski token durabilir.
-        hf_token = "hf_XXXXXXXXXXXXXXXXXXXXXXXXXXXXXX" 
-        
-        # Giriş Yap (Token varsa)
-        if hf_token and "hf_" in hf_token:
-            login(token=hf_token)
-
         # KULLANICI İSTEĞİ: MRINCE TCMB MODELİ
+        # Bu model public (herkese açık) olduğu için token parametresine gerek yok.
         model_name = "mrince/CBRT-RoBERTa-Large-HawkishDovish-Classifier"
         
-        # Modeli Yükle
+        # Pipeline oluşturuyoruz
         classifier = pipeline("text-classification", model=model_name, top_k=None)
         return classifier
 
     except Exception as e:
-        st.error(f"Model Erişim Hatası: {e}")
+        st.error(f"Model Yükleme Hatası: {e}")
         return None
 
 def normalize_label_mrince(raw_label):
     """
     mrince/CBRT Modelinin etiketlerini normalize eder.
-    Tahmini Etiketler: 'Hawkish', 'Dovish', 'Neutral'
-    Veya LABEL_0, LABEL_1, LABEL_2.
+    Modelin config dosyasına göre genelde:
+    - hawkish / LABEL_2 / Positive -> HAWK
+    - dovish / LABEL_0 / Negative -> DOVE
+    - neutral / LABEL_1 -> NEUT
     """
     lbl = str(raw_label).lower().strip()
     
-    # 1. NET ETİKETLER (Model text döndürürse)
+    # 1. METİN BAZLI EŞLEŞTİRME (Model 'hawkish' dönerse)
     if "hawkish" in lbl: return "HAWK"
     if "dovish" in lbl: return "DOVE"
     if "neutral" in lbl: return "NEUT"
     
-    # 2. LABEL ID EŞLEŞTİRMESİ (Model LABEL_X döndürürse)
-    # Genellikle Finansal Modellerde Standart:
-    # LABEL_0 -> Dovish (Negatif/Gevşeme)
-    # LABEL_1 -> Neutral (Nötr)
-    # LABEL_2 -> Hawkish (Pozitif/Sıkılaşma)
-    
-    if "label_2" in lbl: return "HAWK"
-    if "label_0" in lbl: return "DOVE"
-    if "label_1" in lbl: return "NEUT"
+    # 2. LABEL ID EŞLEŞTİRMESİ (Model LABEL_X dönerse)
+    # Standart Finansal RoBERTa şeması: 0=Negatif(Dovish), 1=Nötr, 2=Pozitif(Hawkish)
+    if "label_2" in lbl: return "HAWK"  # Genelde Pozitif/Şahin
+    if "label_0" in lbl: return "DOVE"  # Genelde Negatif/Güvercin
+    if "label_1" in lbl: return "NEUT"  # Genelde Nötr
     
     return "NEUT"
 
@@ -1164,11 +1154,13 @@ def analyze_with_roberta(text):
     classifier = load_roberta_pipeline()
     if classifier is None: return "ERROR"
 
+    # Token limiti (Modelin çökmemesi için)
     truncated_text = text[:1500] 
     
     try:
         raw_results = classifier(truncated_text)
         
+        # Liste yapısını düzelt (Pipeline bazen iç içe liste döner)
         if isinstance(raw_results, list) and isinstance(raw_results[0], list):
             results = raw_results[0]
         else:
@@ -1189,9 +1181,10 @@ def analyze_with_roberta(text):
                 best_score = score
                 best_raw_label = lbl_raw
         
+        # İnsan okuyabilir etiket
         human_label = "⚖️ Nötr"
         final_lbl = normalize_label_mrince(best_raw_label)
-        if final_lbl == "HAWK": human_label = "🦅 Şahin (Sıkı Duruş)"
+        if final_lbl == "HAWK": human_label = "🦅 Şahin (Sıkılaşma)"
         elif final_lbl == "DOVE": human_label = "🕊️ Güvercin (Gevşeme)"
         
         return {
@@ -1281,7 +1274,7 @@ def calculate_ai_trend_series(df_all):
         
     return pd.DataFrame(results)
 
-# GRAFİK FONKSİYONU AYNI KALACAK (Eğer silindiyse utils.py'ın en altına ekleyin)
+# GRAFİK FONKSİYONU (Eğer silindiyse utils.py'ın en altına ekleyin)
 def create_ai_trend_chart(df_res):
     import plotly.graph_objects as go
     if df_res is None or df_res.empty: return None

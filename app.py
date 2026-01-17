@@ -699,11 +699,11 @@ else:
             # Cümle bazlı tablo (utils içinde varsa çalışır)
             df_sent = pd.DataFrame()
             if hasattr(utils, "analyze_sentences_with_roberta"):
-    df_sent = utils.analyze_sentences_with_roberta(txt_input)
-    if not df_sent.empty:
-        st.dataframe(df_sent, use_container_width=True)
-else:
-    st.info("Cümle bazlı analiz bu sürümde devre dışı.")
+                df_sent = utils.analyze_sentences_with_roberta(txt_input)
+                if not df_sent.empty:
+                    st.dataframe(df_sent, use_container_width=True)
+            else:
+                st.info("Cümle bazlı analiz bu sürümde devre dışı.")
 
 
             if df_sent is not None and not df_sent.empty:

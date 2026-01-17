@@ -681,7 +681,12 @@ if st.button("Bu Metni Detaylandır", type="secondary"):
             st.json({"HAWK": h, "DOVE": d, "NEUT": n})
 
             # Cümle bazlı tablo (utils içinde varsa çalışır)
-            df_sent = utils.analyze_sentences_with_roberta(txt_input)
+            df_sent = pd.DataFrame()
+            if hasattr(utils, "analyze_sentences_with_roberta"):
+                df_sent = utils.analyze_sentences_with_roberta(txt_input)
+            else:
+                st.info("Cümle bazlı analiz bu sürümde devre dışı (utils.analyze_sentences_with_roberta bulunamadı).")
+
             if df_sent is not None and not df_sent.empty:
                 st.write("Cümle Bazlı Ayrıştırma:")
                 st.dataframe(df_sent, use_container_width=True)

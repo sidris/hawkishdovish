@@ -913,8 +913,12 @@ class AdvancedMLPredictor:
 
 
 # =============================================================================
-# 8. CENTRAL BANK RoBERTa ENTEGRASYONU (MRINCE - TEK VE TEMİZ SÜRÜM)
+# 8. CENTRAL BANK RoBERTa (mrince) - STABLE
 # Model: mrince/CBRT-RoBERTa-HawkishDovish-Classifier
+# LABEL MAP (doğrulandı):
+#   LABEL_1 -> HAWK
+#   LABEL_2 -> DOVE
+#   LABEL_0 -> NEUT
 # =============================================================================
 
 import gc
@@ -923,307 +927,123 @@ MRINCE_MODEL_NAME = "mrince/CBRT-RoBERTa-HawkishDovish-Classifier"
 
 @st.cache_resource(show_spinner=False)
 def load_roberta_pipeline():
-    """
-    Modeli 1 kez yükler, cache'ler.
-    """
-    if not HAS_TRANSFORMERS:
-        return "MISSING_LIB"
     try:
-        clf = pipeline(
-            task="text-classification",
-            model=MRINCE_MODEL_NAME,
-            top_k=None  # tüm sınıfları döndür
-        )
-        return clf
+        from transformers import pipeline
+        return pipeline("text-classification", model=MRINCE_MODEL_NAME, top_k=None)
     except Exception as e:
-        print(f"[MRINCE] Model yükleme hatası: {repr(e)}")
+        print(f"[RoBERTa] Model yükleme hatası: {repr(e)}")
         return None
 
-def _mrince_std_label(raw_label: str) -> str:
-    """
-    Pipeline'dan gelen label'ı standart anahtarlara çevirir: HAWK / DOVE / NEUT
-    Model card'a göre label isimleri bazen metin (hawkish/dovish/neutral) bazen LABEL_0/1/2 olabilir.
-    """
-    lbl = str(raw_label).lower().strip()
-
-    # metin bazlı
-    if "hawk" in lbl:
+def _map_mrince_label(raw_label: str) -> str:
+    lbl = str(raw_label).strip().upper()
+    # doğrulanmış mapping:
+    if lbl == "LABEL_1":
         return "HAWK"
-    if "dov" in lbl:
+    if lbl == "LABEL_2":
         return "DOVE"
-    if "neut" in lbl:
+    if lbl == "LABEL_0":
         return "NEUT"
-
-    # label id bazlı (emin olmadığımız için konservatif eşleme)
-    # Eğer modelin config'i farklıysa, yine de en azından "NEUT" fallback olur.
-    if "label_0" in lbl:
-        return "DOVE"
-    if "label_1" in lbl:
-        return "NEUT"
-    if "label_2" in lbl:
+    # bazen model farklı string döndürürse diye güvenli fallback:
+    if "HAWK" in lbl:
         return "HAWK"
-
+    if "DOV" in lbl:
+        return "DOVE"
+    if "NEU" in lbl:
+        return "NEUT"
     return "NEUT"
 
 def analyze_with_roberta(text: str):
-    """
-    Tek metin analizi.
-    Dönüş:
-      {
-        "best_label": "🦅 Şahin" / "🕊️ Güvercin" / "⚖️ Nötr",
-        "best_score": float,
-        "scores_map": {"HAWK": float, "DOVE": float, "NEUT": float},
-        "net_score": float   # (HAWK - DOVE) * 100
-      }
-    """
     if not text:
         return None
 
     clf = load_roberta_pipeline()
-    if clf == "MISSING_LIB":
-        return "MISSING_LIB"
     if clf is None:
         return "ERROR"
 
-    # RAM koruması: çok uzun metinleri kırp
-    truncated = str(text)[:1200]
+    truncated_text = str(text)[:1000]
 
     try:
-        raw = clf(truncated)
-
-        # pipeline çıktısı bazen [[...]] gibi gelir
-        if isinstance(raw, list) and len(raw) > 0 and isinstance(raw[0], list):
-            results = raw[0]
-        else:
-            results = raw
+        out = clf(truncated_text)
+        if isinstance(out, list) and out and isinstance(out[0], list):
+            out = out[0]
 
         scores_map = {"HAWK": 0.0, "DOVE": 0.0, "NEUT": 0.0}
-        best_lbl = "NEUT"
         best_score = -1.0
+        best_class = "NEUT"
+        best_raw = ""
 
-        if isinstance(results, list):
-            for r in results:
-                lbl = _mrince_std_label(r.get("label"))
-                sc = float(r.get("score", 0.0))
-                scores_map[lbl] = sc
-                if sc > best_score:
-                    best_score = sc
-                    best_lbl = lbl
-        else:
-            lbl = _mrince_std_label(results.get("label"))
-            sc = float(results.get("score", 0.0))
-            scores_map[lbl] = sc
-            best_lbl = lbl
-            best_score = sc
+        for r in out:
+            raw = str(r.get("label"))
+            score = float(r.get("score", 0.0))
+            mapped = _map_mrince_label(raw)
 
-        # etiket TR
-        human = "⚖️ Nötr"
-        if best_lbl == "HAWK":
-            human = "🦅 Şahin"
-        elif best_lbl == "DOVE":
-            human = "🕊️ Güvercin"
+            scores_map[mapped] = score
+            if score > best_score:
+                best_score = score
+                best_class = mapped
+                best_raw = raw
 
-        net = (float(scores_map.get("HAWK", 0.0)) - float(scores_map.get("DOVE", 0.0))) * 100.0
+        best_label = "⚖️ Nötr"
+        if best_class == "HAWK":
+            best_label = "🦅 Şahin"
+        elif best_class == "DOVE":
+            best_label = "🕊️ Güvercin"
+
+        net_score = (scores_map["HAWK"] - scores_map["DOVE"]) * 100.0
 
         return {
-            "best_label": human,
-            "best_score": float(best_score if best_score == best_score else 0.0),  # NaN koruma
+            "best_label": best_label,
+            "best_score": best_score,
             "scores_map": scores_map,
-            "net_score": float(net if net == net else 0.0)  # NaN koruma
+            "net_score": net_score,
+            "raw_best_label": best_raw,
+            "label_map_debug": {"LABEL_1": "HAWK", "LABEL_2": "DOVE", "LABEL_0": "NEUT"}
         }
 
     except Exception as e:
-        print(f"[MRINCE] Analiz hatası: {repr(e)}")
-        return "ERROR"
+        print(f"[RoBERTa] Analiz hatası: {repr(e)}")
+        return f"Error: {str(e)}"
+    finally:
+        gc.collect()
 
-def analyze_sentences_with_roberta(text: str) -> pd.DataFrame:
-    """
-    Metni cümlelere bölüp her cümleyi mrince modeliyle sınıflandırır.
-    Çıktı kolonları: Cümle, Etiket, Güven, Şahin, Güvercin, Nötr, Net Skor
-    """
-    if not text:
-        return pd.DataFrame()
-
-    clf = load_roberta_pipeline()
-    if clf in (None, "MISSING_LIB"):
-        return pd.DataFrame()
-
-    sents = split_sentences_nlp(str(text))
-    sents = [s for s in sents if len(s.split()) > 3]
-    if not sents:
-        return pd.DataFrame()
-
-    try:
-        preds = clf(sents)
-
-        out = []
-        for sent, pred in zip(sents, preds):
-            scores_map = {"HAWK": 0.0, "DOVE": 0.0, "NEUT": 0.0}
-
-            if isinstance(pred, list):
-                # top_k=None -> tüm sınıflar listesi
-                for r in pred:
-                    lbl = _mrince_std_label(r.get("label"))
-                    scores_map[lbl] = float(r.get("score", 0.0))
-            else:
-                lbl = _mrince_std_label(pred.get("label"))
-                scores_map[lbl] = float(pred.get("score", 0.0))
-
-            h = float(scores_map.get("HAWK", 0.0) or 0.0)
-            d = float(scores_map.get("DOVE", 0.0) or 0.0)
-            n = float(scores_map.get("NEUT", 0.0) or 0.0)
-
-            best_lbl = "NEUT"
-            best_sc = n
-            if h >= max(d, n):
-                best_lbl = "HAWK"
-                best_sc = h
-            elif d >= max(h, n):
-                best_lbl = "DOVE"
-                best_sc = d
-
-            label_tr = "⚖️ Nötr"
-            if best_lbl == "HAWK":
-                label_tr = "🦅 Şahin"
-            elif best_lbl == "DOVE":
-                label_tr = "🕊️ Güvercin"
-
-            out.append({
-                "Cümle": sent,
-                "Etiket": label_tr,
-                "Güven": float(best_sc),
-                "Şahin": h,
-                "Güvercin": d,
-                "Nötr": n,
-                "Net Skor": (h - d) * 100.0
-            })
-
-        df = pd.DataFrame(out)
-        if not df.empty:
-            df = df.sort_values(by=["Net Skor", "Güven"], ascending=[False, False]).reset_index(drop=True)
-        return df
-
-    except Exception as e:
-        print(f"[MRINCE] Cümle analizi hatası: {repr(e)}")
-        return pd.DataFrame()
-
-def calculate_ai_trend_series(df_all: pd.DataFrame) -> pd.DataFrame:
-    """
-    Tüm veri setini dolaşır, her döneme net_score üretir.
-    Dönüş kolonları: Dönem, period_date, Net Skor, Şahin Olasılık, Güvercin Olasılık, Nötr Olasılık
-    """
+def calculate_ai_trend_series(df_all):
     if df_all is None or df_all.empty:
-        return pd.DataFrame()
-
-    if not HAS_TRANSFORMERS:
         return pd.DataFrame()
 
     df_all = df_all.copy()
     df_all["period_date"] = pd.to_datetime(df_all["period_date"], errors="coerce")
     df_all = df_all.dropna(subset=["period_date"]).sort_values("period_date")
 
+    st.toast("Analiz başladı...", icon="⏳")
+    progress_bar = st.progress(0)
+    total_rows = len(df_all)
+
     results = []
-    total = len(df_all)
-
-    # Streamlit UI (güvenli)
-    try:
-        st.toast("AI analiz başladı...", icon="⏳")
-        progress = st.progress(0)
-    except Exception:
-        progress = None
-
     for i, (_, row) in enumerate(df_all.iterrows()):
-        try:
-            if progress is not None:
-                progress.progress((i + 1) / max(total, 1), text=f"İşleniyor: {row['period_date'].strftime('%Y-%m')}")
+        progress_bar.progress((i + 1) / total_rows, text=f"İşleniyor: {row['period_date'].strftime('%Y-%m')}")
+        text = str(row.get("text_content", ""))
 
-            text = str(row.get("text_content", "") or "")
-            if len(text) < 10:
-                continue
-
-            res = analyze_with_roberta(text)
-            gc.collect()
-
-            if not isinstance(res, dict):
-                continue
-
-            scores = res.get("scores_map", {}) or {}
-            h = float(scores.get("HAWK", 0.0) or 0.0)
-            d = float(scores.get("DOVE", 0.0) or 0.0)
-            n = float(scores.get("NEUT", 0.0) or 0.0)
-            net = float(res.get("net_score", (h - d) * 100.0))
-
-            results.append({
-                "Dönem": row["period_date"].strftime("%Y-%m"),
-                "period_date": row["period_date"],
-                "Net Skor": net,
-                "Şahin Olasılık": h,
-                "Güvercin Olasılık": d,
-                "Nötr Olasılık": n
-            })
-
-        except Exception as e:
-            print(f"[MRINCE] Trend satır hatası: {repr(e)}")
+        if len(text) < 10:
             continue
 
-    if progress is not None:
-        try:
-            progress.empty()
-            st.toast("AI analiz tamamlandı!", icon="✅")
-        except Exception:
-            pass
+        ai_res = analyze_with_roberta(text)
+        if not isinstance(ai_res, dict):
+            continue
 
+        hawk_prob = float(ai_res["scores_map"].get("HAWK", 0.0))
+        dove_prob = float(ai_res["scores_map"].get("DOVE", 0.0))
+        net_score = (hawk_prob - dove_prob) * 100.0
+
+        results.append({
+            "Dönem": row["period_date"].strftime("%Y-%m"),
+            "period_date": row["period_date"],
+            "Net Skor": net_score,
+            "Şahin Olasılık": hawk_prob,
+            "Güvercin Olasılık": dove_prob
+        })
+
+    progress_bar.empty()
+    st.toast("Analiz tamamlandı!", icon="✅")
     return pd.DataFrame(results)
 
-def create_ai_trend_chart(df_res: pd.DataFrame):
-    """
-    Trend grafiği (Plotly). df_res: calculate_ai_trend_series çıktısı.
-    """
-    import plotly.graph_objects as go
-
-    if df_res is None or df_res.empty:
-        return None
-
-    df_res = df_res.copy()
-    if "Dönem" not in df_res.columns and "period_date" in df_res.columns:
-        df_res["Dönem"] = pd.to_datetime(df_res["period_date"]).dt.strftime("%Y-%m")
-
-    fig = go.Figure()
-
-    fig.add_trace(go.Scatter(
-        x=df_res["Dönem"],
-        y=df_res["Net Skor"],
-        mode="lines",
-        name="Trend",
-        line=dict(color="gray", width=1, dash="dot"),
-    ))
-
-    fig.add_trace(go.Scatter(
-        x=df_res["Dönem"],
-        y=df_res["Net Skor"],
-        mode="markers",
-        name="Aylık Durum",
-        marker=dict(
-            size=12,
-            color=df_res["Net Skor"],
-            colorscale="RdBu_r",
-            cmin=-100,
-            cmax=100,
-            showscale=True,
-            colorbar=dict(title="Duruş"),
-        ),
-        hovertemplate="<b>%{x}</b><br>Net Skor: %{y:.1f}<extra></extra>",
-    ))
-
-    fig.add_hline(y=0, line_color="black", opacity=0.3)
-
-    fig.update_layout(
-        title="🇹🇷 TCMB Metin Analizi (mrince RoBERTa)",
-        yaxis=dict(title="Net Skor", range=[-110, 110]),
-        height=450,
-        margin=dict(l=20, r=20, t=40, b=20),
-        hovermode="x unified",
-    )
-
-    return fig
 

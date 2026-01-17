@@ -657,24 +657,19 @@ if st.button("Bu Metni Detaylandır", type="secondary"):
         roberta_res = utils.analyze_with_roberta(txt_input)
 
         if isinstance(roberta_res, dict):
-            scores = roberta_res.get("scores_map", {})
+           # utils.py stable sürüm: roberta_res = {"scores_map": {"HAWK":..,"DOVE":..,"NEUT":..}}
+scores = roberta_res.get("scores_map", {}) if isinstance(roberta_res, dict) else {}
 
-        def _safe_float(x, default=0.0):
-    try:
-        if x is None:
-            return float(default)
-        return float(x)
-    except Exception:
-        return float(default)
+h = float(scores.get("HAWK") or 0.0)
+d = float(scores.get("DOVE") or 0.0)
+n = float(scores.get("NEUT") or 0.0)
 
-h = _safe_float(scores.get("HAWK", 0.0))
-d = _safe_float(scores.get("DOVE", 0.0))
-n = _safe_float(scores.get("NEUT", 0.0))
-net = _safe_float((h - d) * 100)
+net = float((h - d) * 100.0)
 
-c1.metric("Karar", roberta_res.get("best_label", "—"))
-c2.metric("Güven", f"%{_safe_float(roberta_res.get('best_score',0))*100:.1f}")
+c1.metric("Karar", f"🦅 Şahin" if h >= max(d, n) else ("🕊️ Güvercin" if d >= max(h, n) else "⚖️ Nötr"))
+c2.metric("Güven", f"%{max(h, d, n) * 100.0:.1f}")
 c3.metric("Net Skor", f"{net:.2f}")
+
 
             
 

@@ -671,26 +671,22 @@ with tab_roberta:
 if st.button("Bu Metni Detaylandır", type="secondary"):
     with st.spinner("Analiz ediliyor..."):
         roberta_res = utils.analyze_with_roberta(txt_input)
-        st.write("DEBUG: roberta_res =", roberta_res)
-        clf = utils.load_roberta_pipeline()
-        st.write("Model id2label:", clf.model.config.id2label)
 
+if isinstance(roberta_res, dict):
+    scores = roberta_res.get("scores_map", {})
+    h = scores.get("HAWK", 0.0)
+    d = scores.get("DOVE", 0.0)
+    net = roberta_res.get("net_score", (h - d) * 100)
 
-        if isinstance(roberta_res, dict):
-           # utils.py stable sürüm: roberta_res = {"scores_map": {"HAWK":..,"DOVE":..,"NEUT":..}}
-            scores = roberta_res.get("scores_map", {}) if isinstance(roberta_res, dict) else {}
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Karar", roberta_res.get("best_label", ""))
+    c2.metric("Güven", f"%{roberta_res.get('best_score',0)*100:.1f}")
+    c3.metric("Net Skor", f"{net:.2f}")
 
-            h = float(scores.get("HAWK") or 0.0)
-            d = float(scores.get("DOVE") or 0.0)
-
-            n = float(scores.get("NEUT") or 0.0)
-
-            net = float(((h or 0.0) - (d or 0.0)) * 100.0)
-
-
-            c1.metric("Karar", f"🦅 Şahin" if h >= max(d, n) else ("🕊️ Güvercin" if d >= max(h, n) else "⚖️ Nötr"))
-            c2.metric("Güven", f"%{max(h, d, n) * 100.0:.1f}")
-            c3.metric("Net Skor", f"{float(net) if net == net else 0.0:.2f}")
+    with st.expander("DEBUG"):
+        st.json(roberta_res)
+else:
+    st.error(f"Model hata döndürdü: {roberta_res}")
 
 
 
@@ -703,9 +699,12 @@ if st.button("Bu Metni Detaylandır", type="secondary"):
             # Cümle bazlı tablo (utils içinde varsa çalışır)
             df_sent = pd.DataFrame()
             if hasattr(utils, "analyze_sentences_with_roberta"):
-                df_sent = utils.analyze_sentences_with_roberta(txt_input)
-            else:
-                st.info("Cümle bazlı analiz bu sürümde devre dışı (utils.analyze_sentences_with_roberta bulunamadı).")
+    df_sent = utils.analyze_sentences_with_roberta(txt_input)
+    if not df_sent.empty:
+        st.dataframe(df_sent, use_container_width=True)
+else:
+    st.info("Cümle bazlı analiz bu sürümde devre dışı.")
+
 
             if df_sent is not None and not df_sent.empty:
                 st.write("Cümle Bazlı Ayrıştırma:")

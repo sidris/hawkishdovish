@@ -596,135 +596,110 @@ with tab7:
 with tab_roberta:
     st.header("🧠 CentralBankRoBERTa (Yapay Zeka Analizi)")
 
-    try:
-        _tab_roberta_ok = True
-    except Exception as e:
-        st.exception(e)
-        st.stop()
-
     if not utils.HAS_TRANSFORMERS:
         st.error("Kütüphaneler eksik.")
+        st.stop()
+
+    # 1) GENEL TREND
+    st.subheader("📈 Tarihsel Trend (Yumuşatılmış Skor)")
+
+    if st.session_state.get("ai_trend_df") is not None and not st.session_state["ai_trend_df"].empty:
+        fig_trend = utils.create_ai_trend_chart(st.session_state["ai_trend_df"])
+        if fig_trend:
+            st.plotly_chart(fig_trend, use_container_width=True, key="ai_chart_roberta")
+        else:
+            st.warning("Grafik oluşturulamadı.")
+
+        if st.button("🔄 Tekrar Hesapla", key="ai_recalc"):
+            st.session_state["ai_trend_df"] = None
+            st.rerun()
     else:
-        # 1) GENEL TREND
-        st.subheader("📈 Tarihsel Trend (Ağırlıklı Skor)")
+        if st.button("🚀 Tüm Geçmişi Analiz Et", type="primary", key="ai_run_all"):
+            with st.spinner("Model tüm geçmişi tarıyor..."):
+                df_all_rob = utils.fetch_all_data()
+                res_df = utils.calculate_ai_trend_series(df_all_rob)
 
-        if st.session_state.get("ai_trend_df") is not None and not st.session_state["ai_trend_df"].empty:
-            fig_trend = utils.create_ai_trend_chart(st.session_state["ai_trend_df"])
-            if fig_trend:
-                st.plotly_chart(fig_trend, use_container_width=True, key="ai_chart_roberta")
-            else:
-                st.warning("Veri var ancak grafik oluşturulamadı.")
-
-            if st.button("🔄 Tekrar Hesapla", key="btn_ai_recalc_roberta"):
-                st.session_state["ai_trend_df"] = None
-                st.rerun()
-        else:
-            if st.button("🚀 Tüm Geçmişi Analiz Et", type="primary", key="btn_ai_run_roberta"):
-                with st.spinner("Model çalışıyor..."):
-                    df_all_rob = utils.fetch_all_data()
-                    res_df = utils.calculate_ai_trend_series(df_all_rob)
-
-                    if res_df is None or res_df.empty:
-                        st.error("Model hiçbir sonuç döndürmedi. Lütfen loglardaki DEBUG çıktılarını kontrol edin.")
-                    else:
-                        st.session_state["ai_trend_df"] = res_df
-                        st.rerun()
-
-        st.divider()
-
-        # 1.5) HIZLI TESTLER (opsiyonel)
-        with st.expander("🧪 Model Testleri (LABEL mapping kontrolü)", expanded=False):
-            tests = {
-                "HAWK_TEST": "Monetary policy will be tightened further and additional rate hikes may be delivered.",
-                "DOVE_TEST": "Monetary policy easing will begin soon and rate cuts are likely in the coming meetings.",
-                "NEUT_TEST": "The committee decided to keep the policy rate unchanged."
-            }
-
-            clf = utils.load_roberta_pipeline()
-            if clf is None:
-                st.warning("Model yüklenemedi (load_roberta_pipeline None döndü).")
-            else:
-                for k, s in tests.items():
-                    out = clf(s)
-                    if isinstance(out, list) and out and isinstance(out[0], list):
-                        out = out[0]
-                    if isinstance(out, list) and out:
-                        best = max(out, key=lambda x: float(x.get("score", 0.0)))
-                        st.write(k, best)
-                    else:
-                        st.write(k, out)
-
-        st.divider()
-
-        # 2) TEKİL ANALİZ
-        st.subheader("🔍 Tekil Dönem Detay Analizi")
-
-        df_all_rob = utils.fetch_all_data()
-        if df_all_rob is None or df_all_rob.empty:
-            st.info("Veri yok.")
-        else:
-            df_all_rob = df_all_rob.copy()
-            df_all_rob["period_date"] = pd.to_datetime(df_all_rob["period_date"], errors="coerce")
-            df_all_rob = df_all_rob.dropna(subset=["period_date"])
-            df_all_rob["Donem"] = df_all_rob["period_date"].dt.strftime("%Y-%m")
-            df_all_rob = df_all_rob.sort_values("period_date", ascending=False)
-
-            sel_rob_period = st.selectbox(
-                "İncelenecek Dönem:",
-                df_all_rob["Donem"].tolist(),
-                index=0,
-                key="rob_single_sel"
-            )
-
-            # Seçimle birlikte txt_input her zaman tanımlansın
-            row_rob = df_all_rob[df_all_rob["Donem"] == sel_rob_period].iloc[0]
-            txt_input = str(row_rob.get("text_content", ""))
-
-            with st.expander("Metni Gör"):
-                st.write(txt_input)
-
-            # Buton sonucu ve debug dataları için güvenli state
-            if "roberta_last" not in st.session_state:
-                st.session_state["roberta_last"] = None
-
-            if st.button("Bu Metni Detaylandır", type="secondary", key="btn_roberta_detail"):
-                with st.spinner("Analiz ediliyor..."):
-                    roberta_res = utils.analyze_with_roberta(txt_input)
-                    st.session_state["roberta_last"] = roberta_res
-
-            # Butona basıldıysa sonucu göster (butona basılmadıysa NameError olmaz)
-            roberta_res = st.session_state.get("roberta_last")
-
-            if isinstance(roberta_res, dict):
-                scores = roberta_res.get("scores_map", {}) or {}
-                h = float(scores.get("HAWK", 0.0))
-                d = float(scores.get("DOVE", 0.0))
-                n = float(scores.get("NEUT", 0.0))
-                net = float(roberta_res.get("net_score", (h - d) * 100.0))
-
-                c1, c2, c3 = st.columns(3)
-                c1.metric("Karar", roberta_res.get("best_label", ""))
-                c2.metric("Güven", f"%{float(roberta_res.get('best_score', 0.0)) * 100:.1f}")
-                c3.metric("Net Skor", f"{net:.2f}")
-
-                st.write("Sınıf Skorları:")
-                st.json({"HAWK": h, "DOVE": d, "NEUT": n})
-
-                with st.expander("DEBUG: ham çıktı"):
-                    st.json(roberta_res)
-
-                # Cümle bazlı analiz (utils içinde varsa)
-                if hasattr(utils, "analyze_sentences_with_roberta"):
-                    df_sent = utils.analyze_sentences_with_roberta(txt_input)
-                    if df_sent is not None and not df_sent.empty:
-                        st.write("Cümle Bazlı Ayrıştırma:")
-                        st.dataframe(df_sent, use_container_width=True)
-                    else:
-                        st.info("Cümle bazlı analiz boş döndü (metin kısa olabilir).")
+                if res_df is None or res_df.empty:
+                    st.error("Model hiçbir sonuç döndürmedi. (metinler boş olabilir veya model yüklenememiş olabilir)")
                 else:
-                    st.info("Cümle bazlı analiz bu sürümde devre dışı (utils.analyze_sentences_with_roberta yok).")
+                    st.session_state["ai_trend_df"] = res_df
+                    st.rerun()
 
-            elif roberta_res is None:
-                st.info("Detay görmek için 'Bu Metni Detaylandır' butonuna basın.")
-            else:
-                st.error(f"AI analiz hatası: {roberta_res}")
+    st.divider()
+
+    # 2) HIZLI MODEL TESTİ (debug)
+    st.subheader("🧪 Hızlı Test (Debug)")
+    tests = {
+        "HAWK_TEST": "Monetary policy will be tightened further and additional rate hikes may be delivered.",
+        "DOVE_TEST": "Monetary policy easing will begin soon and rate cuts are likely in the coming meetings.",
+        "NEUT_TEST": "The committee decided to keep the policy rate unchanged."
+    }
+
+    clf = utils.load_roberta_pipeline()
+    if clf is None:
+        st.error("Model pipeline yüklenemedi.")
+    else:
+        for k, s in tests.items():
+            out = clf(s)
+            if isinstance(out, list) and out and isinstance(out[0], list):
+                out = out[0]
+            best = max(out, key=lambda x: x.get("score", 0.0))
+            st.write(k, best)
+
+    st.divider()
+
+    # 3) TEKİL DÖNEM DETAY
+    st.subheader("🔍 Tekil Dönem Detay Analizi")
+
+    df_all_rob = utils.fetch_all_data()
+    if df_all_rob is None or df_all_rob.empty:
+        st.info("Veri yok.")
+        st.stop()
+
+    df_all_rob = df_all_rob.copy()
+    df_all_rob["period_date"] = pd.to_datetime(df_all_rob["period_date"], errors="coerce")
+    df_all_rob = df_all_rob.dropna(subset=["period_date"])
+    df_all_rob["Donem"] = df_all_rob["period_date"].dt.strftime("%Y-%m")
+    df_all_rob = df_all_rob.sort_values("period_date", ascending=False)
+
+    sel_rob_period = st.selectbox(
+        "İncelenecek Dönem:",
+        df_all_rob["Donem"].tolist(),
+        index=0,
+        key="rob_single_sel"
+    )
+
+    row_rob = df_all_rob[df_all_rob["Donem"] == sel_rob_period].iloc[0]
+    txt_input = str(row_rob.get("text_content", "") or "")
+
+    with st.expander("Metni Gör"):
+        st.write(txt_input)
+
+    if st.button("Bu Metni Detaylandır", type="secondary", key="rob_detail_btn"):
+        with st.spinner("Analiz ediliyor..."):
+            roberta_res = utils.analyze_with_roberta(txt_input)
+
+        if not isinstance(roberta_res, dict):
+            st.error(f"Model hata döndürdü: {roberta_res}")
+        else:
+            scores = roberta_res.get("scores_map", {})
+            h = float(scores.get("HAWK", 0.0))
+            d = float(scores.get("DOVE", 0.0))
+            n = float(scores.get("NEUT", 0.0))
+
+            net = float(roberta_res.get("net_score", 0.0))
+            net_raw = float(roberta_res.get("net_score_raw", 0.0))
+
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Duruş", roberta_res.get("best_label", ""))
+            c2.metric("Güven", f"%{float(roberta_res.get('best_score', 0.0))*100:.1f}")
+            c3.metric("Net Skor", f"{net:.2f}")
+
+            st.caption(f"Ham Net: {net_raw:.2f}  |  Yumuşatılmış Net: {net:.2f}")
+            st.write("Sınıf Skorları:")
+            st.json({"HAWK": h, "DOVE": d, "NEUT": n})
+
+            with st.expander("DEBUG (raw response)"):
+                st.json(roberta_res)
+
+    st.info("Not: Cümle bazlı analiz bu sürümde devre dışı bırakıldı.")

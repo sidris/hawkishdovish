@@ -1104,15 +1104,18 @@ def calculate_ai_trend_series(df_all):
     return pd.DataFrame(results)
 
 # =============================================================================
-# 8. CENTRAL BANK RoBERTa ENTEGRASYONU (DEBUG / HATA AYIKLAMA MODU)
+# 8. CENTRAL BANK RoBERTa ENTEGRASYONU (TCMB ÖZEL MODELİ)
+# Model: gtfintechlab/model_central_bank_republic_of_turkey_stance_label
 # =============================================================================
 
 @st.cache_resource
 def load_roberta_pipeline():
     try:
         from transformers import pipeline
-        # Güvenilir bir model kullanalım
-        model_name = "gtfintechlab/FOMC-RoBERTa"
+        # KULLANICI İSTEĞİ: TCMB ÖZEL MODELİ
+        model_name = "gtfintechlab/model_central_bank_republic_of_turkey_stance_label"
+        
+        # 'top_k=None' ile tüm olasılıkları çekiyoruz
         classifier = pipeline("text-classification", model=model_name, top_k=None)
         return classifier
     except ImportError:
@@ -1121,21 +1124,30 @@ def load_roberta_pipeline():
         st.error(f"Model Yükleme Hatası: {e}")
         return None
 
-def normalize_label_debug(raw_label):
+def normalize_label_tr(raw_label):
     """
-    Etiketleri normalize eder ve konsola basar.
+    TCMB Özel Modeli Etiketlerini Bizim Sisteme (HAWK/DOVE) Çevirir.
+    Bu model genelde şu çıktıları üretir:
+    - Positive / Hawkish -> Sıkı duruş, istikrar vurgusu
+    - Negative / Dovish -> Riskler, gevşeme ihtiyacı
+    - Neutral -> Veri seti açıklaması
     """
     lbl = str(raw_label).lower().strip()
     
-    # GTFintechLab / FOMC Modeli Genellikle şu etiketleri kullanır:
-    # 0 -> Negative/Dovish
-    # 1 -> Positive/Hawkish
-    # 2 -> Neutral
-    
-    if "hawkish" in lbl or "positive" in lbl or "label_1" in lbl: return "HAWK"
-    if "dovish" in lbl or "negative" in lbl or "label_0" in lbl: return "DOVE"
-    if "neutral" in lbl or "label_2" in lbl: return "NEUT"
-    
+    # 1. ŞAHİN (HAWKISH) SİNYALLERİ
+    # TCMB literatüründe "Positive" genelde "İstikrar", "Sıkı Duruş", "İyileşme" demektir -> ŞAHİN
+    if any(x in lbl for x in ["hawkish", "positive", "label_2", "label_1"]): 
+        # Not: Bazı modellerde Label_1 Positive, Label_0 Negative'dir.
+        # Bu modelin huggingface kartına göre Positive/Hawkish eşleşmesi yapılır.
+        if "label_0" in lbl: return "DOVE" # Genelde 0 negatiftir
+        return "HAWK"
+
+    # 2. GÜVERCİN (DOVISH) SİNYALLERİ
+    # "Negative" genelde "Risk", "Bozulma", "Enflasyonist Baskı (Kötü anlamda değil, risk anlamında)" -> GÜVERCİN
+    if any(x in lbl for x in ["dovish", "negative", "label_0"]): 
+        return "DOVE"
+
+    # 3. NÖTR
     return "NEUT"
 
 def analyze_with_roberta(text):
@@ -1145,12 +1157,13 @@ def analyze_with_roberta(text):
     if classifier == "MISSING_LIB": return "MISSING_LIB"
     if classifier is None: return "ERROR"
 
-    truncated_text = text[:1500] # Hız için biraz daha kısalttık
+    # Metni çok uzunsa kırp (Model limiti genelde 512 token)
+    truncated_text = text[:1500] 
     
     try:
         raw_results = classifier(truncated_text)
         
-        # İç içe liste düzeltmesi
+        # Liste düzeltmesi
         if isinstance(raw_results, list) and isinstance(raw_results[0], list):
             results = raw_results[0]
         else:
@@ -1164,30 +1177,34 @@ def analyze_with_roberta(text):
             lbl_raw = str(r['label'])
             score = float(r['score'])
             
-            std_lbl = normalize_label_debug(lbl_raw)
-            scores_map[std_lbl] = score
+            std_lbl = normalize_label_tr(lbl_raw)
+            
+            # Olasılığı ilgili sepete ekle (veya direkt ata)
+            # Bu modelde genelde 3 label döner, biz en baskın olanı değil,
+            # olasılık dağılımını kullanırsak daha hassas olur.
+            scores_map[std_lbl] += score
             
             if score > best_score:
                 best_score = score
                 best_raw_label = lbl_raw
         
-        # Return ederken ham etiketi de dönelim ki görebilelim
+        # İnsan tarafından okunabilir etiket
         human_label = "⚖️ Nötr"
-        if normalize_label_debug(best_raw_label) == "HAWK": human_label = "🦅 Şahin"
-        elif normalize_label_debug(best_raw_label) == "DOVE": human_label = "🕊️ Güvercin"
+        final_lbl = normalize_label_tr(best_raw_label)
+        if final_lbl == "HAWK": human_label = "🦅 Şahin (Sıkı Duruş)"
+        elif final_lbl == "DOVE": human_label = "🕊️ Güvercin (Gevşeme/Risk)"
         
         return {
             "best_label": human_label,
             "best_score": best_score,
             "scores_map": scores_map,
-            "raw_debug": results # Hata ayıklama için ham veri
+            "raw_debug": results
         }
 
     except Exception as e:
         return f"Error: {str(e)}"
 
 def analyze_sentences_with_roberta(text):
-    # Bu fonksiyon da yukarıdaki mantıkla çalışır, basitleştirildi.
     if not text: return pd.DataFrame()
     classifier = load_roberta_pipeline()
     if not classifier or classifier == "MISSING_LIB": return pd.DataFrame()
@@ -1204,7 +1221,8 @@ def analyze_sentences_with_roberta(text):
             else: best_pred = pred
             
             lbl_raw = str(best_pred['label'])
-            std_lbl = normalize_label_debug(lbl_raw)
+            std_lbl = normalize_label_tr(lbl_raw)
+            
             label_tr = "⚖️ Nötr"
             if std_lbl == "HAWK": label_tr = "🦅 Şahin"
             elif std_lbl == "DOVE": label_tr = "🕊️ Güvercin"
@@ -1219,14 +1237,12 @@ def analyze_sentences_with_roberta(text):
     
     return pd.DataFrame(results_list)
 
-
 def calculate_ai_trend_series(df_all):
     if not HAS_TRANSFORMERS:
         st.error("Transformers kütüphanesi yok!")
         return pd.DataFrame()
     
     if df_all.empty:
-        st.warning("Veri tablosu boş!")
         return pd.DataFrame()
 
     df_all = df_all.copy()
@@ -1235,20 +1251,13 @@ def calculate_ai_trend_series(df_all):
     
     results = []
     
-    # HATA AYIKLAMA: İlk 3 satırın sonucunu ekrana yazdır
-    debug_limit = 3
-    st.info("🔍 Hata Ayıklama Modu Çalışıyor (İlk 3 kayıt inceleniyor)...")
-    
     for i, row in df_all.iterrows():
         text = row['text_content']
         date_str = row['period_date'].strftime('%Y-%m')
         
         ai_res = analyze_with_roberta(text)
         
-        # Eğer hata döndüyse
-        if isinstance(ai_res, str):
-            if i < debug_limit: st.error(f"{date_str} Hatası: {ai_res}")
-            continue
+        if isinstance(ai_res, str): continue
             
         net_score = 0.0
         hawk_prob = 0.0
@@ -1258,18 +1267,13 @@ def calculate_ai_trend_series(df_all):
             scores = ai_res['scores_map']
             hawk_prob = scores.get("HAWK", 0.0)
             dove_prob = scores.get("DOVE", 0.0)
-            net_score = (hawk_prob - dove_prob) * 100
             
-            # EKRANA BASALIM: Model ne döndürüyor?
-            if i < debug_limit:
-                st.write(f"**Tarih:** {date_str}")
-                st.json(ai_res['raw_debug']) # Modelin ham çıktısını görelim
-                st.write(f"👉 Algılanan: Şahin={hawk_prob:.2f}, Güvercin={dove_prob:.2f}, NET={net_score:.2f}")
-                st.divider()
+            # Formül: (Şahin - Güvercin) * 100
+            net_score = (hawk_prob - dove_prob) * 100
         
         results.append({
             "Dönem": date_str,
-            "period_date": row['period_date'], # Sıralama için önemli
+            "period_date": row['period_date'],
             "Net Skor": net_score,
             "Şahin Olasılık": hawk_prob,
             "Güvercin Olasılık": dove_prob
@@ -1277,10 +1281,10 @@ def calculate_ai_trend_series(df_all):
         
     return pd.DataFrame(results)
 
+# GRAFİK FONKSİYONU (EĞER SİLİNDİYSE UTILS.PY EN ALTINA EKLEYİN)
 def create_ai_trend_chart(df_res):
     import plotly.graph_objects as go
-    if df_res is None or df_res.empty: 
-        return None
+    if df_res is None or df_res.empty: return None
 
     fig_trend = go.Figure()
     
@@ -1294,7 +1298,7 @@ def create_ai_trend_chart(df_res):
     for _, r in df_res.iterrows():
         s_prob = r.get('Şahin Olasılık', 0.0)
         g_prob = r.get('Güvercin Olasılık', 0.0)
-        hover_texts.append(f"Şahin: %{s_prob*100:.1f}<br>Güvercin: %{g_prob*100:.1f}")
+        hover_texts.append(f"Şahin (Pos): %{s_prob*100:.1f}<br>Güvercin (Neg): %{g_prob*100:.1f}")
 
     fig_trend.add_trace(go.Scatter(
         x=df_res['Dönem'], y=df_res['Net Skor'],
@@ -1302,7 +1306,7 @@ def create_ai_trend_chart(df_res):
         marker=dict(
             size=14, color=df_res['Net Skor'], colorscale='RdBu_r', 
             cmin=-100, cmax=100, showscale=True,
-            colorbar=dict(title="Şahinlik", thickness=10)
+            colorbar=dict(title="Duruş (Stance)", thickness=10)
         ),
         text=hover_texts,
         hovertemplate="<b>%{x}</b><br>Net Skor: %{y:.1f}<br>%{text}<extra></extra>"
@@ -1313,8 +1317,8 @@ def create_ai_trend_chart(df_res):
     fig_trend.add_hrect(y0=-100, y1=0, fillcolor="blue", opacity=0.05, layer="below", line_width=0)
 
     fig_trend.update_layout(
-        title="🤖 AI Söylem Analizi (Ağırlıklı Net Skor)",
-        yaxis=dict(title="Net Skor", range=[-110, 110], zeroline=False),
+        title="🤖 TCMB Özel Model Analizi (GTFintechLab)",
+        yaxis=dict(title="Net Skor (Sıkı Duruş - Gevşeme)", range=[-110, 110], zeroline=False),
         hovermode="closest", height=450, margin=dict(l=20, r=20, t=40, b=20)
     )
     return fig_trend

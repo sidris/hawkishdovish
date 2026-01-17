@@ -1115,13 +1115,28 @@ import time
 def load_roberta_pipeline():
     try:
         from transformers import pipeline
-        # İSTEDİĞİN MODEL (LINKTEKİ)
-        model_name = "mrince/CBRT-RoBERTa-Large-HawkishDovish-Classifier"
-        classifier = pipeline("text-classification", model=model_name, top_k=None, truncation=True)
+
+        model_name = "mrince/CBRT-RoBERTa-HawkishDovish-Classifier"
+
+        # HF token (opsiyonel ama gated ise şart)
+        hf_token = None
+        try:
+            hf_token = st.secrets.get("HF_TOKEN")
+        except Exception:
+            hf_token = None
+
+        classifier = pipeline(
+            "text-classification",
+            model=model_name,
+            top_k=None,
+            token=hf_token  # transformers yeni sürümlerde token paramı
+        )
         return classifier
+
     except Exception as e:
         print(f"Model Yükleme Hatası: {e}")
         return None
+
 
 def normalize_label_mrince(raw_label):
     """

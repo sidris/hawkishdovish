@@ -202,6 +202,21 @@ with tab1:
     # 2. Veri Yoksa Çalışacak ELSE Bloğu (IF ile aynı hizada)
     else: 
         st.info("Kayıt yok.")
+
+          
+        st.markdown("---")
+        st.subheader("🤖 Yapay Zeka (RoBERTa) Trendi")
+        
+        if st.session_state.get('ai_trend_df') is not None:
+            fig_ai = utils.create_ai_trend_chart(st.session_state['ai_trend_df'])
+            
+            # DÜZELTME BURADA: key="ai_chart_dashboard" EKLENDİ
+            st.plotly_chart(fig_ai, use_container_width=True, key="ai_chart_dashboard")
+            
+        else:
+            st.info("Yapay zeka analizi hesaplama gücü gerektirir. Görüntülemek için aşağıdaki butonu kullanın.")
+            if st.button("🚀 AI Analizini Başlat (Dashboard)", key="btn_ai_dash"):
+                # ... (Devamı aynı) ...
 # ==============================================================================
 # TAB 2: VERİ GİRİŞİ
 # ==============================================================================

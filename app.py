@@ -134,11 +134,16 @@ with tab1:
         if not df_events.empty:
             for _, ev in df_events.iterrows():
                 ev_date = pd.to_datetime(ev['event_date']).strftime('%Y-%m-%d')
+                
+                # --- GÜNCELLENEN KISIM BAŞLANGIÇ ---
                 layout_shapes.append(dict(
                     type="line", xref="x", yref="paper",
-                    x0=ev_date, x1=ev_date, y0=0, y1=1,
+                    x0=ev_date, x1=ev_date, 
+                    y0=0, y1=0.2,  # BURASI DEĞİŞTİ: y1=1 yerine y1=0.2 (%20 yükseklik)
                     line=dict(color="purple", width=2, dash="dot")
                 ))
+                # --- GÜNCELLENEN KISIM BİTİŞ ---
+
                 first_link = ev['links'].split('\n')[0] if ev['links'] else ""
                 layout_annotations.append(dict(
                     x=ev_date, y=0.05, xref="x", yref="paper",
@@ -170,7 +175,6 @@ with tab1:
                         
         if st.button("🔄 Yenile"): st.cache_data.clear(); st.rerun()
     else: st.info("Kayıt yok.")
-
 # ==============================================================================
 # TAB 2: VERİ GİRİŞİ
 # ==============================================================================

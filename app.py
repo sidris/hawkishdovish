@@ -705,7 +705,8 @@ with tab_roberta:
 
 
             st.write("Sınıf Skorları:")
-            st.json({"HAWK": h, "DOVE": d, "NEUT": n})
+            st.json({"HAWK": h, "DOVE": d, "NEUT": scores.get("NEUT", 0.0)})
+
 
             # Cümle bazlı tablo (utils içinde varsa çalışır)
             df_sent = pd.DataFrame()

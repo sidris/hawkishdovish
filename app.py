@@ -170,13 +170,20 @@ with tab1:
         )
         st.plotly_chart(fig, use_container_width=True)
         
-        # --- YENİ EKLENEN AI TREND GRAFİĞİ (BURASI IF BLOĞUNUN İÇİNDE OLMALI) ---
+       # --- YENİ EKLENEN AI TREND GRAFİĞİ (GÜVENLİ VERSİYON) ---
         st.markdown("---")
         st.subheader("🤖 Yapay Zeka (RoBERTa) Trendi")
         
-        if st.session_state.get('ai_trend_df') is not None:
+        # Session state dolu mu diye bakıyoruz
+        if st.session_state.get('ai_trend_df') is not None and not st.session_state['ai_trend_df'].empty:
+            # Grafiği oluşturmaya çalışıyoruz
             fig_ai = utils.create_ai_trend_chart(st.session_state['ai_trend_df'])
-            st.plotly_chart(fig_ai, use_container_width=True)
+            
+            # KONTROL: Grafik oluştu mu? (None değilse çiz)
+            if fig_ai:
+                st.plotly_chart(fig_ai, use_container_width=True, key="ai_chart_dashboard")
+            else:
+                st.warning("Grafik oluşturulamadı (Veri seti boş olabilir).")
         else:
             st.info("Yapay zeka analizi hesaplama gücü gerektirir. Görüntülemek için aşağıdaki butonu kullanın.")
             if st.button("🚀 AI Analizini Başlat (Dashboard)", key="btn_ai_dash"):
@@ -185,9 +192,14 @@ with tab1:
                 else:
                     with st.spinner("AI Modeli tüm geçmişi tarıyor... Lütfen bekleyin..."):
                         df_all_data = utils.fetch_all_data()
+                        # Hesaplamayı yap ve kaydet
                         res_df = utils.calculate_ai_trend_series(df_all_data)
-                        st.session_state['ai_trend_df'] = res_df
-                        st.rerun()
+                        
+                        if res_df.empty:
+                            st.error("Analiz sonucunda hiç veri dönmedi! (Utils dosyasındaki Debug çıktılarına bakın)")
+                        else:
+                            st.session_state['ai_trend_df'] = res_df
+                            st.rerun()
         # -----------------------------------------------------------------------
 
         if event_links_display:
@@ -578,6 +590,7 @@ with tab7:
 # TAB ROBERTA: CB-RoBERTa
 # ==============================================================================
 
+
 with tab_roberta:
     st.header("🧠 CentralBankRoBERTa (Yapay Zeka Analizi)")
     
@@ -587,26 +600,33 @@ with tab_roberta:
         # 1. BÖLÜM: GENEL TREND
         st.subheader("📈 Tarihsel Trend (Ağırlıklı Skor)")
         
-        if st.session_state.get('ai_trend_df') is not None:
+        # Veri var mı ve boş değil mi?
+        if st.session_state.get('ai_trend_df') is not None and not st.session_state['ai_trend_df'].empty:
             fig_trend = utils.create_ai_trend_chart(st.session_state['ai_trend_df'])
             
-            # DÜZELTME BURADA: key="ai_chart_roberta" EKLENDİ
-            st.plotly_chart(fig_trend, use_container_width=True, key="ai_chart_roberta")
+            # KONTROL: Grafik oluştu mu?
+            if fig_trend:
+                st.plotly_chart(fig_trend, use_container_width=True, key="ai_chart_roberta")
+            else:
+                st.warning("Veri var ancak grafik oluşturulamadı.")
             
             if st.button("🔄 Tekrar Hesapla"):
                 st.session_state['ai_trend_df'] = None
                 st.rerun()
-
         else:
-            # Hesaplanmamışsa buton göster
             if st.button("🚀 Tüm Geçmişi Analiz Et", type="primary"):
-                with st.spinner("Model çalışıyor..."):
+                with st.spinner("Model çalışıyor (Debug Modu)..."):
                     df_all_rob = utils.fetch_all_data()
                     res_df = utils.calculate_ai_trend_series(df_all_rob)
-                    st.session_state['ai_trend_df'] = res_df
-                    st.rerun()
+                    
+                    if res_df.empty:
+                        st.error("Model hiçbir sonuç döndürmedi. Lütfen terminaldeki/loglardaki DEBUG çıktılarını kontrol edin.")
+                    else:
+                        st.session_state['ai_trend_df'] = res_df
+                        st.rerun()
 
         st.divider()
+        # ... (Geri kalan kodlar aynı) ...
 
         # 2. BÖLÜM: TEKİL ANALİZ (Sayfa yenilense de üstteki grafik kalır)
         st.subheader("🔍 Tekil Dönem Detay Analizi")

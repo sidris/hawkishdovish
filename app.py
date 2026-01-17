@@ -634,6 +634,23 @@ with tab_roberta:
                         st.session_state['ai_trend_df'] = res_df
                         st.rerun()
 
+        tests = {
+          "HAWK_TEST": "Monetary policy will be tightened further and additional rate hikes may be delivered.",
+          "DOVE_TEST": "Monetary policy easing will begin soon and rate cuts are likely in the coming meetings.",
+          "NEUT_TEST": "The committee decided to keep the policy rate unchanged."
+        }
+        
+        for k, s in tests.items():
+            out = utils.load_roberta_pipeline()(s)
+            if isinstance(out, list) and out and isinstance(out[0], list):
+                out = out[0]
+            best = max(out, key=lambda x: x["score"])
+            st.write(k, best)
+
+
+
+
+        
         st.divider()
         # ... (Geri kalan kodlar aynı) ...
         # 2. BÖLÜM: TEKİL ANALİZ (Sayfa yenilense de üstteki grafik kalır)

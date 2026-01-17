@@ -552,9 +552,9 @@ with tab_roberta:
     if not utils.HAS_TRANSFORMERS:
         st.error("`transformers` ve `torch` kütüphaneleri yüklü değil. Terminalde `pip install transformers torch` çalıştırın.")
     else:
-        # --- 1. SEÇENEK: TÜM ZAMANLARIN GRAFİĞİ ---
-        st.subheader("📈 Tarihsel Trend Analizi (Tüm Kayıtlar)")
-        st.info("Aşağıdaki butona bastığınızda sistem tüm geçmiş kayıtları tarar, her biri için AI modelini çalıştırır ve Şahin (+100) / Güvercin (-100) skorlaması yapar.")
+        # --- 1. SEÇENEK: TÜM ZAMANLARIN GRAFİĞİ (AĞIRLIKLI SKOR) ---
+        st.subheader("📈 Tarihsel Trend Analizi (Ağırlıklı Net Skor)")
+        st.info("Bu analiz, modelin Şahin ve Güvercin olasılıklarını birbirinden çıkararak (-100 ile +100 arası) hassas bir net skor üretir.")
         
         if st.button("🚀 Tüm Geçmişi Analiz Et ve Grafiği Çiz (Zaman Alabilir)", type="primary"):
             df_all_rob = utils.fetch_all_data()
@@ -576,29 +576,33 @@ with tab_roberta:
                     
                     status_text.text(f"Analiz ediliyor: {date_str} ({i+1}/{total_rows})")
                     
-                    # Modelden sonucu al
+                    # Modelden sonucu al (utils.py içindeki fonksiyon dict döner)
                     ai_res = utils.analyze_with_roberta(text)
                     
-                    score_val = 0
-                    label_val = "Nötr"
+                    net_score = 0.0
+                    hawk_prob = 0.0
+                    dove_prob = 0.0
                     
-                    if isinstance(ai_res, dict):
-                        lbl = ai_res.get('best_label', '')
-                        if "Şahin" in lbl:
-                            score_val = 100
-                            label_val = "Şahin"
-                        elif "Güvercin" in lbl:
-                            score_val = -100
-                            label_val = "Güvercin"
-                        else:
-                            score_val = 0
-                            label_val = "Nötr"
+                    if isinstance(ai_res, dict) and 'all_scores' in ai_res:
+                        scores = ai_res['all_scores']
+                        # Utils.py içindeki etiket haritasına göre anahtarları alıyoruz
+                        # Anahtarlar: "🦅 Şahin (Hawkish)", "🕊️ Güvercin (Dovish)", "⚖️ Nötr (Neutral)"
+                        
+                        hawk_prob = scores.get("🦅 Şahin (Hawkish)", 0.0)
+                        # Yedek kontrol (eski utils versiyonları için)
+                        if hawk_prob == 0: hawk_prob = scores.get("Şahin (Pozitif)", 0.0)
+                            
+                        dove_prob = scores.get("🕊️ Güvercin (Dovish)", 0.0)
+                        if dove_prob == 0: dove_prob = scores.get("Güvercin (Negatif)", 0.0)
+                        
+                        # FORMÜL: (Şahin - Güvercin) * 100
+                        net_score = (hawk_prob - dove_prob) * 100
                     
                     results.append({
                         "Dönem": date_str,
-                        "Tarih": data['period_date'],
-                        "Skor": score_val,
-                        "Karar": label_val
+                        "Net Skor": net_score,
+                        "Şahin Olasılık": hawk_prob,
+                        "Güvercin Olasılık": dove_prob
                     })
                     
                     # Progress güncelle
@@ -610,49 +614,64 @@ with tab_roberta:
                 # --- GRAFİK ÇİZİMİ ---
                 fig_trend = go.Figure()
                 
-                # Çizgi
+                # Çizgi (Gradient renklendirme Plotly line'da zordur, o yüzden gri çizgi + renkli nokta yapıyoruz)
                 fig_trend.add_trace(go.Scatter(
                     x=df_res['Dönem'], 
-                    y=df_res['Skor'],
-                    mode='lines+markers',
-                    name='AI Skoru',
+                    y=df_res['Net Skor'],
+                    mode='lines',
+                    name='Trend',
                     line=dict(color='gray', width=1, dash='dot')
                 ))
 
-                # Renkli Markerlar (Şahin=Kırmızı, Güvercin=Yeşil/Mavi, Nötr=Gri)
-                colors = df_res['Skor'].map({100: 'red', -100: 'blue', 0: 'gray'})
-                
+                # Renkli Markerlar (Skora göre renk değişir)
+                # Kırmızı (+100) -> Gri (0) -> Mavi (-100)
                 fig_trend.add_trace(go.Scatter(
                     x=df_res['Dönem'],
-                    y=df_res['Skor'],
+                    y=df_res['Net Skor'],
                     mode='markers',
-                    marker=dict(color=colors, size=12),
-                    text=df_res['Karar'],
-                    hovertemplate="<b>%{x}</b><br>Karar: %{text}<br>Skor: %{y}<extra></extra>",
-                    showlegend=False
+                    name='Net Skor',
+                    marker=dict(
+                        size=14,
+                        color=df_res['Net Skor'],
+                        colorscale='RdBu_r', # Red-Blue Reverse (Red high, Blue low)
+                        cmin=-100,
+                        cmax=100,
+                        showscale=True,
+                        colorbar=dict(title="Şahinlik Gücü")
+                    ),
+                    text=[f"Şahin: %{r['Şahin Olasılık']*100:.1f}<br>Güvercin: %{r['Güvercin Olasılık']*100:.1f}" for r in results],
+                    hovertemplate="<b>%{x}</b><br>Net Skor: %{y:.1f}<br>%{text}<extra></extra>"
                 ))
 
                 # Referans çizgileri
-                fig_trend.add_hline(y=0, line_width=1, line_color="black")
-                fig_trend.add_hline(y=100, line_width=0.5, line_dash="dash", line_color="red", annotation_text="ŞAHİN (+100)", annotation_position="top left")
-                fig_trend.add_hline(y=-100, line_width=0.5, line_dash="dash", line_color="blue", annotation_text="GÜVERCİN (-100)", annotation_position="bottom left")
+                fig_trend.add_hline(y=0, line_width=2, line_color="black", opacity=0.3)
+                fig_trend.add_hrect(y0=0, y1=100, fillcolor="red", opacity=0.05, layer="below", line_width=0)
+                fig_trend.add_hrect(y0=-100, y1=0, fillcolor="blue", opacity=0.05, layer="below", line_width=0)
 
                 fig_trend.update_layout(
-                    title="Yapay Zeka Karar Trendi (Şahin vs Güvercin)",
+                    title="Merkez Bankası Söylem Analizi (Ağırlıklı Net Skor)",
                     yaxis=dict(
-                        title="Skor",
-                        range=[-120, 120],
-                        tickvals=[-100, 0, 100],
-                        ticktext=["Güvercin", "Nötr", "Şahin"]
+                        title="Net Skor (Şahin - Güvercin)",
+                        range=[-110, 110],
+                        zeroline=False
                     ),
-                    hovermode="x unified",
-                    height=500
+                    hovermode="closest",
+                    height=550
                 )
                 
+                # Açıklamalar
+                fig_trend.add_annotation(x=0.01, y=95, xref="paper", yref="y", text="🦅 ŞAHİN BÖLGESİ", showarrow=False, font=dict(color="darkred"))
+                fig_trend.add_annotation(x=0.01, y=-95, xref="paper", yref="y", text="🕊️ GÜVERCİN BÖLGESİ", showarrow=False, font=dict(color="darkblue"))
+
                 st.plotly_chart(fig_trend, use_container_width=True)
                 
-                with st.expander("📊 Verileri Tablo Olarak Gör"):
-                    st.dataframe(df_res, use_container_width=True)
+                with st.expander("📊 Hesaplama Detaylarını Gör"):
+                    st.write("Hesaplama Yöntemi: `(Şahin Olasılığı - Güvercin Olasılığı) * 100`")
+                    st.dataframe(df_res.style.format({
+                        "Net Skor": "{:.2f}",
+                        "Şahin Olasılık": "{:.2%}",
+                        "Güvercin Olasılık": "{:.2%}"
+                    }), use_container_width=True)
             else:
                 st.warning("Analiz edilecek veri bulunamadı.")
 
@@ -684,25 +703,27 @@ with tab_roberta:
                         lbl = roberta_res.get('best_label', 'Bilinmiyor')
                         scr = roberta_res.get('best_score', 0.0)
                         
-                        c1, c2 = st.columns([1, 2])
-                        with c1:
-                            lbl_color = "gray"
-                            if "Şahin" in lbl: lbl_color = "red"
-                            elif "Güvercin" in lbl: lbl_color = "blue"
-                            
-                            st.markdown(f"### Karar: :{lbl_color}[{lbl}]")
-                            st.metric("Model Güveni", f"%{scr*100:.2f}")
+                        # Skorları al
+                        scores = roberta_res.get('all_scores', {})
+                        h_p = scores.get("🦅 Şahin (Hawkish)", 0.0)
+                        d_p = scores.get("🕊️ Güvercin (Dovish)", 0.0)
+                        net_s = (h_p - d_p) * 100
                         
-                        with c2:
-                            scores = roberta_res.get('all_scores', {})
-                            if scores:
-                                chart_data = pd.DataFrame(list(scores.items()), columns=['Etiket', 'Olasılık'])
-                                c = alt.Chart(chart_data).mark_bar().encode(
-                                    x=alt.X('Olasılık', scale=alt.Scale(domain=[0, 1])),
-                                    y=alt.Y('Etiket', sort='-x'),
-                                    color=alt.Color('Etiket', legend=None)
-                                ).properties(height=150)
-                                st.altair_chart(c, use_container_width=True)
+                        c1, c2, c3 = st.columns(3)
+                        c1.metric("Karar", lbl)
+                        c2.metric("Model Güveni", f"%{scr*100:.2f}")
+                        c3.metric("Net Skor", f"{net_s:.2f}")
+                        
+                        st.divider()
+                        
+                        if scores:
+                            chart_data = pd.DataFrame(list(scores.items()), columns=['Etiket', 'Olasılık'])
+                            c = alt.Chart(chart_data).mark_bar().encode(
+                                x=alt.X('Olasılık', scale=alt.Scale(domain=[0, 1])),
+                                y=alt.Y('Etiket', sort='-x'),
+                                color=alt.Color('Etiket', legend=None)
+                            ).properties(height=150)
+                            st.altair_chart(c, use_container_width=True)
                         
                         st.subheader("Cümle Bazlı Ayrıştırma")
                         df_sentences = utils.analyze_sentences_with_roberta(rob_text_input)

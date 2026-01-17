@@ -1104,56 +1104,210 @@ def calculate_ai_trend_series(df_all):
     return pd.DataFrame(results)
 
 # =============================================================================
-# GRAFİK ÇİZİM FONKSİYONU (BUNU UTILS.PY EN ALTINA EKLEYİN)
+# 8. CENTRAL BANK RoBERTa ENTEGRASYONU (DEBUG / HATA AYIKLAMA MODU)
 # =============================================================================
 
-def create_ai_trend_chart(df_res):
+@st.cache_resource
+def load_roberta_pipeline():
+    try:
+        from transformers import pipeline
+        # Güvenilir bir model kullanalım
+        model_name = "gtfintechlab/FOMC-RoBERTa"
+        classifier = pipeline("text-classification", model=model_name, top_k=None)
+        return classifier
+    except ImportError:
+        return "MISSING_LIB"
+    except Exception as e:
+        st.error(f"Model Yükleme Hatası: {e}")
+        return None
+
+def normalize_label_debug(raw_label):
     """
-    AI Trend DataFrame'ini alır ve Plotly Figure döner.
+    Etiketleri normalize eder ve konsola basar.
     """
-    import plotly.graph_objects as go
+    lbl = str(raw_label).lower().strip()
     
-    if df_res is None or df_res.empty: return None
+    # GTFintechLab / FOMC Modeli Genellikle şu etiketleri kullanır:
+    # 0 -> Negative/Dovish
+    # 1 -> Positive/Hawkish
+    # 2 -> Neutral
+    
+    if "hawkish" in lbl or "positive" in lbl or "label_1" in lbl: return "HAWK"
+    if "dovish" in lbl or "negative" in lbl or "label_0" in lbl: return "DOVE"
+    if "neutral" in lbl or "label_2" in lbl: return "NEUT"
+    
+    return "NEUT"
+
+def analyze_with_roberta(text):
+    if not text: return None
+    
+    classifier = load_roberta_pipeline()
+    if classifier == "MISSING_LIB": return "MISSING_LIB"
+    if classifier is None: return "ERROR"
+
+    truncated_text = text[:1500] # Hız için biraz daha kısalttık
+    
+    try:
+        raw_results = classifier(truncated_text)
+        
+        # İç içe liste düzeltmesi
+        if isinstance(raw_results, list) and isinstance(raw_results[0], list):
+            results = raw_results[0]
+        else:
+            results = raw_results
+
+        scores_map = {"HAWK": 0.0, "DOVE": 0.0, "NEUT": 0.0}
+        best_score = -1
+        best_raw_label = ""
+        
+        for r in results:
+            lbl_raw = str(r['label'])
+            score = float(r['score'])
+            
+            std_lbl = normalize_label_debug(lbl_raw)
+            scores_map[std_lbl] = score
+            
+            if score > best_score:
+                best_score = score
+                best_raw_label = lbl_raw
+        
+        # Return ederken ham etiketi de dönelim ki görebilelim
+        human_label = "⚖️ Nötr"
+        if normalize_label_debug(best_raw_label) == "HAWK": human_label = "🦅 Şahin"
+        elif normalize_label_debug(best_raw_label) == "DOVE": human_label = "🕊️ Güvercin"
+        
+        return {
+            "best_label": human_label,
+            "best_score": best_score,
+            "scores_map": scores_map,
+            "raw_debug": results # Hata ayıklama için ham veri
+        }
+
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+def analyze_sentences_with_roberta(text):
+    # Bu fonksiyon da yukarıdaki mantıkla çalışır, basitleştirildi.
+    if not text: return pd.DataFrame()
+    classifier = load_roberta_pipeline()
+    if not classifier or classifier == "MISSING_LIB": return pd.DataFrame()
+    
+    sentences = split_sentences_nlp(text)
+    sentences = [s for s in sentences if len(s.split()) > 3]
+    if not sentences: return pd.DataFrame()
+    
+    results_list = []
+    try:
+        predictions = classifier(sentences)
+        for sent, pred in zip(sentences, predictions):
+            if isinstance(pred, list): best_pred = max(pred, key=lambda x: x['score'])
+            else: best_pred = pred
+            
+            lbl_raw = str(best_pred['label'])
+            std_lbl = normalize_label_debug(lbl_raw)
+            label_tr = "⚖️ Nötr"
+            if std_lbl == "HAWK": label_tr = "🦅 Şahin"
+            elif std_lbl == "DOVE": label_tr = "🕊️ Güvercin"
+            
+            results_list.append({
+                "Cümle": sent,
+                "Etiket": label_tr,
+                "Güven Skoru": best_pred['score'],
+                "Ham Etiket": lbl_raw
+            })
+    except: pass
+    
+    return pd.DataFrame(results_list)
+
+
+def calculate_ai_trend_series(df_all):
+    if not HAS_TRANSFORMERS:
+        st.error("Transformers kütüphanesi yok!")
+        return pd.DataFrame()
+    
+    if df_all.empty:
+        st.warning("Veri tablosu boş!")
+        return pd.DataFrame()
+
+    df_all = df_all.copy()
+    df_all['period_date'] = pd.to_datetime(df_all['period_date'])
+    df_all = df_all.sort_values('period_date')
+    
+    results = []
+    
+    # HATA AYIKLAMA: İlk 3 satırın sonucunu ekrana yazdır
+    debug_limit = 3
+    st.info("🔍 Hata Ayıklama Modu Çalışıyor (İlk 3 kayıt inceleniyor)...")
+    
+    for i, row in df_all.iterrows():
+        text = row['text_content']
+        date_str = row['period_date'].strftime('%Y-%m')
+        
+        ai_res = analyze_with_roberta(text)
+        
+        # Eğer hata döndüyse
+        if isinstance(ai_res, str):
+            if i < debug_limit: st.error(f"{date_str} Hatası: {ai_res}")
+            continue
+            
+        net_score = 0.0
+        hawk_prob = 0.0
+        dove_prob = 0.0
+        
+        if isinstance(ai_res, dict) and 'scores_map' in ai_res:
+            scores = ai_res['scores_map']
+            hawk_prob = scores.get("HAWK", 0.0)
+            dove_prob = scores.get("DOVE", 0.0)
+            net_score = (hawk_prob - dove_prob) * 100
+            
+            # EKRANA BASALIM: Model ne döndürüyor?
+            if i < debug_limit:
+                st.write(f"**Tarih:** {date_str}")
+                st.json(ai_res['raw_debug']) # Modelin ham çıktısını görelim
+                st.write(f"👉 Algılanan: Şahin={hawk_prob:.2f}, Güvercin={dove_prob:.2f}, NET={net_score:.2f}")
+                st.divider()
+        
+        results.append({
+            "Dönem": date_str,
+            "period_date": row['period_date'], # Sıralama için önemli
+            "Net Skor": net_score,
+            "Şahin Olasılık": hawk_prob,
+            "Güvercin Olasılık": dove_prob
+        })
+        
+    return pd.DataFrame(results)
+
+def create_ai_trend_chart(df_res):
+    import plotly.graph_objects as go
+    if df_res is None or df_res.empty: 
+        return None
 
     fig_trend = go.Figure()
     
-    # Çizgi (Gri ve kesik)
     fig_trend.add_trace(go.Scatter(
-        x=df_res['Dönem'], 
-        y=df_res['Net Skor'],
-        mode='lines',
-        name='Trend',
+        x=df_res['Dönem'], y=df_res['Net Skor'],
+        mode='lines', name='Trend',
         line=dict(color='gray', width=1, dash='dot')
     ))
 
-    # Renkli Markerlar
-    # Not: hovertext oluştururken güvenli erişim sağlayalım
     hover_texts = []
     for _, r in df_res.iterrows():
-        # Sözlükten veri çekiyorsak get kullanalım, yoksa 0
         s_prob = r.get('Şahin Olasılık', 0.0)
         g_prob = r.get('Güvercin Olasılık', 0.0)
         hover_texts.append(f"Şahin: %{s_prob*100:.1f}<br>Güvercin: %{g_prob*100:.1f}")
 
     fig_trend.add_trace(go.Scatter(
-        x=df_res['Dönem'],
-        y=df_res['Net Skor'],
-        mode='markers',
-        name='Net Skor',
+        x=df_res['Dönem'], y=df_res['Net Skor'],
+        mode='markers', name='Net Skor',
         marker=dict(
-            size=14,
-            color=df_res['Net Skor'],
-            colorscale='RdBu_r', 
-            cmin=-100,
-            cmax=100,
-            showscale=True,
+            size=14, color=df_res['Net Skor'], colorscale='RdBu_r', 
+            cmin=-100, cmax=100, showscale=True,
             colorbar=dict(title="Şahinlik", thickness=10)
         ),
         text=hover_texts,
         hovertemplate="<b>%{x}</b><br>Net Skor: %{y:.1f}<br>%{text}<extra></extra>"
     ))
 
-    # Referans Çizgileri
     fig_trend.add_hline(y=0, line_width=2, line_color="black", opacity=0.3)
     fig_trend.add_hrect(y0=0, y1=100, fillcolor="red", opacity=0.05, layer="below", line_width=0)
     fig_trend.add_hrect(y0=-100, y1=0, fillcolor="blue", opacity=0.05, layer="below", line_width=0)
@@ -1161,8 +1315,6 @@ def create_ai_trend_chart(df_res):
     fig_trend.update_layout(
         title="🤖 AI Söylem Analizi (Ağırlıklı Net Skor)",
         yaxis=dict(title="Net Skor", range=[-110, 110], zeroline=False),
-        hovermode="closest",
-        height=450,
-        margin=dict(l=20, r=20, t=40, b=20)
+        hovermode="closest", height=450, margin=dict(l=20, r=20, t=40, b=20)
     )
     return fig_trend

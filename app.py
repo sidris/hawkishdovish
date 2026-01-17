@@ -652,9 +652,10 @@ with tab_roberta:
                         roberta_res = utils.analyze_with_roberta(txt_input)
                         
                         if isinstance(roberta_res, dict):
-                            scores = roberta_res.get('all_scores', {})
-                            h = scores.get("🦅 Şahin (Hawkish)", 0)
-                            d = scores.get("🕊️ Güvercin (Dovish)", 0)
+                            scores = roberta_res.get('scores_map', {})
+h = scores.get("HAWK", 0)
+d = scores.get("DOVE", 0)
+
                             net = (h - d) * 100
                             
                             c1, c2, c3 = st.columns(3)

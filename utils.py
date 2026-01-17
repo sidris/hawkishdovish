@@ -912,25 +912,42 @@ class AdvancedMLPredictor:
         )
 
 # =============================================================================
-# 8. CENTRAL BANK RoBERTa ENTEGRASYONU (gtfintechlab/FOMC-RoBERTa)
+# 8. CENTRAL BANK RoBERTa ENTEGRASYONU (GÜÇLENDİRİLMİŞ VERSİYON)
 # =============================================================================
 
 @st.cache_resource
 def load_roberta_pipeline():
     try:
         from transformers import pipeline
-        # KULLANICI İSTEĞİ ÜZERİNE GÜNCELLENEN MODEL:
         model_name = "gtfintechlab/FOMC-RoBERTa"
-        
-        # return_all_scores=True eski versiyonlarda, top_k=None yenilerde kullanılır.
-        # Pipeline'ın tüm skorları döndürmesini sağlıyoruz.
-        classifier = pipeline("text-classification", model=model_name, return_all_scores=True)
+        # 'top_k=None' tüm skorları döndür demektir (yeni versiyonlarda return_all_scores yerine geçer)
+        classifier = pipeline("text-classification", model=model_name, top_k=None)
         return classifier
     except ImportError:
         return "MISSING_LIB"
     except Exception as e:
-        print(f"Model Yükleme Hatası: {e}")
+        print(f"⚠️ Model Yükleme Hatası: {e}")
         return None
+
+def normalize_label(raw_label):
+    """
+    Modelden gelen ham etiketi standart formata çevirir.
+    gtfintechlab genelde: 0->Dovish, 1->Hawkish, 2->Neutral kullanır.
+    """
+    lbl = raw_label.lower().strip()
+    
+    # 1. Kelime bazlı kontrol
+    if "hawkish" in lbl or "positive" in lbl: return "HAWK"
+    if "dovish" in lbl or "negative" in lbl: return "DOVE"
+    if "neutral" in lbl: return "NEUT"
+    
+    # 2. Label ID bazlı kontrol (gtfintechlab/FOMC özelinde)
+    # LABEL_0 -> Dovish, LABEL_1 -> Hawkish, LABEL_2 -> Neutral (Genel varsayım)
+    if "label_1" in lbl: return "HAWK"
+    if "label_0" in lbl: return "DOVE"
+    if "label_2" in lbl: return "NEUT"
+    
+    return "NEUT" # Hiçbiri uymazsa Nötr kabul et
 
 def analyze_with_roberta(text):
     if not text: return None
@@ -939,90 +956,87 @@ def analyze_with_roberta(text):
     if classifier == "MISSING_LIB": return "MISSING_LIB"
     if classifier is None: return "ERROR"
 
-    # Token limiti (Güvenlik için kırpma)
+    # Token limiti
     truncated_text = text[:2000] 
     
     try:
-        results = classifier(truncated_text)[0]
+        # Pipeline çıktısı genelde [[{'label': 'X', 'score': 0.9}, ...]] şeklindedir
+        raw_results = classifier(truncated_text)
         
-        processed = {}
-        # gtfintechlab Modelinin Çıktı Etiketleri Genellikle: "Hawkish", "Dovish", "Neutral"
-        # Biz bunları Türkçe'ye ve uygulamanın formatına çeviriyoruz.
-        labels_map = {
-            "hawkish": "🦅 Şahin (Hawkish)", 
-            "dovish": "🕊️ Güvercin (Dovish)", 
-            "neutral": "⚖️ Nötr (Neutral)",
-            # Model bazen LABEL_0, LABEL_1 vb. dönebilir, bu model için standart eşleşme:
-            "label_0": "🕊️ Güvercin (Dovish)", # Genellikle Dovish/Negative
-            "label_1": "🦅 Şahin (Hawkish)",   # Genellikle Hawkish/Positive
-            "label_2": "⚖️ Nötr (Neutral)"     # Genellikle Neutral
-        }
+        # Eğer iç içe liste gelirse düzelt
+        if isinstance(raw_results, list) and isinstance(raw_results[0], list):
+            results = raw_results[0]
+        else:
+            results = raw_results
+
+        # Skorları toplayacağımız sözlük
+        scores_map = {"HAWK": 0.0, "DOVE": 0.0, "NEUT": 0.0}
         
         best_score = -1
-        best_label = ""
+        best_raw_label = ""
         
         for r in results:
-            lbl = r['label'].lower() # Küçük harfe çevir
-            score = r['score']
+            lbl_raw = str(r['label'])
+            score = float(r['score'])
             
-            # Haritadan Türkçe karşılığını bul
-            mapped_lbl = labels_map.get(lbl, lbl.capitalize())
-            processed[mapped_lbl] = score
+            # Etiketi normalize et
+            std_lbl = normalize_label(lbl_raw)
+            scores_map[std_lbl] = score
             
             if score > best_score:
                 best_score = score
-                best_label = mapped_lbl
-                
+                best_raw_label = lbl_raw
+        
+        # Konsola bilgi bas (Hata ayıklamak için)
+        print(f"DEBUG AI -> Raw: {best_raw_label} | Scores: H={scores_map['HAWK']:.3f} D={scores_map['DOVE']:.3f}")
+
+        # En yüksek skora sahip olanın insan dostu ismini bul
+        std_best = normalize_label(best_raw_label)
+        human_label = "⚖️ Nötr"
+        if std_best == "HAWK": human_label = "🦅 Şahin"
+        elif std_best == "DOVE": human_label = "🕊️ Güvercin"
+        
+        # Dönüş formatı (Standartlaştırılmış anahtarlar kullanıyoruz)
         return {
-            "best_label": best_label,
+            "best_label": human_label,
             "best_score": best_score,
-            "all_scores": processed
+            "scores_map": scores_map # Özel standart harita
         }
+
     except Exception as e:
+        print(f"⚠️ Analiz Hatası: {e}")
         return f"Error: {str(e)}"
 
 def analyze_sentences_with_roberta(text):
-    """
-    Metni cümlelere böler ve her bir cümleyi tek tek gtfintechlab modeline sorar.
-    """
     if not text: return pd.DataFrame()
-    
     classifier = load_roberta_pipeline()
     if not classifier or classifier == "MISSING_LIB": return pd.DataFrame()
 
-    # Cümlelere bölme
     sentences = split_sentences_nlp(text)
     sentences = [s for s in sentences if len(s.split()) > 3]
-    
     if not sentences: return pd.DataFrame()
     
     results_list = []
     
     try:
-        # Batch tahmin
         predictions = classifier(sentences)
         
-        # Etiket Haritası (Türkçeleştirme)
-        labels_map = {
-            "hawkish": "🦅 Şahin", 
-            "dovish": "🕊️ Güvercin", 
-            "neutral": "⚖️ Nötr",
-            "label_0": "🕊️ Güvercin",
-            "label_1": "🦅 Şahin",
-            "label_2": "⚖️ Nötr"
-        }
-
         for sent, pred in zip(sentences, predictions):
-            # En yüksek skora sahip etiketi bul
+            # En yüksek skorlu tahmini al
             if isinstance(pred, list):
                 best_pred = max(pred, key=lambda x: x['score'])
             else:
                 best_pred = pred
 
-            lbl_raw = best_pred['label'].lower()
+            lbl_raw = str(best_pred['label'])
             score = best_pred['score']
             
-            label_tr = labels_map.get(lbl_raw, lbl_raw.capitalize())
+            # Normalize et
+            std_lbl = normalize_label(lbl_raw)
+            
+            label_tr = "⚖️ Nötr"
+            if std_lbl == "HAWK": label_tr = "🦅 Şahin"
+            elif std_lbl == "DOVE": label_tr = "🕊️ Güvercin"
             
             results_list.append({
                 "Cümle": sent,
@@ -1032,10 +1046,7 @@ def analyze_sentences_with_roberta(text):
             })
             
         df = pd.DataFrame(results_list)
-        
         if not df.empty:
-            # Şahin -> Güvercin -> Nötr sıralaması (Görsel öncelik)
-            # Sıralama için geçici bir kolon oluşturalım
             sorter = {"🦅 Şahin": 1, "🕊️ Güvercin": 2, "⚖️ Nötr": 3}
             df['sort_key'] = df['Etiket'].map(sorter).fillna(4)
             df = df.sort_values(by=['sort_key', 'Güven Skoru'], ascending=[True, False]).drop(columns=['sort_key'])
@@ -1043,15 +1054,12 @@ def analyze_sentences_with_roberta(text):
         return df
 
     except Exception as e:
-        print(f"Cümle analizi hatası: {e}")
+        print(f"⚠️ Cümle Analizi Hatası: {e}")
         return pd.DataFrame()
-
-
-# utils.py EN ALTINA EKLENECEK YENİ FONKSİYONLAR
 
 def calculate_ai_trend_series(df_all):
     """
-    Tüm veri setini tarayıp AI skorlarını hesaplar ve DataFrame döner.
+    Tüm veri setini tarayıp AI skorlarını hesaplar.
     """
     if not HAS_TRANSFORMERS or df_all.empty:
         return pd.DataFrame()
@@ -1061,6 +1069,8 @@ def calculate_ai_trend_series(df_all):
     df_all = df_all.sort_values('period_date')
     
     results = []
+    
+    print("--- AI TREND ANALİZİ BAŞLIYOR ---")
     
     for i, row in df_all.iterrows():
         text = row['text_content']
@@ -1072,19 +1082,14 @@ def calculate_ai_trend_series(df_all):
         hawk_prob = 0.0
         dove_prob = 0.0
         
-        if isinstance(ai_res, dict) and 'all_scores' in ai_res:
-            scores = ai_res['all_scores']
+        if isinstance(ai_res, dict) and 'scores_map' in ai_res:
+            scores = ai_res['scores_map']
             
-            # YENİ MODELİN ETİKETLERİNE GÖRE SKOR ÇEKME:
-            # Etiketler yukarıdaki labels_map'ten geliyor: "🦅 Şahin (Hawkish)" vb.
+            # ARTIK STANDART KEY'LER KULLANIYORUZ
+            hawk_prob = scores.get("HAWK", 0.0)
+            dove_prob = scores.get("DOVE", 0.0)
             
-            # Şahin Olasılığı
-            hawk_prob = scores.get("🦅 Şahin (Hawkish)", 0.0)
-            
-            # Güvercin Olasılığı
-            dove_prob = scores.get("🕊️ Güvercin (Dovish)", 0.0)
-            
-            # Net Skor Formülü: (Şahin - Güvercin) * 100
+            # Net Skor
             net_score = (hawk_prob - dove_prob) * 100
         
         results.append({
@@ -1094,57 +1099,6 @@ def calculate_ai_trend_series(df_all):
             "Şahin Olasılık": hawk_prob,
             "Güvercin Olasılık": dove_prob
         })
-        
+    
+    print("--- AI TREND ANALİZİ BİTTİ ---")
     return pd.DataFrame(results)
-
-def create_ai_trend_chart(df_res):
-    """
-    AI Trend DataFrame'ini alır ve Plotly Figure döner.
-    """
-    import plotly.graph_objects as go
-    
-    if df_res.empty: return None
-
-    fig_trend = go.Figure()
-    
-    # Çizgi
-    fig_trend.add_trace(go.Scatter(
-        x=df_res['Dönem'], 
-        y=df_res['Net Skor'],
-        mode='lines',
-        name='Trend',
-        line=dict(color='gray', width=1, dash='dot')
-    ))
-
-    # Renkli Markerlar
-    fig_trend.add_trace(go.Scatter(
-        x=df_res['Dönem'],
-        y=df_res['Net Skor'],
-        mode='markers',
-        name='Net Skor',
-        marker=dict(
-            size=14,
-            color=df_res['Net Skor'],
-            colorscale='RdBu_r', 
-            cmin=-100,
-            cmax=100,
-            showscale=True,
-            colorbar=dict(title="Şahinlik", thickness=10)
-        ),
-        text=[f"Şahin: %{r['Şahin Olasılık']*100:.1f}<br>Güvercin: %{r['Güvercin Olasılık']*100:.1f}" for _, r in df_res.iterrows()],
-        hovertemplate="<b>%{x}</b><br>Net Skor: %{y:.1f}<br>%{text}<extra></extra>"
-    ))
-
-    # Referanslar
-    fig_trend.add_hline(y=0, line_width=2, line_color="black", opacity=0.3)
-    fig_trend.add_hrect(y0=0, y1=100, fillcolor="red", opacity=0.05, layer="below", line_width=0)
-    fig_trend.add_hrect(y0=-100, y1=0, fillcolor="blue", opacity=0.05, layer="below", line_width=0)
-
-    fig_trend.update_layout(
-        title="🤖 AI Söylem Analizi (Ağırlıklı Net Skor)",
-        yaxis=dict(title="Net Skor", range=[-110, 110], zeroline=False),
-        hovermode="closest",
-        height=450,
-        margin=dict(l=20, r=20, t=40, b=20)
-    )
-    return fig_trend

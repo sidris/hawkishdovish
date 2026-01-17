@@ -1104,24 +1104,19 @@ def calculate_ai_trend_series(df_all):
     return pd.DataFrame(results)
 
 # =============================================================================
-# 8. CENTRAL BANK RoBERTa ENTEGRASYONU (BELLEK DOSTU VERSİYON)
-# Model: mrince/CBRT-RoBERTa-Large-HawkishDovish-Classifier
+# 8. CENTRAL BANK RoBERTa ENTEGRASYONU (HAFİF VERSİYON)
+# Model: mrince/CBRT-RoBERTa-HawkishDovish-Classifier (Base)
 # =============================================================================
-import gc # Bellek temizliği için gerekli
+import gc 
 
 @st.cache_resource(show_spinner=False)
 def load_roberta_pipeline():
-    """
-    Modeli sadece BİR KEZ yükler ve önbellekte tutar.
-    Sürekli yüklemeyi engelleyerek RAM şişmesini önler.
-    """
     try:
         from transformers import pipeline
         
-        # MODEL ADI (Large model olduğu için RAM'i zorlar)
-        model_name = "mrince/CBRT-RoBERTa-Large-HawkishDovish-Classifier"
+        # KULLANICI İSTEĞİ: HAFİF MODEL (RAM Dostu)
+        model_name = "mrince/CBRT-RoBERTa-HawkishDovish-Classifier"
         
-        # Modeli yükle
         classifier = pipeline("text-classification", model=model_name, top_k=None)
         return classifier
 
@@ -1130,6 +1125,12 @@ def load_roberta_pipeline():
         return None
 
 def normalize_label_mrince(raw_label):
+    """
+    mrince Modelleri Etiket Yapısı:
+    - hawkish / LABEL_2 -> HAWK
+    - dovish / LABEL_0 -> DOVE
+    - neutral / LABEL_1 -> NEUT
+    """
     lbl = str(raw_label).lower().strip()
     
     if "hawkish" in lbl or "label_2" in lbl: return "HAWK"
@@ -1144,8 +1145,8 @@ def analyze_with_roberta(text):
     classifier = load_roberta_pipeline()
     if classifier is None: return "ERROR"
 
-    # RAM koruması: Metni çok uzun göndermeyelim
-    truncated_text = text[:1000] 
+    # Base model için limit biraz daha esnek olabilir ama 1500 güvenlidir.
+    truncated_text = text[:1500] 
     
     try:
         raw_results = classifier(truncated_text)
@@ -1174,7 +1175,7 @@ def analyze_with_roberta(text):
         if final_lbl == "HAWK": human_label = "🦅 Şahin"
         elif final_lbl == "DOVE": human_label = "🕊️ Güvercin"
         
-        # İşlem bitince RAM'i rahatlat
+        # Bellek temizliği (Garanti olsun)
         gc.collect()
         
         return {
@@ -1187,14 +1188,13 @@ def analyze_with_roberta(text):
         return f"Error: {str(e)}"
 
 def analyze_sentences_with_roberta(text):
-    # Cümle analizi çok fazla RAM yer, Large modelde bunu kısıtlı tutalım.
     if not text: return pd.DataFrame()
     classifier = load_roberta_pipeline()
     if classifier is None: return pd.DataFrame()
     
     sentences = split_sentences_nlp(text)
-    # Sadece ilk 10 cümleyi analiz et (Çökmemesi için limit koyduk)
-    sentences = [s for s in sentences if len(s.split()) > 3][:10]
+    # Hafif modelde cümle sayısını biraz artırabiliriz (ilk 20 cümle)
+    sentences = [s for s in sentences if len(s.split()) > 3][:20]
     
     if not sentences: return pd.DataFrame()
     
@@ -1236,23 +1236,21 @@ def calculate_ai_trend_series(df_all):
     
     results = []
     
-    # İLERLEME ÇUBUĞU (Kullanıcı dondu sanmasın)
+    # İlerleme Çubuğu
     progress_bar = st.progress(0)
     total_rows = len(df_all)
     
     for i, row in df_all.iterrows():
-        # İlerlemeyi güncelle
+        # Yüzdeyi hesapla
         progress_val = int(((i + 1) / total_rows) * 100)
-        progress_val = min(progress_val, 100) # 100'ü geçmesin
-        progress_bar.progress(progress_val, text=f"Analiz ediliyor: {row['period_date'].strftime('%Y-%m')}")
+        progress_val = min(progress_val, 100)
+        progress_bar.progress(progress_val, text=f"Analiz: {row['period_date'].strftime('%Y-%m')}")
         
         text = row['text_content']
         date_str = row['period_date'].strftime('%Y-%m')
         
         ai_res = analyze_with_roberta(text)
-        
-        # Her analizden sonra belleği temizle (ÇOK ÖNEMLİ)
-        gc.collect()
+        gc.collect() # Her adımdan sonra temizle
         
         if isinstance(ai_res, str): continue
             
@@ -1274,10 +1272,10 @@ def calculate_ai_trend_series(df_all):
             "Güvercin Olasılık": dove_prob
         })
     
-    progress_bar.empty() # İş bitince çubuğu kaldır
+    progress_bar.empty()
     return pd.DataFrame(results)
 
-# GRAFİK FONKSİYONU (Utils.py en altında durmalı)
+# GRAFİK FONKSİYONU (Eğer silindiyse utils.py'ın en altına ekleyin)
 def create_ai_trend_chart(df_res):
     import plotly.graph_objects as go
     if df_res is None or df_res.empty: return None
@@ -1313,8 +1311,8 @@ def create_ai_trend_chart(df_res):
     fig_trend.add_hrect(y0=-100, y1=0, fillcolor="blue", opacity=0.05, layer="below", line_width=0)
 
     fig_trend.update_layout(
-        title="🇹🇷 TCMB Söylem Analizi (RoBERTa-Large)",
-        yaxis=dict(title="Net Skor (Sıkı Duruş - Gevşeme)", range=[-110, 110], zeroline=False),
+        title="🇹🇷 TCMB Analizi (mrince-Base)",
+        yaxis=dict(title="Net Skor (Şahin - Güvercin)", range=[-110, 110], zeroline=False),
         hovermode="closest", height=450, margin=dict(l=20, r=20, t=40, b=20)
     )
     return fig_trend

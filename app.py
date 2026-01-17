@@ -8,14 +8,6 @@ import utils
 import uuid
 
 
-# --- GEÇİCİ TEST KODU ---
-try:
-    token_test = st.secrets["HF_TOKEN"]
-    st.success(f"Token Başarıyla Okundu! İlk 5 karakter: {token_test[:5]}...")
-except Exception as e:
-    st.error(f"Token OKUNAMADI! Hata: {e}")
-    st.info("Lütfen .streamlit/secrets.toml dosyasının yerini ve içeriğini kontrol edin.")
-# ------------------------
 
 
 st.set_page_config(page_title="Piyasa Analiz", layout="wide")

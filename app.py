@@ -669,34 +669,34 @@ with tab_roberta:
                 with st.expander("Metni Gör"): st.write(txt_input)
                 
             if st.button("Bu Metni Detaylandır", type="secondary"):
-    with st.spinner("Analiz ediliyor..."):
-        # roberta_res HER ZAMAN tanımlansın
-        roberta_res = utils.analyze_with_roberta(txt_input)
-
-        # Hata/None kontrolü
-        if not isinstance(roberta_res, dict):
-            st.error(f"Model hata döndürdü: {roberta_res}")
-        else:
-            scores = roberta_res.get("scores_map", {})
-            h = float(scores.get("HAWK", 0.0))
-            d = float(scores.get("DOVE", 0.0))
-            net = float(roberta_res.get("net_score", (h - d) * 100.0))
-
-            c1, c2, c3 = st.columns(3)
-            c1.metric("Karar", roberta_res.get("best_label", ""))
-            c2.metric("Güven", f"%{float(roberta_res.get('best_score',0.0))*100:.1f}")
-            c3.metric("Net Skor", f"{net:.2f}")
-
-            with st.expander("DEBUG"):
-                st.json(roberta_res)
-
-            # Cümle bazlı analiz yoksa patlamasın
-            if hasattr(utils, "analyze_sentences_with_roberta"):
-                df_sent = utils.analyze_sentences_with_roberta(txt_input)
-                if df_sent is not None and not df_sent.empty:
-                    st.dataframe(df_sent, use_container_width=True)
-            else:
-                st.info("Cümle bazlı analiz bu sürümde devre dışı.")
+            with st.spinner("Analiz ediliyor..."):
+                # roberta_res HER ZAMAN tanımlansın
+                roberta_res = utils.analyze_with_roberta(txt_input)
+        
+                # Hata/None kontrolü
+                if not isinstance(roberta_res, dict):
+                    st.error(f"Model hata döndürdü: {roberta_res}")
+                else:
+                    scores = roberta_res.get("scores_map", {})
+                    h = float(scores.get("HAWK", 0.0))
+                    d = float(scores.get("DOVE", 0.0))
+                    net = float(roberta_res.get("net_score", (h - d) * 100.0))
+        
+                    c1, c2, c3 = st.columns(3)
+                    c1.metric("Karar", roberta_res.get("best_label", ""))
+                    c2.metric("Güven", f"%{float(roberta_res.get('best_score',0.0))*100:.1f}")
+                    c3.metric("Net Skor", f"{net:.2f}")
+        
+                    with st.expander("DEBUG"):
+                        st.json(roberta_res)
+        
+                    # Cümle bazlı analiz yoksa patlamasın
+                    if hasattr(utils, "analyze_sentences_with_roberta"):
+                        df_sent = utils.analyze_sentences_with_roberta(txt_input)
+                        if df_sent is not None and not df_sent.empty:
+                            st.dataframe(df_sent, use_container_width=True)
+                    else:
+                        st.info("Cümle bazlı analiz bu sürümde devre dışı.")
 
 
 

@@ -596,6 +596,12 @@ with tab7:
 
 with tab_roberta:
     st.header("🧠 CentralBankRoBERTa (Yapay Zeka Analizi)")
+
+    try:
+        _tab_roberta_ok = True
+    except Exception as e:
+        st.exception(e)
+        st.stop()
     
     if not utils.HAS_TRANSFORMERS:
         st.error("Kütüphaneler eksik.")

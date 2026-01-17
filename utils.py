@@ -1102,3 +1102,14 @@ def calculate_ai_trend_series(df_all):
     
     print("--- AI TREND ANALİZİ BİTTİ ---")
     return pd.DataFrame(results)
+
+def create_ai_trend_chart(df_res):
+    """
+    AI Trend DataFrame'ini alır ve Plotly Figure döner.
+    """
+    import plotly.graph_objects as go
+    
+    if df_res.empty: return None
+
+    fig_trend = go.Figure()
+    

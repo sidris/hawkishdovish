@@ -1102,3 +1102,67 @@ def calculate_ai_trend_series(df_all):
     
     print("--- AI TREND ANALİZİ BİTTİ ---")
     return pd.DataFrame(results)
+
+# =============================================================================
+# GRAFİK ÇİZİM FONKSİYONU (BUNU UTILS.PY EN ALTINA EKLEYİN)
+# =============================================================================
+
+def create_ai_trend_chart(df_res):
+    """
+    AI Trend DataFrame'ini alır ve Plotly Figure döner.
+    """
+    import plotly.graph_objects as go
+    
+    if df_res is None or df_res.empty: return None
+
+    fig_trend = go.Figure()
+    
+    # Çizgi (Gri ve kesik)
+    fig_trend.add_trace(go.Scatter(
+        x=df_res['Dönem'], 
+        y=df_res['Net Skor'],
+        mode='lines',
+        name='Trend',
+        line=dict(color='gray', width=1, dash='dot')
+    ))
+
+    # Renkli Markerlar
+    # Not: hovertext oluştururken güvenli erişim sağlayalım
+    hover_texts = []
+    for _, r in df_res.iterrows():
+        # Sözlükten veri çekiyorsak get kullanalım, yoksa 0
+        s_prob = r.get('Şahin Olasılık', 0.0)
+        g_prob = r.get('Güvercin Olasılık', 0.0)
+        hover_texts.append(f"Şahin: %{s_prob*100:.1f}<br>Güvercin: %{g_prob*100:.1f}")
+
+    fig_trend.add_trace(go.Scatter(
+        x=df_res['Dönem'],
+        y=df_res['Net Skor'],
+        mode='markers',
+        name='Net Skor',
+        marker=dict(
+            size=14,
+            color=df_res['Net Skor'],
+            colorscale='RdBu_r', 
+            cmin=-100,
+            cmax=100,
+            showscale=True,
+            colorbar=dict(title="Şahinlik", thickness=10)
+        ),
+        text=hover_texts,
+        hovertemplate="<b>%{x}</b><br>Net Skor: %{y:.1f}<br>%{text}<extra></extra>"
+    ))
+
+    # Referans Çizgileri
+    fig_trend.add_hline(y=0, line_width=2, line_color="black", opacity=0.3)
+    fig_trend.add_hrect(y0=0, y1=100, fillcolor="red", opacity=0.05, layer="below", line_width=0)
+    fig_trend.add_hrect(y0=-100, y1=0, fillcolor="blue", opacity=0.05, layer="below", line_width=0)
+
+    fig_trend.update_layout(
+        title="🤖 AI Söylem Analizi (Ağırlıklı Net Skor)",
+        yaxis=dict(title="Net Skor", range=[-110, 110], zeroline=False),
+        hovermode="closest",
+        height=450,
+        margin=dict(l=20, r=20, t=40, b=20)
+    )
+    return fig_trend

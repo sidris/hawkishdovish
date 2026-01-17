@@ -1104,52 +1104,57 @@ def calculate_ai_trend_series(df_all):
     return pd.DataFrame(results)
 
 # =============================================================================
-# 8. CENTRAL BANK RoBERTa ENTEGRASYONU (LOGIN YÖNTEMİ)
-# Model: gtfintechlab/model_central_bank_republic_of_turkey_stance_label
+# 8. CENTRAL BANK RoBERTa ENTEGRASYONU (TCMB ÖZEL - MRINCE)
+# Model: mrince/CBRT-RoBERTa-Large-HawkishDovish-Classifier
 # =============================================================================
 
 @st.cache_resource
 def load_roberta_pipeline():
     try:
         from transformers import pipeline
-        from huggingface_hub import login # Giriş fonksiyonunu çağırıyoruz
+        from huggingface_hub import login
         
-        # --- TOKEN'I BURAYA YAPIŞTIRIN ---
-        hf_token = "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" 
-        # (Yukarıya kendi token'ınızı tırnaklar içinde yapıştırın)
+        # --- TOKEN KISMI (Eğer model kilitliyse buraya token yapıştırın) ---
+        # Model herkese açıksa burası boş kalabilir veya eski token durabilir.
+        hf_token = "hf_XXXXXXXXXXXXXXXXXXXXXXXXXXXXXX" 
         
-        # 1. ÖNCE SİSTEME GİRİŞ YAPIYORUZ (En garanti yöntem)
-        if hf_token and "XXX" not in hf_token:
+        # Giriş Yap (Token varsa)
+        if hf_token and "hf_" in hf_token:
             login(token=hf_token)
-        else:
-            st.error("Token girilmemiş! utils.py dosyasını kontrol edin.")
-            return None
 
-        # 2. MODELİ YÜKLÜYORUZ
-        model_name = "gtfintechlab/model_central_bank_republic_of_turkey_stance_label"
+        # KULLANICI İSTEĞİ: MRINCE TCMB MODELİ
+        model_name = "mrince/CBRT-RoBERTa-Large-HawkishDovish-Classifier"
         
+        # Modeli Yükle
         classifier = pipeline("text-classification", model=model_name, top_k=None)
         return classifier
 
-    except ImportError:
-        return "MISSING_LIB"
     except Exception as e:
-        # Hata mesajını ekrana bas ki görelim
         st.error(f"Model Erişim Hatası: {e}")
         return None
 
-def normalize_label_tcmb(raw_label):
+def normalize_label_mrince(raw_label):
     """
-    TCMB Özel Modeli Etiket Çeviricisi
-    LABEL_0 -> Dovish (Güvercin/Negatif)
-    LABEL_1 -> Hawkish (Şahin/Pozitif)
-    LABEL_2 -> Neutral (Nötr)
+    mrince/CBRT Modelinin etiketlerini normalize eder.
+    Tahmini Etiketler: 'Hawkish', 'Dovish', 'Neutral'
+    Veya LABEL_0, LABEL_1, LABEL_2.
     """
     lbl = str(raw_label).lower().strip()
     
-    # Model kartına ve finansal mantığa göre eşleştirme:
-    if "label_1" in lbl or "positive" in lbl or "hawkish" in lbl: return "HAWK"
-    if "label_0" in lbl or "negative" in lbl or "dovish" in lbl: return "DOVE"
+    # 1. NET ETİKETLER (Model text döndürürse)
+    if "hawkish" in lbl: return "HAWK"
+    if "dovish" in lbl: return "DOVE"
+    if "neutral" in lbl: return "NEUT"
+    
+    # 2. LABEL ID EŞLEŞTİRMESİ (Model LABEL_X döndürürse)
+    # Genellikle Finansal Modellerde Standart:
+    # LABEL_0 -> Dovish (Negatif/Gevşeme)
+    # LABEL_1 -> Neutral (Nötr)
+    # LABEL_2 -> Hawkish (Pozitif/Sıkılaşma)
+    
+    if "label_2" in lbl: return "HAWK"
+    if "label_0" in lbl: return "DOVE"
+    if "label_1" in lbl: return "NEUT"
     
     return "NEUT"
 
@@ -1157,7 +1162,6 @@ def analyze_with_roberta(text):
     if not text: return None
     
     classifier = load_roberta_pipeline()
-    if classifier == "MISSING_LIB": return "MISSING_LIB"
     if classifier is None: return "ERROR"
 
     truncated_text = text[:1500] 
@@ -1178,7 +1182,7 @@ def analyze_with_roberta(text):
             lbl_raw = str(r['label'])
             score = float(r['score'])
             
-            std_lbl = normalize_label_tcmb(lbl_raw)
+            std_lbl = normalize_label_mrince(lbl_raw)
             scores_map[std_lbl] = score
             
             if score > best_score:
@@ -1186,9 +1190,9 @@ def analyze_with_roberta(text):
                 best_raw_label = lbl_raw
         
         human_label = "⚖️ Nötr"
-        final_lbl = normalize_label_tcmb(best_raw_label)
+        final_lbl = normalize_label_mrince(best_raw_label)
         if final_lbl == "HAWK": human_label = "🦅 Şahin (Sıkı Duruş)"
-        elif final_lbl == "DOVE": human_label = "🕊️ Güvercin (Risk/Gevşeme)"
+        elif final_lbl == "DOVE": human_label = "🕊️ Güvercin (Gevşeme)"
         
         return {
             "best_label": human_label,
@@ -1203,7 +1207,7 @@ def analyze_with_roberta(text):
 def analyze_sentences_with_roberta(text):
     if not text: return pd.DataFrame()
     classifier = load_roberta_pipeline()
-    if not classifier or classifier == "MISSING_LIB": return pd.DataFrame()
+    if classifier is None: return pd.DataFrame()
     
     sentences = split_sentences_nlp(text)
     sentences = [s for s in sentences if len(s.split()) > 3]
@@ -1217,7 +1221,7 @@ def analyze_sentences_with_roberta(text):
             else: best_pred = pred
             
             lbl_raw = str(best_pred['label'])
-            std_lbl = normalize_label_tcmb(lbl_raw)
+            std_lbl = normalize_label_mrince(lbl_raw)
             
             label_tr = "⚖️ Nötr"
             if std_lbl == "HAWK": label_tr = "🦅 Şahin"
@@ -1264,7 +1268,7 @@ def calculate_ai_trend_series(df_all):
             hawk_prob = scores.get("HAWK", 0.0)
             dove_prob = scores.get("DOVE", 0.0)
             
-            # Net Skor
+            # Net Skor: (Şahin - Güvercin) * 100
             net_score = (hawk_prob - dove_prob) * 100
         
         results.append({
@@ -1277,7 +1281,7 @@ def calculate_ai_trend_series(df_all):
         
     return pd.DataFrame(results)
 
-# GRAFİK FONKSİYONU (UTILS.PY EN ALTINDA OLMALI)
+# GRAFİK FONKSİYONU AYNI KALACAK (Eğer silindiyse utils.py'ın en altına ekleyin)
 def create_ai_trend_chart(df_res):
     import plotly.graph_objects as go
     if df_res is None or df_res.empty: return None
@@ -1302,7 +1306,7 @@ def create_ai_trend_chart(df_res):
         marker=dict(
             size=14, color=df_res['Net Skor'], colorscale='RdBu_r', 
             cmin=-100, cmax=100, showscale=True,
-            colorbar=dict(title="TCMB Duruşu", thickness=10)
+            colorbar=dict(title="Duruş (mrince)", thickness=10)
         ),
         text=hover_texts,
         hovertemplate="<b>%{x}</b><br>Net Skor: %{y:.1f}<br>%{text}<extra></extra>"
@@ -1313,7 +1317,7 @@ def create_ai_trend_chart(df_res):
     fig_trend.add_hrect(y0=-100, y1=0, fillcolor="blue", opacity=0.05, layer="below", line_width=0)
 
     fig_trend.update_layout(
-        title="🇹🇷 TCMB Özel Model Analizi (GTFintechLab)",
+        title="🇹🇷 TCMB Özel Model Analizi (mrince/CBRT)",
         yaxis=dict(title="Net Skor (Sıkı Duruş - Gevşeme)", range=[-110, 110], zeroline=False),
         hovermode="closest", height=450, margin=dict(l=20, r=20, t=40, b=20)
     )

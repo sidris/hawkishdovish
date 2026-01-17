@@ -912,63 +912,60 @@ class AdvancedMLPredictor:
         )
 
 # =============================================================================
-# 8. CENTRAL BANK RoBERTa ENTEGRASYONU (Moritz-Pfeifer)
+# 8. CENTRAL BANK RoBERTa ENTEGRASYONU (gtfintechlab/FOMC-RoBERTa)
 # =============================================================================
 
 @st.cache_resource
 def load_roberta_pipeline():
     try:
         from transformers import pipeline
-        # Kullanıcının bulduğu TAM İSABET model:
-        model_name = "Moritz-Pfeifer/CentralBankRoBERTa-sentiment-classifier"
+        # KULLANICI İSTEĞİ ÜZERİNE GÜNCELLENEN MODEL:
+        model_name = "gtfintechlab/FOMC-RoBERTa"
         
-        # Bu model bazen "config" dosyasını geç okuyabilir, o yüzden try/except içinde:
+        # return_all_scores=True eski versiyonlarda, top_k=None yenilerde kullanılır.
+        # Pipeline'ın tüm skorları döndürmesini sağlıyoruz.
         classifier = pipeline("text-classification", model=model_name, return_all_scores=True)
         return classifier
     except ImportError:
         return "MISSING_LIB"
     except Exception as e:
-        # Hata detayını terminale yazdır, arayüzü bozma
         print(f"Model Yükleme Hatası: {e}")
         return None
 
 def analyze_with_roberta(text):
-    if not text:
-        return None
+    if not text: return None
         
     classifier = load_roberta_pipeline()
-    
-    if classifier == "MISSING_LIB":
-        return "MISSING_LIB"
-    if classifier is None:
-        return "ERROR"
+    if classifier == "MISSING_LIB": return "MISSING_LIB"
+    if classifier is None: return "ERROR"
 
-    # Token limiti (512 token ~ ortalama 1500-2000 karakter)
+    # Token limiti (Güvenlik için kırpma)
     truncated_text = text[:2000] 
     
     try:
         results = classifier(truncated_text)[0]
-        # Bu modelin çıktı etiketleri genelde: 'hawkish', 'dovish', 'neutral' şeklindedir.
         
         processed = {}
-        # Etiketleri Türkçeleştirme Haritası
+        # gtfintechlab Modelinin Çıktı Etiketleri Genellikle: "Hawkish", "Dovish", "Neutral"
+        # Biz bunları Türkçe'ye ve uygulamanın formatına çeviriyoruz.
         labels_map = {
             "hawkish": "🦅 Şahin (Hawkish)", 
             "dovish": "🕊️ Güvercin (Dovish)", 
             "neutral": "⚖️ Nötr (Neutral)",
-            # Yedek olarak (model versiyonu farklıysa diye):
-            "positive": "Şahin (Pozitif)",
-            "negative": "Güvercin (Negatif)"
+            # Model bazen LABEL_0, LABEL_1 vb. dönebilir, bu model için standart eşleşme:
+            "label_0": "🕊️ Güvercin (Dovish)", # Genellikle Dovish/Negative
+            "label_1": "🦅 Şahin (Hawkish)",   # Genellikle Hawkish/Positive
+            "label_2": "⚖️ Nötr (Neutral)"     # Genellikle Neutral
         }
         
         best_score = -1
         best_label = ""
         
         for r in results:
-            lbl = r['label'].lower() # Gelen etiketi küçült (örn: "Hawkish" -> "hawkish")
+            lbl = r['label'].lower() # Küçük harfe çevir
             score = r['score']
             
-            # Haritadan Türkçe karşılığını bul, yoksa orijinalini kullan
+            # Haritadan Türkçe karşılığını bul
             mapped_lbl = labels_map.get(lbl, lbl.capitalize())
             processed[mapped_lbl] = score
             
@@ -986,17 +983,15 @@ def analyze_with_roberta(text):
 
 def analyze_sentences_with_roberta(text):
     """
-    Metni cümlelere böler ve her bir cümleyi tek tek RoBERTa modeline sorar.
-    DÜZELTME: Modelden dönen liste yapısını (all_scores) doğru işler.
+    Metni cümlelere böler ve her bir cümleyi tek tek gtfintechlab modeline sorar.
     """
     if not text: return pd.DataFrame()
     
     classifier = load_roberta_pipeline()
     if not classifier or classifier == "MISSING_LIB": return pd.DataFrame()
 
-    # 1. Cümlelere Bölme
+    # Cümlelere bölme
     sentences = split_sentences_nlp(text)
-    # Çok kısa cümleleri filtrele
     sentences = [s for s in sentences if len(s.split()) > 3]
     
     if not sentences: return pd.DataFrame()
@@ -1004,21 +999,21 @@ def analyze_sentences_with_roberta(text):
     results_list = []
     
     try:
-        # Pipeline tahmini (Batch)
+        # Batch tahmin
         predictions = classifier(sentences)
         
-        # Etiket Haritası
+        # Etiket Haritası (Türkçeleştirme)
         labels_map = {
             "hawkish": "🦅 Şahin", 
             "dovish": "🕊️ Güvercin", 
             "neutral": "⚖️ Nötr",
-            "positive": "🦅 Şahin (Pozitif)",
-            "negative": "🕊️ Güvercin (Negatif)"
+            "label_0": "🕊️ Güvercin",
+            "label_1": "🦅 Şahin",
+            "label_2": "⚖️ Nötr"
         }
 
         for sent, pred in zip(sentences, predictions):
-            # DÜZELTME: pred, [{'label': 'hawkish', 'score': 0.9}, ...] şeklinde bir LİSTE olabilir.
-            # En yüksek skora sahip olanı seçmeliyiz.
+            # En yüksek skora sahip etiketi bul
             if isinstance(pred, list):
                 best_pred = max(pred, key=lambda x: x['score'])
             else:
@@ -1039,13 +1034,16 @@ def analyze_sentences_with_roberta(text):
         df = pd.DataFrame(results_list)
         
         if not df.empty:
-            # Şahinler ve Güvercinler üstte, Nötrler altta görünsün
-            df = df.sort_values(by=["Ham Etiket", "Güven Skoru"], ascending=[True, False])
+            # Şahin -> Güvercin -> Nötr sıralaması (Görsel öncelik)
+            # Sıralama için geçici bir kolon oluşturalım
+            sorter = {"🦅 Şahin": 1, "🕊️ Güvercin": 2, "⚖️ Nötr": 3}
+            df['sort_key'] = df['Etiket'].map(sorter).fillna(4)
+            df = df.sort_values(by=['sort_key', 'Güven Skoru'], ascending=[True, False]).drop(columns=['sort_key'])
             
         return df
 
     except Exception as e:
-        print(f"Cümle analizi hatası (Log): {e}") # Hata detayını terminalde görebilirsiniz
+        print(f"Cümle analizi hatası: {e}")
         return pd.DataFrame()
 
 
@@ -1063,7 +1061,6 @@ def calculate_ai_trend_series(df_all):
     df_all = df_all.sort_values('period_date')
     
     results = []
-    # Not: Streamlit progress bar'ı burada kullanamayız, dışarıdan yönetilmeli.
     
     for i, row in df_all.iterrows():
         text = row['text_content']
@@ -1077,18 +1074,22 @@ def calculate_ai_trend_series(df_all):
         
         if isinstance(ai_res, dict) and 'all_scores' in ai_res:
             scores = ai_res['all_scores']
-            hawk_prob = scores.get("🦅 Şahin (Hawkish)", 0.0)
-            if hawk_prob == 0: hawk_prob = scores.get("Şahin (Pozitif)", 0.0)
-                
-            dove_prob = scores.get("🕊️ Güvercin (Dovish)", 0.0)
-            if dove_prob == 0: dove_prob = scores.get("Güvercin (Negatif)", 0.0)
             
-            # Weighted Net Score
+            # YENİ MODELİN ETİKETLERİNE GÖRE SKOR ÇEKME:
+            # Etiketler yukarıdaki labels_map'ten geliyor: "🦅 Şahin (Hawkish)" vb.
+            
+            # Şahin Olasılığı
+            hawk_prob = scores.get("🦅 Şahin (Hawkish)", 0.0)
+            
+            # Güvercin Olasılığı
+            dove_prob = scores.get("🕊️ Güvercin (Dovish)", 0.0)
+            
+            # Net Skor Formülü: (Şahin - Güvercin) * 100
             net_score = (hawk_prob - dove_prob) * 100
         
         results.append({
             "Dönem": date_str,
-            "period_date": row['period_date'], # Sıralama için
+            "period_date": row['period_date'],
             "Net Skor": net_score,
             "Şahin Olasılık": hawk_prob,
             "Güvercin Olasılık": dove_prob

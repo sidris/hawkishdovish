@@ -110,7 +110,30 @@ with tab1:
         merged = pd.merge(merged, abg_df[['period_date', 'abg_dashboard_val']], on='period_date', how='left')
         
         merged = merged.sort_values("period_date")
-                # --- AI SCORE (mrince) çizgisini Dashboard'a eklemek için merge ---
+
+                # --- AI SCORE (mrince) merge ---
+        ai_df = st.session_state.get("ai_trend_df")
+        if ai_df is not None and not ai_df.empty:
+            ai_tmp = ai_df.copy()
+        
+            ai_tmp["AI_EMA"] = pd.to_numeric(ai_tmp.get("AI Score (EMA)", np.nan), errors="coerce")
+            ai_tmp["AI_CALIB"] = pd.to_numeric(ai_tmp.get("AI Score (Calib)", np.nan), errors="coerce")
+        
+            if "Dönem" in ai_tmp.columns:
+                ai_tmp["Donem"] = ai_tmp["Dönem"].astype(str)
+            else:
+                ai_tmp["Donem"] = pd.to_datetime(ai_tmp["period_date"]).dt.strftime("%Y-%m")
+        
+            ai_tmp = ai_tmp[["Donem", "AI_EMA", "AI_CALIB"]].drop_duplicates(subset=["Donem"])
+            merged = pd.merge(merged, ai_tmp, on="Donem", how="left")
+        else:
+            merged["AI_EMA"] = np.nan
+            merged["AI_CALIB"] = np.nan
+
+
+
+
+        
         ai_df = st.session_state.get("ai_trend_df")
         if ai_df is not None and not ai_df.empty:
             ai_tmp = ai_df.copy()
@@ -151,6 +174,24 @@ with tab1:
         # --- SKORLAR ---
         fig.add_trace(go.Scatter(x=merged['period_date'], y=merged['score_abg_scaled'], name="Şahin/Güvercin-Hibrit", line=dict(color='black', width=2, dash='dot'), marker=dict(size=6, color='black'), yaxis="y"))
         fig.add_trace(go.Scatter(x=merged['period_date'], y=merged['abg_dashboard_val'], name="Şahin/Güvercin ABG 2019", line=dict(color='navy', width=4), yaxis="y"))
+
+                # --- AI Score (mrince) çizgileri ---
+        if merged["AI_EMA"].notna().any():
+            fig.add_trace(go.Scatter(
+                x=merged["period_date"], y=merged["AI_EMA"],
+                name="AI Score (mrince, EMA)",
+                line=dict(color="green", width=3),
+                yaxis="y"
+            ))
+        
+        if merged["AI_CALIB"].notna().any():
+            fig.add_trace(go.Scatter(
+                x=merged["period_date"], y=merged["AI_CALIB"],
+                name="AI Score (mrince, Calib)",
+                line=dict(color="green", width=2, dash="dot"),
+                yaxis="y"
+            ))
+
 
                 # --- AI Score (EMA) çizgisi (mrince) ---
         if "AI_DASH" in merged.columns and merged["AI_DASH"].notna().any():

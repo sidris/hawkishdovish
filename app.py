@@ -597,89 +597,77 @@ with tab_roberta:
     st.header("🧠 CentralBankRoBERTa (Yapay Zeka Analizi)")
 
     if not utils.HAS_TRANSFORMERS:
-        st.error("Kütüphaneler eksik.")
+        st.error("Kütüphaneler eksik. (transformers/torch)")
         st.stop()
 
+    # -------------------------
     # 1) GENEL TREND
-    st.subheader("📈 Tarihsel Trend (Yumuşatılmış Skor)")
+    # -------------------------
+    st.subheader("📈 Tarihsel Trend (Calib + EMA + Hysteresis)")
 
+    # Trend hesapla / göster
     if st.session_state.get("ai_trend_df") is not None and not st.session_state["ai_trend_df"].empty:
-        fig_trend = utils.create_ai_trend_chart(st.session_state["ai_trend_df"])
+        df_tr = st.session_state["ai_trend_df"]
+
+        fig_trend = None
+        if hasattr(utils, "create_ai_trend_chart"):
+            fig_trend = utils.create_ai_trend_chart(df_tr)
+
         if fig_trend:
             st.plotly_chart(fig_trend, use_container_width=True, key="ai_chart_roberta")
         else:
             st.warning("Grafik oluşturulamadı.")
 
-        if st.button("🔄 Tekrar Hesapla", key="ai_recalc"):
-            st.session_state["ai_trend_df"] = None
-            st.rerun()
+        cbtn1, cbtn2 = st.columns([1, 3])
+        with cbtn1:
+            if st.button("🔄 Tekrar Hesapla", key="btn_ai_recalc"):
+                st.session_state["ai_trend_df"] = None
+                st.rerun()
+
     else:
-        if st.button("🚀 Tüm Geçmişi Analiz Et", type="primary", key="ai_run_all"):
+        st.info("Tarihsel trend için tüm metinler taranır. (Biraz zaman alabilir)")
+        if st.button("🚀 Tüm Geçmişi Analiz Et", type="primary", key="btn_ai_run_all"):
             with st.spinner("Model tüm geçmişi tarıyor..."):
                 df_all_rob = utils.fetch_all_data()
                 res_df = utils.calculate_ai_trend_series(df_all_rob)
 
-                if res_df is None or res_df.empty:
-                    st.error("Model hiçbir sonuç döndürmedi. (metinler boş olabilir veya model yüklenememiş olabilir)")
-                else:
-                    st.session_state["ai_trend_df"] = res_df
-                    st.rerun()
+            if res_df is None or res_df.empty:
+                st.error("Analiz sonucu boş geldi. (DB boş olabilir veya model hata vermiş olabilir)")
+            else:
+                st.session_state["ai_trend_df"] = res_df
+                st.rerun()
 
-    st.divider()
-
+    # Açıklama kutusu
     with st.expander("ℹ️ Bu grafik nasıl hesaplanıyor?", expanded=False):
         st.markdown("""
-    Bu grafik, modelin verdiği **3 sınıf olasılığından** (Şahin / Güvercin / Nötr) türetilmiş bir **endeks** gösterir.
-    
-    **Adımlar:**
-    1. Her metin için modelden olasılıklar alınır: `P(HAWK)`, `P(DOVE)`, `P(NEUT)`.
-    2. Ham duruş farkı hesaplanır: **`diff = P(HAWK) - P(DOVE)`** (−1 ile +1 arası).
-    3. Serinin kendi dağılımına göre ölçekleme yapılır (**robust kalibrasyon**):
-       - `diff` serisinin medyanı ve MAD (median absolute deviation) ile robust z-score çıkarılır.
-       - z-score, `tanh` ile −100..+100 bandına sıkıştırılır.
-    4. Aylık dalgalanmayı azaltmak için **EMA (Exponential Moving Average)** uygulanır (`span=7`).
-    5. Rejim etiketinin çok hızlı flip yapmaması için **histerezis** uygulanır (örn. +25 üstü şahin, −25 altı güvercin).
-    
-    **Önemli:** Bu çizgi “modelin direkt sınıfı” değil; sınıflardan türetilmiş, kalibre edilmiş ve yumuşatılmış bir **duruş endeksidir**.
+Bu grafik, modelin verdiği **3 sınıf olasılığından** (Şahin / Güvercin / Nötr) türetilmiş bir **endeks**tir.
+
+1) Her metin için `P(HAWK)`, `P(DOVE)`, `P(NEUT)` alınır.  
+2) Ham fark: **diff = P(HAWK) − P(DOVE)**  
+3) Serinin kendi dağılımına göre **robust kalibrasyon** yapılır (median + MAD → robust z-score)  
+4) `tanh` ile skor **−100..+100** bandına sıkıştırılır  
+5) **EMA (span=7)** ile yumuşatılır  
+6) Rejim etiketinde hızlı flip olmasın diye **histerezis** uygulanır (±25 eşikleri)
+
+Bu yüzden, model 3 sınıf üretse bile grafikteki çizgi “süreklilik” gösterir: bu bir **türetilmiş duruş endeksi**dir.
         """)
-
-
-
-    
-    # 2) HIZLI MODEL TESTİ (debug)
-    st.subheader("🧪 Hızlı Test (Debug)")
-    tests = {
-        "HAWK_TEST": "Monetary policy will be tightened further and additional rate hikes may be delivered.",
-        "DOVE_TEST": "Monetary policy easing will begin soon and rate cuts are likely in the coming meetings.",
-        "NEUT_TEST": "The committee decided to keep the policy rate unchanged."
-    }
-
-    clf = utils.load_roberta_pipeline()
-    if clf is None:
-        st.error("Model pipeline yüklenemedi.")
-    else:
-        for k, s in tests.items():
-            out = clf(s)
-            if isinstance(out, list) and out and isinstance(out[0], list):
-                out = out[0]
-            best = max(out, key=lambda x: x.get("score", 0.0))
-            st.write(k, best)
 
     st.divider()
 
-    # 3) TEKİL DÖNEM DETAY
+    # -------------------------
+    # 2) TEKİL DÖNEM ANALİZİ
+    # -------------------------
     st.subheader("🔍 Tekil Dönem Detay Analizi")
 
     df_all_rob = utils.fetch_all_data()
     if df_all_rob is None or df_all_rob.empty:
-        st.info("Veri yok.")
+        st.info("Tekil analiz için veritabanında kayıt yok.")
         st.stop()
 
     df_all_rob = df_all_rob.copy()
     df_all_rob["period_date"] = pd.to_datetime(df_all_rob["period_date"], errors="coerce")
-    df_all_rob = df_all_rob.dropna(subset=["period_date"])
+    df_all_rob = df_all_rob.dropna(subset=["period_date"]).sort_values("period_date", ascending=False)
     df_all_rob["Donem"] = df_all_rob["period_date"].dt.strftime("%Y-%m")
-    df_all_rob = df_all_rob.sort_values("period_date", ascending=False)
 
     sel_rob_period = st.selectbox(
         "İncelenecek Dönem:",
@@ -691,47 +679,54 @@ with tab_roberta:
     row_rob = df_all_rob[df_all_rob["Donem"] == sel_rob_period].iloc[0]
     txt_input = str(row_rob.get("text_content", "") or "")
 
-    with st.expander("Metni Gör"):
+    with st.expander("Metni Gör", expanded=False):
         st.write(txt_input)
 
-    if st.button("Bu Metni Detaylandır", type="secondary", key="rob_detail_btn"):
+    if st.button("🧪 Bu Metni Analiz Et", type="secondary", key="btn_ai_single"):
         with st.spinner("Analiz ediliyor..."):
             roberta_res = utils.analyze_with_roberta(txt_input)
 
         if not isinstance(roberta_res, dict):
             st.error(f"Model hata döndürdü: {roberta_res}")
         else:
-            scores = roberta_res.get("scores_map", {})
+            scores = roberta_res.get("scores_map", {}) or {}
             h = float(scores.get("HAWK", 0.0))
             d = float(scores.get("DOVE", 0.0))
             n = float(scores.get("NEUT", 0.0))
+            diff = float(roberta_res.get("diff", h - d))
+            stance = str(roberta_res.get("stance", ""))
 
-            net = float(roberta_res.get("net_score", 0.0))
-            net_raw = float(roberta_res.get("net_score_raw", 0.0))
+            # Eğer trend serisinde EMA skor varsa, bu dönemin EMA skorunu da yakalayalım
+            ema_score = None
+            if st.session_state.get("ai_trend_df") is not None and not st.session_state["ai_trend_df"].empty:
+                tmp = st.session_state["ai_trend_df"]
+                hit = tmp[tmp["Dönem"] == sel_rob_period]
+                if not hit.empty and "AI Score (EMA)" in hit.columns:
+                    ema_score = float(hit.iloc[0]["AI Score (EMA)"])
 
             c1, c2, c3 = st.columns(3)
-            c1.metric("Duruş", roberta_res.get("best_label", ""))
-            c2.metric("Güven", f"%{float(roberta_res.get('best_score', 0.0))*100:.1f}")
-            c3.metric("Net Skor", f"{net:.2f}")
+            c1.metric("Duruş", stance)
+            c2.metric("Diff (H-D)", f"{diff:.3f}")
+            if ema_score is not None:
+                c3.metric("AI Score (EMA)", f"{ema_score:.1f}")
+            else:
+                c3.metric("AI Score (EMA)", "—")
 
-            st.caption(f"Ham Net: {net_raw:.2f}  |  Yumuşatılmış Net: {net:.2f}")
             st.write("Sınıf Skorları:")
             st.json({"HAWK": h, "DOVE": d, "NEUT": n})
 
-            with st.expander("DEBUG (raw response)"):
+            # Debug
+            with st.expander("DEBUG (ham çıktı)", expanded=False):
                 st.json(roberta_res)
 
-    st.info("Not: Cümle bazlı analiz bu sürümde devre dışı bırakıldı.")
-
-    st.divider()
-    st.subheader("🧩 Cümle Bazlı Analiz")
-    
-    max_sent = st.slider("Maksimum cümle", 10, 60, 30, 5, key="sent_limit")
-    
-    df_sent = utils.analyze_sentences_with_roberta(txt_input)
-
-    if df_sent is None or df_sent.empty:
-        st.info("Cümle bazlı analiz sonucu boş (metin kısa olabilir).")
-    else:
-        st.dataframe(df_sent, use_container_width=True)
-
+            # Cümle bazlı analiz (opsiyonel)
+            st.markdown("---")
+            st.subheader("🧩 Cümle Bazlı Ayrıştırma (opsiyonel)")
+            if hasattr(utils, "analyze_sentences_with_roberta"):
+                df_sent = utils.analyze_sentences_with_roberta(txt_input)
+                if df_sent is not None and not df_sent.empty:
+                    st.dataframe(df_sent, use_container_width=True)
+                else:
+                    st.info("Bu metinde cümle bazlı sonuç üretilemedi (metin kısa olabilir).")
+            else:
+                st.info("Cümle bazlı analiz bu sürümde devre dışı.")

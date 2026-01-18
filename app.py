@@ -794,18 +794,17 @@ Bu yüzden, model 3 sınıf üretse bile grafikteki çizgi “süreklilik” gö
             with st.expander("DEBUG (ham çıktı)", expanded=False):
                 st.json(roberta_res)
 
-            # Cümle bazlı analiz (opsiyonel)
+                        # Cümle bazlı analiz
             st.markdown("---")
-
-           st.subheader("🧩 Cümle Bazlı Ayrıştırma (RoBERTa)")
+            st.subheader("🧩 Cümle Bazlı Ayrıştırma (RoBERTa)")
 
             if hasattr(utils, "analyze_sentences_with_roberta"):
                 df_sent = utils.analyze_sentences_with_roberta(txt_input)
-            
+
                 if df_sent is None or df_sent.empty:
                     st.info("Metinden ayrıştırılabilir cümle bulunamadı.")
                 else:
                     st.dataframe(df_sent, use_container_width=True)
-            
+
             else:
                 st.error("analyze_sentences_with_roberta bulunamadı.")

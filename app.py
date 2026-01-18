@@ -796,12 +796,16 @@ Bu yüzden, model 3 sınıf üretse bile grafikteki çizgi “süreklilik” gö
 
             # Cümle bazlı analiz (opsiyonel)
             st.markdown("---")
-            st.subheader("🧩 Cümle Bazlı Ayrıştırma (opsiyonel)")
+
+           st.subheader("🧩 Cümle Bazlı Ayrıştırma (RoBERTa)")
+
             if hasattr(utils, "analyze_sentences_with_roberta"):
                 df_sent = utils.analyze_sentences_with_roberta(txt_input)
-                if df_sent is not None and not df_sent.empty:
-                    st.dataframe(df_sent, use_container_width=True)
+            
+                if df_sent is None or df_sent.empty:
+                    st.info("Metinden ayrıştırılabilir cümle bulunamadı.")
                 else:
-                    st.info("Bu metinde cümle bazlı sonuç üretilemedi (metin kısa olabilir).")
+                    st.dataframe(df_sent, use_container_width=True)
+            
             else:
-                st.info("Cümle bazlı analiz bu sürümde devre dışı.")
+                st.error("analyze_sentences_with_roberta bulunamadı.")

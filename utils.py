@@ -1107,58 +1107,54 @@ def calculate_ai_trend_series(df_all: pd.DataFrame) -> pd.DataFrame:
 
 
 def create_ai_trend_chart(df_res: pd.DataFrame):
-    """
-    app.py dashboard ve roberta tabında çağırdığın grafik fonksiyonu.
-    """
     import plotly.graph_objects as go
-
     if df_res is None or df_res.empty:
         return None
 
-    df_res = df_res.copy()
-    if "Dönem" not in df_res.columns and "period_date" in df_res.columns:
-        df_res["Dönem"] = pd.to_datetime(df_res["period_date"]).dt.strftime("%Y-%m")
+    df = df_res.copy()
 
-    y = df_res["Net Skor"].astype(float)
+    y_col = "Net Skor (Smooth3)" if "Net Skor (Smooth3)" in df.columns else "Net Skor"
+    y = df[y_col].astype(float)
 
     fig = go.Figure()
 
-    # trend çizgisi
     fig.add_trace(go.Scatter(
-        x=df_res["Dönem"],
+        x=df["Dönem"],
         y=y,
         mode="lines",
-        name="Trend",
-        line=dict(width=1, dash="dot")
+        name="AI Trend",
+        line=dict(width=2)
     ))
 
-    # noktalar
     fig.add_trace(go.Scatter(
-        x=df_res["Dönem"],
+        x=df["Dönem"],
         y=y,
         mode="markers",
-        name="Aylık Durum",
+        name="Aylık",
         marker=dict(
-            size=12,
+            size=11,
             color=y,
             colorscale="RdBu_r",
             cmin=-100,
             cmax=100,
             showscale=True,
-            colorbar=dict(title="Net Skor")
+            colorbar=dict(title="AI Skor")
         ),
-        hovertemplate="<b>%{x}</b><br>Net Skor: %{y:.1f}<extra></extra>"
+        # hover'a duruş ekleyelim:
+        text=df["Duruş"] if "Duruş" in df.columns else None,
+        hovertemplate="<b>%{x}</b><br>Skor: %{y:.1f}<br>%{text}<extra></extra>"
     ))
 
-    fig.add_hline(y=0, line_color="black", opacity=0.3)
+    fig.add_hline(y=0, line_color="black", opacity=0.25)
 
     fig.update_layout(
-        title="TR TCMB Metin Analizi (mrince RoBERTa) — Yumuşatılmış Net Skor",
+        title="mrince RoBERTa — AI Duruş Trendi (yumuşatılmış)",
         yaxis=dict(title="Net Skor", range=[-110, 110]),
         height=450,
         margin=dict(l=20, r=20, t=40, b=20)
     )
     return fig
+
 
 def analyze_sentences_with_roberta(text: str, max_sentences: int = 30) -> pd.DataFrame:
     """

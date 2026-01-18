@@ -1233,4 +1233,137 @@ def analyze_sentences_with_roberta(text: str, max_sentences: int = 30) -> pd.Dat
     finally:
         gc.collect()
 
+def roberta_to_dashboard_score(h: float, d: float, n: float,
+                               scale: float = 0.35,
+                               conf_floor: float = 0.55,
+                               conf_ceil: float = 0.95,
+                               neut_min: float = 0.55,
+                               margin_neut: float = 0.15):
+    """
+    mrince modelinin olasılıklarını dashboard'a uygun skora çevirir.
+
+    Çıktı:
+      net_final: yumuşatılmış + confidence-gated skor (-100..100)
+      stance: 5 seviyeli duruş etiketi
+      conf: max olasılık
+      diff: hawk-dove
+      net_raw: ham net (diff*100)
+      net_tanh: tanh ile yumuşatılmış skor
+    """
+    h = float(h or 0.0)
+    d = float(d or 0.0)
+    n = float(n or 0.0)
+
+    diff = h - d
+    net_raw = diff * 100.0
+
+    # 1) yumuşatma (uçlara yapışmayı azaltır)
+    net_tanh = float(np.tanh(diff / float(scale)) * 100.0)
+
+    # 2) confidence gating (belirsiz metinleri merkeze çeker)
+    conf = max(h, d, n)
+    weight = (conf - conf_floor) / max(1e-9, (conf_ceil - conf_floor))
+    weight = max(0.0, min(1.0, weight))
+
+    # 3) "gerçek nötrlük" filtresi (neutral baskınsa ve margin küçükse daha da merkeze)
+    if (n >= neut_min) and (abs(diff) <= margin_neut):
+        weight *= 0.35  # daha nötrle
+
+    net_final = net_tanh * weight
+
+    # 4) 5 seviyeli duruş etiketi
+    if diff >= 0.60:
+        stance = "🦅 Çok Şahin"
+    elif diff >= 0.25:
+        stance = "🦅 Şahin"
+    elif diff <= -0.60:
+        stance = "🕊️ Çok Güvercin"
+    elif diff <= -0.25:
+        stance = "🕊️ Güvercin"
+    else:
+        stance = "⚖️ Nötr"
+
+    return float(net_final), stance, float(conf), float(diff), float(net_raw), float(net_tanh)
+
+
+def calculate_ai_trend_series(df_all: pd.DataFrame) -> pd.DataFrame:
+    """
+    Tüm veri setini tarayıp mrince RoBERTa skorlarını hesaplar.
+    Bu sürüm, dashboard'a uygun 'Net Skor (AI)' üretir (uçlara yapışmaz).
+    """
+    if df_all is None or df_all.empty:
+        return pd.DataFrame()
+
+    clf = load_roberta_pipeline()
+    if clf is None:
+        return pd.DataFrame()
+
+    df_all = df_all.copy()
+    df_all["period_date"] = pd.to_datetime(df_all["period_date"], errors="coerce")
+    df_all = df_all.dropna(subset=["period_date"]).sort_values("period_date")
+
+    results = []
+
+    st.toast("AI analiz başladı...", icon="⏳")
+    pb = st.progress(0)
+    total = len(df_all)
+
+    for i, (_, row) in enumerate(df_all.iterrows()):
+        pb.progress((i + 1) / total)
+
+        txt = str(row.get("text_content", "") or "")
+        if len(txt) < 10:
+            continue
+
+        # tek metin analizi
+        res = analyze_with_roberta(txt)
+        gc.collect()
+
+        if not isinstance(res, dict):
+            continue
+
+        scores = res.get("scores_map", {}) or {}
+        h = float(scores.get("HAWK", 0.0))
+        d = float(scores.get("DOVE", 0.0))
+        n = float(scores.get("NEUT", 0.0))
+
+        net_final, stance, conf, diff, net_raw, net_tanh = roberta_to_dashboard_score(h, d, n)
+
+        dt = row["period_date"]
+        period = dt.strftime("%Y-%m")
+
+        results.append({
+            "Dönem": period,
+            "period_date": dt,
+
+            # Dashboard çizgisi bununla çizilecek:
+            "Net Skor": net_final,
+
+            # Debug / analiz için:
+            "Duruş": stance,
+            "Güven": conf,
+            "Diff (H-D)": diff,
+            "Net (Ham)": net_raw,
+            "Net (Tanh)": net_tanh,
+
+            "Şahin Olasılık": h,
+            "Güvercin Olasılık": d,
+            "Nötr Olasılık": n
+        })
+
+    pb.empty()
+    st.toast("AI analiz tamamlandı!", icon="✅")
+
+    out = pd.DataFrame(results)
+    if out.empty:
+        return out
+
+    out = out.sort_values("period_date").reset_index(drop=True)
+
+    # 5) ABG benzeri daha akıcı görünüm için rolling smooth
+    out["Net Skor (Smooth3)"] = out["Net Skor"].rolling(3, min_periods=1).mean()
+
+    return out
+
+
 

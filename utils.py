@@ -957,73 +957,81 @@ def _normalize_label_mrince(raw_label: str) -> str:
     return "NEUT"
 
 
-def _stance_from_diff(diff: float) -> str:
+def _stance_from_diff(diff: float, deadband: float = 0.15) -> str:
     """
-    diff = HAWK - DOVE ([-1, 1])
-    5-seviyeli duruş etiketi
+    diff = HAWK - DOVE  ([-1, 1])
+    Pratikte tek 3 etiket: Şahin / Güvercin / Nötr
+    deadband: küçük farkları nötr saymak için tampon bölge
     """
-    if diff >= 0.60:
-        return "🦅 Çok Şahin"
-    if diff >= 0.25:
+    if diff >= deadband:
         return "🦅 Şahin"
-    if diff <= -0.60:
-        return "🕊️ Çok Güvercin"
-    if diff <= -0.25:
+    if diff <= -deadband:
         return "🕊️ Güvercin"
     return "⚖️ Nötr"
 
 
-def analyze_with_roberta(text: str):
+
+def analyze_sentences_with_roberta(text: str) -> pd.DataFrame:
     """
-    Tek metin için sınıf olasılıklarını döndürür.
-    NOT: Burada 'trend skor' üretmiyoruz; trend post-process'te.
+    Metni cümlelere bölüp her cümleyi mrince modeliyle sınıflandırır.
+    max_sentences yok: metinlerde zaten cümle sayısı az.
     """
     if not text:
-        return None
+        return pd.DataFrame()
 
     clf = load_roberta_pipeline()
     if clf is None:
-        return "ERROR"
+        return pd.DataFrame()
 
-    truncated_text = str(text)[:1200]  # RAM koruması
+    sentences = split_sentences_nlp(str(text))
+    sentences = [s.strip() for s in sentences if s.strip() and len(s.split()) > 3]
+    if not sentences:
+        return pd.DataFrame()
 
     try:
-        raw = clf(truncated_text)
+        preds = clf(sentences)
+        rows = []
 
-        # pipeline bazen [[...]] döndürür
-        if isinstance(raw, list) and raw and isinstance(raw[0], list):
-            raw = raw[0]
+        for sent, pred in zip(sentences, preds):
+            if isinstance(pred, list) and pred and isinstance(pred[0], list):
+                pred = pred[0]
 
-        scores_map = {"HAWK": 0.0, "DOVE": 0.0, "NEUT": 0.0}
-        best_score = -1.0
-        best_lbl = "NEUT"
+            scores_map = {"HAWK": 0.0, "DOVE": 0.0, "NEUT": 0.0}
+            if isinstance(pred, list):
+                for r in pred:
+                    lbl = _normalize_label_mrince(r.get("label", ""))
+                    sc = float(r.get("score", 0.0))
+                    scores_map[lbl] = sc
+            else:
+                lbl = _normalize_label_mrince(pred.get("label", ""))
+                sc = float(pred.get("score", 0.0))
+                scores_map[lbl] = sc
 
-        for r in (raw or []):
-            lbl_raw = r.get("label", "")
-            sc = float(r.get("score", 0.0))
-            lbl = _normalize_label_mrince(lbl_raw)
-            scores_map[lbl] = sc
-            if sc > best_score:
-                best_score = sc
-                best_lbl = lbl
+            h = float(scores_map["HAWK"])
+            d = float(scores_map["DOVE"])
+            n = float(scores_map["NEUT"])
+            diff = h - d
 
-        h = float(scores_map.get("HAWK", 0.0))
-        d = float(scores_map.get("DOVE", 0.0))
-        n = float(scores_map.get("NEUT", 0.0))
+            rows.append({
+                "Cümle": sent,
+                "Duruş": _stance_from_diff(diff),
+                "Diff (H-D)": float(diff),
+                "HAWK": h,
+                "DOVE": d,
+                "NEUT": n
+            })
 
-        diff = h - d
-
-        return {
-            "scores_map": scores_map,
-            "best_score": float(best_score),
-            "diff": float(diff),
-            "stance": _stance_from_diff(diff),
-        }
+        df = pd.DataFrame(rows)
+        if not df.empty:
+            df = df.sort_values("Diff (H-D)", ascending=False).reset_index(drop=True)
+        return df
 
     except Exception as e:
-        return f"Error: {str(e)}"
+        print(f"[RoBERTa] Cümle analizi hatası: {repr(e)}")
+        return pd.DataFrame()
     finally:
         gc.collect()
+
 
 
 # -------------------------------------------------------------------------

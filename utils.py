@@ -940,19 +940,69 @@ def load_roberta_pipeline():
         return None
 
 
+# --- AUTO LABEL MAP (en kritik fix) ---
+@st.cache_resource(show_spinner=False)
+def _mrince_label_map():
+    """
+    Modelin LABEL_* -> {HAWK, DOVE, NEUT} eşlemesini otomatik bulur.
+    Çünkü pratikte LABEL_1/2/0 sabit varsayımı bazı durumlarda ters çıkabiliyor.
+    """
+    clf = load_roberta_pipeline()
+    # güvenli fallback (çalışmazsa)
+    fallback = {"HAWK": "LABEL_1", "DOVE": "LABEL_2", "NEUT": "LABEL_0"}
+    if clf is None:
+        return fallback
+
+    tests = {
+        "HAWK": "The committee will tighten monetary policy further and deliver additional rate hikes.",
+        "DOVE": "The committee will begin monetary easing soon and deliver rate cuts in the coming meetings.",
+        "NEUT": "The committee decided to keep the policy rate unchanged."
+    }
+
+    def best_label(text: str) -> str:
+        out = clf(text)
+        if isinstance(out, list) and out and isinstance(out[0], list):
+            out = out[0]
+        if not isinstance(out, list) or not out:
+            return ""
+        best = max(out, key=lambda x: float(x.get("score", 0.0)))
+        return str(best.get("label", "")).strip()
+
+    hawk_lab = best_label(tests["HAWK"])
+    dove_lab = best_label(tests["DOVE"])
+    neut_lab = best_label(tests["NEUT"])
+
+    # çakışma olursa fallback’e dön
+    labs = [hawk_lab, dove_lab, neut_lab]
+    if any(l == "" for l in labs) or len(set(labs)) < 3:
+        return fallback
+
+    return {"HAWK": hawk_lab, "DOVE": dove_lab, "NEUT": neut_lab}
+
+
 def _normalize_label_mrince(raw_label: str) -> str:
     """
-    Senin debug çıktına göre:
-      LABEL_0 -> NEUT
-      LABEL_1 -> HAWK
-      LABEL_2 -> DOVE
+    Otomatik çıkarılan label_map ile normalize eder.
     """
-    lbl = str(raw_label).lower().strip()
-    if "label_1" in lbl or "hawk" in lbl:
+    m = _mrince_label_map()
+    lbl = str(raw_label).strip()
+
+    if lbl == m.get("HAWK"):
         return "HAWK"
-    if "label_2" in lbl or "dove" in lbl:
+    if lbl == m.get("DOVE"):
         return "DOVE"
-    if "label_0" in lbl or "neut" in lbl or "neutral" in lbl:
+    if lbl == m.get("NEUT"):
+        return "NEUT"
+
+    # fallback heuristik
+    low = lbl.lower()
+    if "hawk" in low:
+        return "HAWK"
+    if "dove" in low:
+        return "DOVE"
+    if "neut" in low or "neutral" in low:
+        return "NEUT"
+    if "label_0" in low:
         return "NEUT"
     return "NEUT"
 
@@ -960,7 +1010,7 @@ def _normalize_label_mrince(raw_label: str) -> str:
 def stance_3class_from_diff(diff: float, deadband: float = 0.15) -> str:
     """
     diff = P(HAWK) - P(DOVE)
-    Sadece 3 etiket: Şahin / Güvercin / Nötr
+    3 etiket: Şahin / Güvercin / Nötr
     """
     if diff >= deadband:
         return "🦅 Şahin"
@@ -1007,6 +1057,8 @@ def analyze_with_roberta(text: str):
             "best_score": float(best_score),
             "diff": float(diff),
             "stance": stance_3class_from_diff(diff),
+            "label_map": _mrince_label_map(),  # debug için (istersen UI'da göster)
+            "h": h, "d": d, "n": n
         }
 
     except Exception as e:

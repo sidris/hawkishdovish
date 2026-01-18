@@ -942,10 +942,10 @@ def load_roberta_pipeline():
 
 def _normalize_label_mrince(raw_label: str) -> str:
     """
-    Senin debug çıktına göre id2label:
-      0: LABEL_0 -> NEUT
-      1: LABEL_1 -> HAWK
-      2: LABEL_2 -> DOVE
+    Senin debug çıktına göre:
+      LABEL_0 -> NEUT
+      LABEL_1 -> HAWK
+      LABEL_2 -> DOVE
     """
     lbl = str(raw_label).lower().strip()
     if "label_1" in lbl or "hawk" in lbl:
@@ -957,11 +957,10 @@ def _normalize_label_mrince(raw_label: str) -> str:
     return "NEUT"
 
 
-def _stance_from_diff(diff: float, deadband: float = 0.15) -> str:
+def stance_3class_from_diff(diff: float, deadband: float = 0.15) -> str:
     """
-    diff = HAWK - DOVE  ([-1, 1])
-    Pratikte tek 3 etiket: Şahin / Güvercin / Nötr
-    deadband: küçük farkları nötr saymak için tampon bölge
+    diff = P(HAWK) - P(DOVE)
+    Sadece 3 etiket: Şahin / Güvercin / Nötr
     """
     if diff >= deadband:
         return "🦅 Şahin"
@@ -970,82 +969,61 @@ def _stance_from_diff(diff: float, deadband: float = 0.15) -> str:
     return "⚖️ Nötr"
 
 
-
-def analyze_sentences_with_roberta(text: str) -> pd.DataFrame:
+def analyze_with_roberta(text: str):
     """
-    Metni cümlelere bölüp her cümleyi mrince modeliyle sınıflandırır.
-    max_sentences yok: metinlerde zaten cümle sayısı az.
+    Tek metin için sınıf olasılıkları + diff + basit duruş.
     """
     if not text:
-        return pd.DataFrame()
+        return None
 
     clf = load_roberta_pipeline()
     if clf is None:
-        return pd.DataFrame()
+        return "ERROR"
 
-    sentences = split_sentences_nlp(str(text))
-    sentences = [s.strip() for s in sentences if s.strip() and len(s.split()) > 3]
-    if not sentences:
-        return pd.DataFrame()
+    truncated_text = str(text)[:1200]  # RAM koruması
 
     try:
-        preds = clf(sentences)
-        rows = []
+        raw = clf(truncated_text)
+        if isinstance(raw, list) and raw and isinstance(raw[0], list):
+            raw = raw[0]
 
-        for sent, pred in zip(sentences, preds):
-            if isinstance(pred, list) and pred and isinstance(pred[0], list):
-                pred = pred[0]
+        scores_map = {"HAWK": 0.0, "DOVE": 0.0, "NEUT": 0.0}
+        best_score = -1.0
 
-            scores_map = {"HAWK": 0.0, "DOVE": 0.0, "NEUT": 0.0}
-            if isinstance(pred, list):
-                for r in pred:
-                    lbl = _normalize_label_mrince(r.get("label", ""))
-                    sc = float(r.get("score", 0.0))
-                    scores_map[lbl] = sc
-            else:
-                lbl = _normalize_label_mrince(pred.get("label", ""))
-                sc = float(pred.get("score", 0.0))
-                scores_map[lbl] = sc
+        for r in (raw or []):
+            lbl_raw = r.get("label", "")
+            sc = float(r.get("score", 0.0))
+            lbl = _normalize_label_mrince(lbl_raw)
+            scores_map[lbl] = sc
+            best_score = max(best_score, sc)
 
-            h = float(scores_map["HAWK"])
-            d = float(scores_map["DOVE"])
-            n = float(scores_map["NEUT"])
-            diff = h - d
+        h = float(scores_map.get("HAWK", 0.0))
+        d = float(scores_map.get("DOVE", 0.0))
+        n = float(scores_map.get("NEUT", 0.0))
+        diff = h - d
 
-            rows.append({
-                "Cümle": sent,
-                "Duruş": _stance_from_diff(diff),
-                "Diff (H-D)": float(diff),
-                "HAWK": h,
-                "DOVE": d,
-                "NEUT": n
-            })
-
-        df = pd.DataFrame(rows)
-        if not df.empty:
-            df = df.sort_values("Diff (H-D)", ascending=False).reset_index(drop=True)
-        return df
+        return {
+            "scores_map": scores_map,
+            "best_score": float(best_score),
+            "diff": float(diff),
+            "stance": stance_3class_from_diff(diff),
+        }
 
     except Exception as e:
-        print(f"[RoBERTa] Cümle analizi hatası: {repr(e)}")
-        return pd.DataFrame()
+        return f"Error: {str(e)}"
     finally:
         gc.collect()
 
 
-
-# -------------------------------------------------------------------------
-# POST-PROCESS: robust calibration + EMA + hysteresis
-# -------------------------------------------------------------------------
 def postprocess_ai_series(df: pd.DataFrame,
                           diff_col: str = "Diff (H-D)",
                           span: int = 7,
                           z_scale: float = 2.0,
                           hyst: float = 25.0) -> pd.DataFrame:
     """
-    diff -> robust z-score -> tanh -> calibrated score
-    calibrated score -> EMA
-    EMA -> hysteresis ile rejim etiketi
+    diff -> robust z-score -> tanh -> score
+    score -> EMA smoothing
+    EMA -> hysteresis regime etiketi
     """
     if df is None or df.empty or diff_col not in df.columns:
         return df
@@ -1053,7 +1031,6 @@ def postprocess_ai_series(df: pd.DataFrame,
     out = df.copy()
     x = out[diff_col].astype(float)
 
-    # robust z-score
     med = float(x.median())
     mad = float((x - med).abs().median()) + 1e-6
     z = (x - med) / (1.4826 * mad)
@@ -1061,7 +1038,6 @@ def postprocess_ai_series(df: pd.DataFrame,
     out["AI Score (Calib)"] = np.tanh(z / float(z_scale)) * 100.0
     out["AI Score (EMA)"] = out["AI Score (Calib)"].ewm(span=span, adjust=False).mean()
 
-    # hysteresis regime
     regime = []
     prev = "⚖️ Nötr"
     for v in out["AI Score (EMA)"].values:
@@ -1078,13 +1054,9 @@ def postprocess_ai_series(df: pd.DataFrame,
     return out
 
 
-# -------------------------------------------------------------------------
-# TREND SERIES
-# -------------------------------------------------------------------------
 def calculate_ai_trend_series(df_all: pd.DataFrame) -> pd.DataFrame:
     """
-    Tüm geçmişi tarar, ham olasılıkları ve diff üretir,
-    sonra postprocess ile anlamlı trend skoruna çevirir.
+    Tüm geçmişi tarar (mrince) ve sonra postprocess ile trend endeksi üretir.
     """
     if df_all is None or df_all.empty:
         return pd.DataFrame()
@@ -1120,20 +1092,15 @@ def calculate_ai_trend_series(df_all: pd.DataFrame) -> pd.DataFrame:
         h = float(scores.get("HAWK", 0.0))
         d = float(scores.get("DOVE", 0.0))
         n = float(scores.get("NEUT", 0.0))
-
         diff = float(res.get("diff", h - d))
 
         results.append({
             "Dönem": period,
             "period_date": dt,
-
-            # ham
             "Şahin Olasılık": h,
             "Güvercin Olasılık": d,
             "Nötr Olasılık": n,
             "Diff (H-D)": diff,
-
-            # ham duruş (tek metin)
             "Duruş": str(res.get("stance", "")),
             "Güven": float(res.get("best_score", 0.0)),
         })
@@ -1148,41 +1115,19 @@ def calculate_ai_trend_series(df_all: pd.DataFrame) -> pd.DataFrame:
         return out
 
     out = out.sort_values("period_date").reset_index(drop=True)
-
-    # POSTPROCESS => asıl trend burada
     out = postprocess_ai_series(out, diff_col="Diff (H-D)", span=7, z_scale=2.0, hyst=25.0)
-
     return out
 
 
-# -------------------------------------------------------------------------
-# CHART
-# -------------------------------------------------------------------------
 def create_ai_trend_chart(df_res: pd.DataFrame):
     import plotly.graph_objects as go
     if df_res is None or df_res.empty:
         return None
 
     df = df_res.copy()
-
-    # Trend için en anlamlı kolon:
-    y_col = "AI Score (EMA)" if "AI Score (EMA)" in df.columns else (
-        "AI Score (Calib)" if "AI Score (Calib)" in df.columns else "Diff (H-D)"
-    )
-
+    y_col = "AI Score (EMA)" if "AI Score (EMA)" in df.columns else "Diff (H-D)"
     y = df[y_col].astype(float)
 
-    fig = go.Figure()
-
-    fig.add_trace(go.Scatter(
-        x=df["Dönem"],
-        y=y,
-        mode="lines",
-        name="AI Trend",
-        line=dict(width=2)
-    ))
-
-    # hover text: rejim + ham duruş
     hover_text = None
     if "AI Rejim" in df.columns and "Duruş" in df.columns:
         hover_text = (df["AI Rejim"].astype(str) + " | " + df["Duruş"].astype(str))
@@ -1191,17 +1136,22 @@ def create_ai_trend_chart(df_res: pd.DataFrame):
     elif "Duruş" in df.columns:
         hover_text = df["Duruş"].astype(str)
 
+    fig = go.Figure()
+
     fig.add_trace(go.Scatter(
-        x=df["Dönem"],
-        y=y,
-        mode="markers",
-        name="Aylık",
+        x=df["Dönem"], y=y,
+        mode="lines", name="AI Trend",
+        line=dict(width=2)
+    ))
+
+    fig.add_trace(go.Scatter(
+        x=df["Dönem"], y=y,
+        mode="markers", name="Aylık",
         marker=dict(
             size=11,
             color=y,
             colorscale="RdBu_r",
-            cmin=-100,
-            cmax=100,
+            cmin=-100, cmax=100,
             showscale=True,
             colorbar=dict(title=y_col)
         ),
@@ -1220,12 +1170,9 @@ def create_ai_trend_chart(df_res: pd.DataFrame):
     return fig
 
 
-# -------------------------------------------------------------------------
-# SENTENCE-LEVEL
-# -------------------------------------------------------------------------
-def analyze_sentences_with_roberta(text: str, max_sentences: int = 30) -> pd.DataFrame:
+def analyze_sentences_with_roberta(text: str) -> pd.DataFrame:
     """
-    Metni cümlelere bölüp her cümleyi mrince modeliyle sınıflandırır.
+    max_sentences parametresi yok (kafa karıştırmasın).
     """
     if not text:
         return pd.DataFrame()
@@ -1236,7 +1183,6 @@ def analyze_sentences_with_roberta(text: str, max_sentences: int = 30) -> pd.Dat
 
     sentences = split_sentences_nlp(str(text))
     sentences = [s.strip() for s in sentences if s.strip() and len(s.split()) > 3]
-    sentences = sentences[:max_sentences]
     if not sentences:
         return pd.DataFrame()
 
@@ -1263,11 +1209,10 @@ def analyze_sentences_with_roberta(text: str, max_sentences: int = 30) -> pd.Dat
             d = float(scores_map["DOVE"])
             n = float(scores_map["NEUT"])
             diff = h - d
-            stance = _stance_from_diff(diff)
 
             rows.append({
                 "Cümle": sent,
-                "Duruş": stance,
+                "Duruş": stance_3class_from_diff(diff),
                 "Diff (H-D)": float(diff),
                 "HAWK": h,
                 "DOVE": d,
@@ -1284,3 +1229,7 @@ def analyze_sentences_with_roberta(text: str, max_sentences: int = 30) -> pd.Dat
         return pd.DataFrame()
     finally:
         gc.collect()
+
+
+
+

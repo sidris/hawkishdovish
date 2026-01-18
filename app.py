@@ -6,6 +6,8 @@ from plotly.subplots import make_subplots
 import altair as alt
 import utils 
 import uuid
+import numpy as np
+
 
 
 

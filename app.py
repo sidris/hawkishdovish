@@ -728,7 +728,8 @@ with tab_roberta:
     
     max_sent = st.slider("Maksimum cümle", 10, 60, 30, 5, key="sent_limit")
     
-    df_sent = utils.analyze_sentences_with_roberta(txt_input, max_sentences=max_sent)
+    df_sent = utils.analyze_sentences_with_roberta(txt_input)
+
     if df_sent is None or df_sent.empty:
         st.info("Cümle bazlı analiz sonucu boş (metin kısa olabilir).")
     else:

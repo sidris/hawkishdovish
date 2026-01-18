@@ -918,6 +918,8 @@ class AdvancedMLPredictor:
 
 import gc
 import numpy as np
+import pandas as pd
+import streamlit as st
 
 # --- MODEL CACHE ---
 @st.cache_resource(show_spinner=False)
@@ -957,8 +959,8 @@ def _normalize_label_mrince(raw_label: str) -> str:
 
 def _stance_from_diff(diff: float) -> str:
     """
-    diff = HAWK - DOVE ([-1, 1] bandında)
-    5-seviyeli duruş: çok şahin/şahin/nötr/güvercin/çok güvercin
+    diff = HAWK - DOVE ([-1, 1])
+    5-seviyeli duruş etiketi
     """
     if diff >= 0.60:
         return "🦅 Çok Şahin"
@@ -971,26 +973,10 @@ def _stance_from_diff(diff: float) -> str:
     return "⚖️ Nötr"
 
 
-def _smooth_net_score(diff: float, scale: float = 0.35) -> float:
-    """
-    Aşırı uçlara yapışmayı engellemek için yumuşatma.
-    diff = HAWK - DOVE
-    net_smooth = tanh(diff/scale)*100
-    """
-    try:
-        return float(np.tanh(float(diff) / float(scale)) * 100.0)
-    except Exception:
-        return 0.0
-
-
 def analyze_with_roberta(text: str):
     """
-    Tek metin için:
-      - scores_map: HAWK/DOVE/NEUT olasılıkları
-      - diff: hawk - dove
-      - net_score_raw: diff*100
-      - net_score: tanh yumuşatılmış skor
-      - stance: 5-seviyeli duruş etiketi
+    Tek metin için sınıf olasılıklarını döndürür.
+    NOT: Burada 'trend skor' üretmiyoruz; trend post-process'te.
     """
     if not text:
         return None
@@ -999,8 +985,7 @@ def analyze_with_roberta(text: str):
     if clf is None:
         return "ERROR"
 
-    # RAM koruması (istersen 1500-2000'e çıkarabilirsin)
-    truncated_text = str(text)[:1200]
+    truncated_text = str(text)[:1200]  # RAM koruması
 
     try:
         raw = clf(truncated_text)
@@ -1010,8 +995,8 @@ def analyze_with_roberta(text: str):
             raw = raw[0]
 
         scores_map = {"HAWK": 0.0, "DOVE": 0.0, "NEUT": 0.0}
-        best_lbl = "NEUT"
         best_score = -1.0
+        best_lbl = "NEUT"
 
         for r in (raw or []):
             lbl_raw = r.get("label", "")
@@ -1024,33 +1009,80 @@ def analyze_with_roberta(text: str):
 
         h = float(scores_map.get("HAWK", 0.0))
         d = float(scores_map.get("DOVE", 0.0))
+        n = float(scores_map.get("NEUT", 0.0))
+
         diff = h - d
-        net_raw = diff * 100.0
-        net_smooth = _smooth_net_score(diff, scale=0.35)
-        stance = _stance_from_diff(diff)
 
         return {
-            "best_label": stance,          # UI'da direkt bunu göster
-            "best_score": float(best_score),
             "scores_map": scores_map,
+            "best_score": float(best_score),
             "diff": float(diff),
-            "net_score_raw": float(net_raw),
-            "net_score": float(net_smooth),  # GRAFİKTE BUNU KULLAN
+            "stance": _stance_from_diff(diff),
         }
 
     except Exception as e:
         return f"Error: {str(e)}"
+    finally:
+        gc.collect()
 
 
+# -------------------------------------------------------------------------
+# POST-PROCESS: robust calibration + EMA + hysteresis
+# -------------------------------------------------------------------------
+def postprocess_ai_series(df: pd.DataFrame,
+                          diff_col: str = "Diff (H-D)",
+                          span: int = 7,
+                          z_scale: float = 2.0,
+                          hyst: float = 25.0) -> pd.DataFrame:
+    """
+    diff -> robust z-score -> tanh -> calibrated score
+    calibrated score -> EMA
+    EMA -> hysteresis ile rejim etiketi
+    """
+    if df is None or df.empty or diff_col not in df.columns:
+        return df
+
+    out = df.copy()
+    x = out[diff_col].astype(float)
+
+    # robust z-score
+    med = float(x.median())
+    mad = float((x - med).abs().median()) + 1e-6
+    z = (x - med) / (1.4826 * mad)
+
+    out["AI Score (Calib)"] = np.tanh(z / float(z_scale)) * 100.0
+    out["AI Score (EMA)"] = out["AI Score (Calib)"].ewm(span=span, adjust=False).mean()
+
+    # hysteresis regime
+    regime = []
+    prev = "⚖️ Nötr"
+    for v in out["AI Score (EMA)"].values:
+        v = float(v)
+        if prev in ["⚖️ Nötr", "🦅 Şahin"] and v >= hyst:
+            prev = "🦅 Şahin"
+        elif prev in ["⚖️ Nötr", "🕊️ Güvercin"] and v <= -hyst:
+            prev = "🕊️ Güvercin"
+        elif abs(v) < hyst * 0.6:
+            prev = "⚖️ Nötr"
+        regime.append(prev)
+
+    out["AI Rejim"] = regime
+    return out
+
+
+# -------------------------------------------------------------------------
+# TREND SERIES
+# -------------------------------------------------------------------------
 def calculate_ai_trend_series(df_all: pd.DataFrame) -> pd.DataFrame:
     """
-    Tüm geçmişi tarar ve her dönem için:
-      - net_score (yumuşatılmış)
-      - stance (etiket)
-      - hawk/dove/neut olasılıkları
-    üretir.
+    Tüm geçmişi tarar, ham olasılıkları ve diff üretir,
+    sonra postprocess ile anlamlı trend skoruna çevirir.
     """
     if df_all is None or df_all.empty:
+        return pd.DataFrame()
+
+    clf = load_roberta_pipeline()
+    if clf is None:
         return pd.DataFrame()
 
     df_all = df_all.copy()
@@ -1058,7 +1090,6 @@ def calculate_ai_trend_series(df_all: pd.DataFrame) -> pd.DataFrame:
     df_all = df_all.dropna(subset=["period_date"]).sort_values("period_date")
 
     results = []
-
     st.toast("AI analiz başladı...", icon="⏳")
     pb = st.progress(0)
     total = len(df_all)
@@ -1071,31 +1102,35 @@ def calculate_ai_trend_series(df_all: pd.DataFrame) -> pd.DataFrame:
             continue
 
         res = analyze_with_roberta(txt)
-
-        # bellek temizliği (streamlit cloud'da beyaz ekran riskini azaltır)
-        gc.collect()
-
         if not isinstance(res, dict):
             continue
 
         dt = row["period_date"]
         period = dt.strftime("%Y-%m")
 
-        scores = res.get("scores_map", {})
+        scores = res.get("scores_map", {}) or {}
         h = float(scores.get("HAWK", 0.0))
         d = float(scores.get("DOVE", 0.0))
         n = float(scores.get("NEUT", 0.0))
 
+        diff = float(res.get("diff", h - d))
+
         results.append({
             "Dönem": period,
             "period_date": dt,
-            "Net Skor": float(res.get("net_score", 0.0)),       # yumuşatılmış
-            "Net Skor (Ham)": float(res.get("net_score_raw", 0.0)),
-            "Duruş": str(res.get("best_label", "")),
+
+            # ham
             "Şahin Olasılık": h,
             "Güvercin Olasılık": d,
             "Nötr Olasılık": n,
+            "Diff (H-D)": diff,
+
+            # ham duruş (tek metin)
+            "Duruş": str(res.get("stance", "")),
+            "Güven": float(res.get("best_score", 0.0)),
         })
+
+        gc.collect()
 
     pb.empty()
     st.toast("AI analiz tamamlandı!", icon="✅")
@@ -1103,9 +1138,18 @@ def calculate_ai_trend_series(df_all: pd.DataFrame) -> pd.DataFrame:
     out = pd.DataFrame(results)
     if out.empty:
         return out
-    return out.sort_values("period_date")
+
+    out = out.sort_values("period_date").reset_index(drop=True)
+
+    # POSTPROCESS => asıl trend burada
+    out = postprocess_ai_series(out, diff_col="Diff (H-D)", span=7, z_scale=2.0, hyst=25.0)
+
+    return out
 
 
+# -------------------------------------------------------------------------
+# CHART
+# -------------------------------------------------------------------------
 def create_ai_trend_chart(df_res: pd.DataFrame):
     import plotly.graph_objects as go
     if df_res is None or df_res.empty:
@@ -1113,7 +1157,11 @@ def create_ai_trend_chart(df_res: pd.DataFrame):
 
     df = df_res.copy()
 
-    y_col = "Net Skor (Smooth3)" if "Net Skor (Smooth3)" in df.columns else "Net Skor"
+    # Trend için en anlamlı kolon:
+    y_col = "AI Score (EMA)" if "AI Score (EMA)" in df.columns else (
+        "AI Score (Calib)" if "AI Score (Calib)" in df.columns else "Diff (H-D)"
+    )
+
     y = df[y_col].astype(float)
 
     fig = go.Figure()
@@ -1125,6 +1173,15 @@ def create_ai_trend_chart(df_res: pd.DataFrame):
         name="AI Trend",
         line=dict(width=2)
     ))
+
+    # hover text: rejim + ham duruş
+    hover_text = None
+    if "AI Rejim" in df.columns and "Duruş" in df.columns:
+        hover_text = (df["AI Rejim"].astype(str) + " | " + df["Duruş"].astype(str))
+    elif "AI Rejim" in df.columns:
+        hover_text = df["AI Rejim"].astype(str)
+    elif "Duruş" in df.columns:
+        hover_text = df["Duruş"].astype(str)
 
     fig.add_trace(go.Scatter(
         x=df["Dönem"],
@@ -1138,28 +1195,29 @@ def create_ai_trend_chart(df_res: pd.DataFrame):
             cmin=-100,
             cmax=100,
             showscale=True,
-            colorbar=dict(title="AI Skor")
+            colorbar=dict(title=y_col)
         ),
-        # hover'a duruş ekleyelim:
-        text=df["Duruş"] if "Duruş" in df.columns else None,
+        text=hover_text,
         hovertemplate="<b>%{x}</b><br>Skor: %{y:.1f}<br>%{text}<extra></extra>"
     ))
 
     fig.add_hline(y=0, line_color="black", opacity=0.25)
 
     fig.update_layout(
-        title="mrince RoBERTa — AI Duruş Trendi (yumuşatılmış)",
-        yaxis=dict(title="Net Skor", range=[-110, 110]),
+        title="mrince RoBERTa — AI Duruş Trendi (Calib + EMA + Hysteresis)",
+        yaxis=dict(title=y_col, range=[-110, 110]),
         height=450,
         margin=dict(l=20, r=20, t=40, b=20)
     )
     return fig
 
 
+# -------------------------------------------------------------------------
+# SENTENCE-LEVEL
+# -------------------------------------------------------------------------
 def analyze_sentences_with_roberta(text: str, max_sentences: int = 30) -> pd.DataFrame:
     """
     Metni cümlelere bölüp her cümleyi mrince modeliyle sınıflandırır.
-    max_sentences: RAM/CPU koruması için üst limit.
     """
     if not text:
         return pd.DataFrame()
@@ -1168,27 +1226,21 @@ def analyze_sentences_with_roberta(text: str, max_sentences: int = 30) -> pd.Dat
     if clf is None:
         return pd.DataFrame()
 
-    # split_sentences_nlp zaten utils'te var (sende mevcut)
     sentences = split_sentences_nlp(str(text))
     sentences = [s.strip() for s in sentences if s.strip() and len(s.split()) > 3]
+    sentences = sentences[:max_sentences]
     if not sentences:
         return pd.DataFrame()
 
-    # Koruma: çok uzunsa kırp
-    sentences = sentences[:max_sentences]
-
     try:
-        # pipeline liste alır -> her cümle için skor döndürür
         preds = clf(sentences)
-
         rows = []
+
         for sent, pred in zip(sentences, preds):
-            # bazen [[...]] döner
             if isinstance(pred, list) and pred and isinstance(pred[0], list):
                 pred = pred[0]
 
             scores_map = {"HAWK": 0.0, "DOVE": 0.0, "NEUT": 0.0}
-
             if isinstance(pred, list):
                 for r in pred:
                     lbl = _normalize_label_mrince(r.get("label", ""))
@@ -1203,16 +1255,12 @@ def analyze_sentences_with_roberta(text: str, max_sentences: int = 30) -> pd.Dat
             d = float(scores_map["DOVE"])
             n = float(scores_map["NEUT"])
             diff = h - d
-
             stance = _stance_from_diff(diff)
-            net_raw = diff * 100.0
-            net_smooth = _smooth_net_score(diff, scale=0.35)
 
             rows.append({
                 "Cümle": sent,
                 "Duruş": stance,
-                "Net (Yumuşatılmış)": net_smooth,
-                "Net (Ham)": net_raw,
+                "Diff (H-D)": float(diff),
                 "HAWK": h,
                 "DOVE": d,
                 "NEUT": n
@@ -1220,7 +1268,7 @@ def analyze_sentences_with_roberta(text: str, max_sentences: int = 30) -> pd.Dat
 
         df = pd.DataFrame(rows)
         if not df.empty:
-            df = df.sort_values(["Net (Yumuşatılmış)"], ascending=False).reset_index(drop=True)
+            df = df.sort_values("Diff (H-D)", ascending=False).reset_index(drop=True)
         return df
 
     except Exception as e:
@@ -1228,138 +1276,3 @@ def analyze_sentences_with_roberta(text: str, max_sentences: int = 30) -> pd.Dat
         return pd.DataFrame()
     finally:
         gc.collect()
-
-def roberta_to_dashboard_score(h: float, d: float, n: float,
-                               scale: float = 0.35,
-                               conf_floor: float = 0.55,
-                               conf_ceil: float = 0.95,
-                               neut_min: float = 0.55,
-                               margin_neut: float = 0.15):
-    """
-    mrince modelinin olasılıklarını dashboard'a uygun skora çevirir.
-
-    Çıktı:
-      net_final: yumuşatılmış + confidence-gated skor (-100..100)
-      stance: 5 seviyeli duruş etiketi
-      conf: max olasılık
-      diff: hawk-dove
-      net_raw: ham net (diff*100)
-      net_tanh: tanh ile yumuşatılmış skor
-    """
-    h = float(h or 0.0)
-    d = float(d or 0.0)
-    n = float(n or 0.0)
-
-    diff = h - d
-    net_raw = diff * 100.0
-
-    # 1) yumuşatma (uçlara yapışmayı azaltır)
-    net_tanh = float(np.tanh(diff / float(scale)) * 100.0)
-
-    # 2) confidence gating (belirsiz metinleri merkeze çeker)
-    conf = max(h, d, n)
-    weight = (conf - conf_floor) / max(1e-9, (conf_ceil - conf_floor))
-    weight = max(0.0, min(1.0, weight))
-
-    # 3) "gerçek nötrlük" filtresi (neutral baskınsa ve margin küçükse daha da merkeze)
-    if (n >= neut_min) and (abs(diff) <= margin_neut):
-        weight *= 0.35  # daha nötrle
-
-    net_final = net_tanh * weight
-
-    # 4) 5 seviyeli duruş etiketi
-    if diff >= 0.60:
-        stance = "🦅 Çok Şahin"
-    elif diff >= 0.25:
-        stance = "🦅 Şahin"
-    elif diff <= -0.60:
-        stance = "🕊️ Çok Güvercin"
-    elif diff <= -0.25:
-        stance = "🕊️ Güvercin"
-    else:
-        stance = "⚖️ Nötr"
-
-    return float(net_final), stance, float(conf), float(diff), float(net_raw), float(net_tanh)
-
-
-def calculate_ai_trend_series(df_all: pd.DataFrame) -> pd.DataFrame:
-    """
-    Tüm veri setini tarayıp mrince RoBERTa skorlarını hesaplar.
-    Bu sürüm, dashboard'a uygun 'Net Skor (AI)' üretir (uçlara yapışmaz).
-    """
-    if df_all is None or df_all.empty:
-        return pd.DataFrame()
-
-    clf = load_roberta_pipeline()
-    if clf is None:
-        return pd.DataFrame()
-
-    df_all = df_all.copy()
-    df_all["period_date"] = pd.to_datetime(df_all["period_date"], errors="coerce")
-    df_all = df_all.dropna(subset=["period_date"]).sort_values("period_date")
-
-    results = []
-
-    st.toast("AI analiz başladı...", icon="⏳")
-    pb = st.progress(0)
-    total = len(df_all)
-
-    for i, (_, row) in enumerate(df_all.iterrows()):
-        pb.progress((i + 1) / total)
-
-        txt = str(row.get("text_content", "") or "")
-        if len(txt) < 10:
-            continue
-
-        # tek metin analizi
-        res = analyze_with_roberta(txt)
-        gc.collect()
-
-        if not isinstance(res, dict):
-            continue
-
-        scores = res.get("scores_map", {}) or {}
-        h = float(scores.get("HAWK", 0.0))
-        d = float(scores.get("DOVE", 0.0))
-        n = float(scores.get("NEUT", 0.0))
-
-        net_final, stance, conf, diff, net_raw, net_tanh = roberta_to_dashboard_score(h, d, n)
-
-        dt = row["period_date"]
-        period = dt.strftime("%Y-%m")
-
-        results.append({
-            "Dönem": period,
-            "period_date": dt,
-
-            # Dashboard çizgisi bununla çizilecek:
-            "Net Skor": net_final,
-
-            # Debug / analiz için:
-            "Duruş": stance,
-            "Güven": conf,
-            "Diff (H-D)": diff,
-            "Net (Ham)": net_raw,
-            "Net (Tanh)": net_tanh,
-
-            "Şahin Olasılık": h,
-            "Güvercin Olasılık": d,
-            "Nötr Olasılık": n
-        })
-
-    pb.empty()
-    st.toast("AI analiz tamamlandı!", icon="✅")
-
-    out = pd.DataFrame(results)
-    if out.empty:
-        return out
-
-    out = out.sort_values("period_date").reset_index(drop=True)
-
-    # 5) ABG benzeri daha akıcı görünüm için rolling smooth
-    out["Net Skor (Smooth3)"] = out["Net Skor"].rolling(3, min_periods=1).mean()
-
-    return out
-
-
-

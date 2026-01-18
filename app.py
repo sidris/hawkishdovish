@@ -627,6 +627,25 @@ with tab_roberta:
 
     st.divider()
 
+    with st.expander("ℹ️ Bu grafik nasıl hesaplanıyor?", expanded=False):
+        st.markdown("""
+    Bu grafik, modelin verdiği **3 sınıf olasılığından** (Şahin / Güvercin / Nötr) türetilmiş bir **endeks** gösterir.
+    
+    **Adımlar:**
+    1. Her metin için modelden olasılıklar alınır: `P(HAWK)`, `P(DOVE)`, `P(NEUT)`.
+    2. Ham duruş farkı hesaplanır: **`diff = P(HAWK) - P(DOVE)`** (−1 ile +1 arası).
+    3. Serinin kendi dağılımına göre ölçekleme yapılır (**robust kalibrasyon**):
+       - `diff` serisinin medyanı ve MAD (median absolute deviation) ile robust z-score çıkarılır.
+       - z-score, `tanh` ile −100..+100 bandına sıkıştırılır.
+    4. Aylık dalgalanmayı azaltmak için **EMA (Exponential Moving Average)** uygulanır (`span=7`).
+    5. Rejim etiketinin çok hızlı flip yapmaması için **histerezis** uygulanır (örn. +25 üstü şahin, −25 altı güvercin).
+    
+    **Önemli:** Bu çizgi “modelin direkt sınıfı” değil; sınıflardan türetilmiş, kalibre edilmiş ve yumuşatılmış bir **duruş endeksidir**.
+        """)
+
+
+
+    
     # 2) HIZLI MODEL TESTİ (debug)
     st.subheader("🧪 Hızlı Test (Debug)")
     tests = {

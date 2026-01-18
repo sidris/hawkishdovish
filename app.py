@@ -193,15 +193,6 @@ with tab1:
             ))
 
 
-                # --- AI Score (EMA) çizgisi (mrince) ---
-        if "AI_DASH" in merged.columns and merged["AI_DASH"].notna().any():
-            fig.add_trace(go.Scatter(
-                x=merged["period_date"],
-                y=merged["AI_DASH"],
-                name="AI Score (mrince, EMA)",
-                line=dict(color="green", width=3, dash="solid"),
-                yaxis="y"
-            ))
 
         
         if 'Yıllık TÜFE' in merged.columns: fig.add_trace(go.Scatter(x=merged['period_date'], y=merged['Yıllık TÜFE'], name="Yıllık TÜFE (%)", line=dict(color='red', dash='dot'), yaxis="y"))

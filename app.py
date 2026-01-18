@@ -108,6 +108,36 @@ with tab1:
         merged = pd.merge(merged, abg_df[['period_date', 'abg_dashboard_val']], on='period_date', how='left')
         
         merged = merged.sort_values("period_date")
+                # --- AI SCORE (mrince) çizgisini Dashboard'a eklemek için merge ---
+        ai_df = st.session_state.get("ai_trend_df")
+        if ai_df is not None and not ai_df.empty:
+            ai_tmp = ai_df.copy()
+        
+            # Güvenli kolon seçimi: AI Score (EMA) varsa onu, yoksa Net Skor'u kullan
+            if "AI Score (EMA)" in ai_tmp.columns:
+                ai_tmp["AI_DASH"] = pd.to_numeric(ai_tmp["AI Score (EMA)"], errors="coerce")
+            else:
+                ai_tmp["AI_DASH"] = pd.to_numeric(ai_tmp.get("Net Skor", np.nan), errors="coerce")
+        
+            # Dönem kolonu Donem ile aynı formatta olmalı (YYYY-MM)
+            if "Dönem" in ai_tmp.columns:
+                ai_tmp["Donem"] = ai_tmp["Dönem"].astype(str)
+            elif "period_date" in ai_tmp.columns:
+                ai_tmp["Donem"] = pd.to_datetime(ai_tmp["period_date"]).dt.strftime("%Y-%m")
+            else:
+                ai_tmp["Donem"] = None
+        
+            ai_tmp = ai_tmp.dropna(subset=["Donem"])
+            ai_tmp = ai_tmp[["Donem", "AI_DASH"]].drop_duplicates(subset=["Donem"])
+        
+            merged = pd.merge(merged, ai_tmp, on="Donem", how="left")
+        else:
+            merged["AI_DASH"] = np.nan
+
+
+
+
+        
         if 'Yıllık TÜFE' in merged.columns: merged['Yıllık TÜFE'] = pd.to_numeric(merged['Yıllık TÜFE'], errors='coerce')
         if 'PPK Faizi' in merged.columns: merged['PPK Faizi'] = pd.to_numeric(merged['PPK Faizi'], errors='coerce')
         
@@ -119,6 +149,17 @@ with tab1:
         # --- SKORLAR ---
         fig.add_trace(go.Scatter(x=merged['period_date'], y=merged['score_abg_scaled'], name="Şahin/Güvercin-Hibrit", line=dict(color='black', width=2, dash='dot'), marker=dict(size=6, color='black'), yaxis="y"))
         fig.add_trace(go.Scatter(x=merged['period_date'], y=merged['abg_dashboard_val'], name="Şahin/Güvercin ABG 2019", line=dict(color='navy', width=4), yaxis="y"))
+
+                # --- AI Score (EMA) çizgisi (mrince) ---
+        if "AI_DASH" in merged.columns and merged["AI_DASH"].notna().any():
+            fig.add_trace(go.Scatter(
+                x=merged["period_date"],
+                y=merged["AI_DASH"],
+                name="AI Score (mrince, EMA)",
+                line=dict(color="green", width=3, dash="solid"),
+                yaxis="y"
+            ))
+
         
         if 'Yıllık TÜFE' in merged.columns: fig.add_trace(go.Scatter(x=merged['period_date'], y=merged['Yıllık TÜFE'], name="Yıllık TÜFE (%)", line=dict(color='red', dash='dot'), yaxis="y"))
         if 'PPK Faizi' in merged.columns: fig.add_trace(go.Scatter(x=merged['period_date'], y=merged['PPK Faizi'], name="Faiz (%)", line=dict(color='orange', dash='dot'), yaxis="y"))

@@ -455,10 +455,10 @@ with tab4:
 
 
 # ==============================================================================
-# TAB: TEXT AS DATA (TF-IDF) — HYBRID delta_bp tahmini
+# TAB: TEXT AS DATA (TF-IDF) — HYBRID + CPI delta_bp tahmini
 # ==============================================================================
 with tab_textdata:
-    st.header("📚 Text as Data (TF-IDF) — HYBRID PPK Kararı (delta_bp) Tahmini")
+    st.header("📚 Text as Data (TF-IDF) — HYBRID + CPI PPK Kararı (delta_bp) Tahmini")
 
     if not utils.HAS_ML_DEPS:
         st.error("ML kütüphaneleri eksik (sklearn).")
@@ -478,17 +478,25 @@ with tab_textdata:
         if c in df_logs.columns:
             df_logs[c] = pd.to_numeric(df_logs[c], errors="coerce")
 
-    # ---- HYBRID prepare
-    df_td = utils.textasdata_prepare_df_hybrid(
+    # CPI / market data çek
+    min_d = df_logs["period_date"].min().date()
+    max_d = datetime.date.today()
+    df_market, err = utils.fetch_market_data_adapter(min_d, max_d)
+    if err:
+        st.warning(f"Market veri uyarısı: {err}")
+
+    # HYBRID + CPI prepare
+    df_td = utils.textasdata_prepare_df_hybrid_cpi(
         df_logs,
+        df_market,
         text_col="text_content",
         date_col="period_date",
         y_col="delta_bp",
         rate_col="policy_rate"
     )
 
-    if df_td.empty or df_td["delta_bp"].notna().sum() < 8:
-        st.warning("Hibrit eğitim için yeterli gözlem yok. (En az ~8-10 kayıt önerilir)")
+    if df_td.empty or df_td["delta_bp"].notna().sum() < 10:
+        st.warning("HYBRID+CPI eğitim için yeterli gözlem yok. (En az ~10 kayıt önerilir)")
         st.stop()
 
     # -------------------------
@@ -497,26 +505,28 @@ with tab_textdata:
     c1, c2, c3 = st.columns([2, 1, 1])
     with c1:
         st.info(
-            "Bu sekme **hibrit** çalışır: TF-IDF metin + (policy_rate/delta_bp) geçmişi ile "
-            "**delta_bp (baz puan değişimi)** tahmin eder. Walk-forward backtest gösterir."
+            "Bu sekme **English TF-IDF (word+char)** + **faiz geçmişi** + **TÜFE (lagged)** ile "
+            "**delta_bp (bps)** tahmin eder. Walk-forward backtest gösterir."
         )
     with c2:
         min_df = st.number_input("min_df", min_value=1, max_value=10, value=2, step=1)
     with c3:
-        alpha = st.number_input("Ridge alpha", min_value=0.1, max_value=50.0, value=2.0, step=0.5)
+        alpha = st.number_input("Ridge alpha", min_value=0.1, max_value=80.0, value=10.0, step=1.0)
 
     if "textasdata_model" not in st.session_state:
         st.session_state["textasdata_model"] = None
 
-    if st.button("🚀 Modeli Eğit / Yenile (HYBRID)", type="primary"):
+    if st.button("🚀 Modeli Eğit / Yenile (HYBRID + CPI)", type="primary"):
         with st.spinner("Eğitiliyor + walk-forward backtest..."):
-            out = utils.train_textasdata_hybrid_ridge(
+            out = utils.train_textasdata_hybrid_cpi_ridge(
                 df_td,
                 min_df=int(min_df),
                 alpha=float(alpha),
                 n_splits=6,
-                ngram_range=(1, 2),
-                max_features=20000
+                word_ngram=(1, 2),
+                char_ngram=(3, 5),
+                max_features_word=12000,
+                max_features_char=20000
             )
             st.session_state["textasdata_model"] = out
         st.success("Hazır!")
@@ -549,65 +559,54 @@ with tab_textdata:
         ))
         fig.add_hline(y=0, line_color="black", opacity=0.25)
         fig.update_layout(
-            title="Text-as-Data HYBRID Backtest — delta_bp (bps)",
+            title="Text-as-Data HYBRID + CPI Backtest — delta_bp (bps)",
             hovermode="x unified",
             height=420,
             legend=dict(orientation="h", yanchor="top", y=-0.2, xanchor="center", x=0.5)
         )
         st.plotly_chart(fig, use_container_width=True)
 
-        with st.expander("📋 Backtest Tablosu", expanded=False):
-            show = df_pred.copy()
-            show["Donem"] = show["period_date"].dt.strftime("%Y-%m")
-            st.dataframe(
-                show[["Donem", "delta_bp", "pred_delta_bp", "policy_rate"]],
-                use_container_width=True,
-                hide_index=True
-            )
-
     # -------------------------
-    # 3) Kelime Etkileri (Açıklanabilirlik)
+    # 3) Kelime Etkileri (word TF-IDF)
     # -------------------------
     coef_df = model_pack.get("coef_df")
     if coef_df is not None and not coef_df.empty:
-        st.subheader("🧠 Hangi kelimeler 'artırım/indirim' sinyali veriyor? (Ridge katsayıları)")
-        k = st.slider("Gösterilecek kelime sayısı", 10, 60, 25, step=5)
+        st.subheader("🧠 Which words push hike/cut? (word TF-IDF coefficients)")
+        k = st.slider("Show top K", 10, 60, 25, step=5)
 
         cpos, cneg = st.columns(2)
         with cpos:
-            st.markdown("### 🔺 Artırım yönlü (pozitif)")
+            st.markdown("### 🔺 Hike-leaning (positive)")
             st.dataframe(coef_df.sort_values("coef", ascending=False).head(int(k)),
                          use_container_width=True, hide_index=True)
         with cneg:
-            st.markdown("### 🔻 İndirim yönlü (negatif)")
+            st.markdown("### 🔻 Cut-leaning (negative)")
             st.dataframe(coef_df.sort_values("coef", ascending=True).head(int(k)),
                          use_container_width=True, hide_index=True)
-
-        st.caption("Not: Katsayılar TF-IDF uzayında doğrusal etkidir; nedensellik iddiası değildir.")
 
     # -------------------------
     # 4) Tek Metin Tahmini
     # -------------------------
     st.divider()
-    st.subheader("🔮 Tek Metinle Tahmin (HYBRID)")
+    st.subheader("🔮 Single-text Prediction (HYBRID + CPI)")
 
     last_rate = float(df_td["policy_rate"].dropna().iloc[-1]) if df_td["policy_rate"].notna().any() else np.nan
-    st.caption(f"Son bilinen policy_rate (DB): {last_rate if np.isfinite(last_rate) else '—'}")
+    st.caption(f"Last known policy_rate: {last_rate if np.isfinite(last_rate) else '—'}")
 
-    txt = st.text_area("Tahmin etmek istediğin metni yapıştır", height=220,
-                       placeholder="PPK metnini buraya yapıştır...")
+    txt = st.text_area("Paste the statement text", height=220, placeholder="Paste PPK statement...")
 
-    if st.button("🧾 Tahmin Üret (HYBRID)", type="secondary"):
+    if st.button("🧾 Predict (HYBRID + CPI)", type="secondary"):
         if not txt or len(txt.strip()) < 30:
-            st.warning("Metin çok kısa.")
+            st.warning("Text too short.")
         else:
-            pred = utils.predict_textasdata_hybrid(model_pack, df_td, txt)
+            pred = utils.predict_textasdata_hybrid_cpi(model_pack, df_td, txt)
             pred_bp = float(pred.get("pred_delta_bp", 0.0))
             implied = (last_rate + pred_bp / 100.0) if np.isfinite(last_rate) else np.nan
 
             c1, c2 = st.columns(2)
-            c1.metric("Tahmini delta_bp", f"{pred_bp:.0f} bps")
+            c1.metric("Predicted delta_bp", f"{pred_bp:.0f} bps")
             c2.metric("Implied policy_rate", f"{implied:.2f}" if np.isfinite(implied) else "—")
+
 
 
 

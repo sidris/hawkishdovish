@@ -73,11 +73,12 @@ with c_head1: st.title("🦅 Şahin/Güvercin Paneli")
 with c_head2: 
     if st.button("Çıkış"): st.session_state['logged_in'] = False; st.rerun()
 
-tab1, tab2, tab3, tab4, tab5, tab_textdata, tab6, tab7, tab_roberta, tab_imp = st.tabs([
+tab1, tab2, tab3, tab4, tab_textdata, tab6, tab7, tab_roberta, tab_imp = st.tabs([
     "📈 Dashboard", "📝 Veri Girişi", "📊 Veriler", "🔍 Frekans",
-    "🤖 Faiz Tahmini (Advanced)", "📚 Text as Data (TF-IDF)",
-    "☁️ WordCloud", "📜 ABF (2019)", "🧠 CB-RoBERTa", "📅 Haberler"
+    "📚 Text as Data (TF-IDF)", "☁️ WordCloud", "📜 ABF (2019)",
+    "🧠 CB-RoBERTa", "📅 Haberler"
 ])
+
 
 
 # --- SESSION & STATE --- bloğunun içine ekleyin:
@@ -451,138 +452,7 @@ with tab4:
                 with st.container(border=True, height=400): st.markdown(diff_html, unsafe_allow_html=True)
     else: st.info("Yeterli veri yok.")
 
-with tab5:
-    st.header("🤖 Gelişmiş PPK Faiz Tahmin Modeli")
-    st.info("Bu model, veritabanındaki tüm veriyi eğitir ancak aşağıda seçtiğiniz metin üzerinden 'sonraki' adımı tahmin eder.")
-    
-    with st.expander("ℹ️ Model Detayları", expanded=False):
-        st.markdown("""
-        * **Algoritma:** Ridge Regresyon (Sürekli Tahmin) + Logistic Regresyon (Yön Tahmini)
-        * **Özellikler:** TF-IDF (Metin), Anahtar Kelimeler (Enflasyon, Büyüme vb.), Geçmiş Faiz Değişimleri, Volatilite.
-        * **Validasyon:** Walk-Forward Validation (Zaman serisine duyarlı doğrulama).
-        * **Güven Aralığı:** Model hatalarına dayalı dinamik bant genişliği.
-        """)
 
-    # 1. Veri Hazırlığı
-    df_logs = utils.fetch_all_data()
-    
-    min_d = datetime.date(2020, 1, 1)
-    if not df_logs.empty:
-        df_logs['period_date'] = pd.to_datetime(df_logs['period_date'], errors='coerce')
-        df_logs = df_logs.dropna(subset=['period_date'])
-        
-        if not df_logs.empty:
-            # Tarih aralığı seçicisi için min/max
-            min_avail_date = df_logs['period_date'].min().date()
-            max_avail_date = df_logs['period_date'].max().date()
-            
-            # Min_d, market verisi çekmek için
-            min_val = df_logs['period_date'].min()
-            if isinstance(min_val, pd.Timestamp): min_d = min_val.date()
-            elif isinstance(min_val, str): min_d = pd.to_datetime(min_val).date()
-            elif isinstance(min_val, datetime.date): min_d = min_val
-
-    # Market Verisi
-    df_market, err = utils.fetch_market_data_adapter(min_d, datetime.date.today())
-    ml_df = utils.prepare_ml_dataset(df_logs, df_market)
-
-    if not ml_df.empty and len(ml_df) > 10:
-        # 2. Modeli Eğit
-        predictor = utils.AdvancedMLPredictor()
-        status = predictor.train(ml_df)
-        
-        if status == "OK":
-            # 3. KULLANICI SEÇİMİ
-            st.markdown("### 📅 Analiz İçin Dönem Seçimi")
-            c_d1, c_d2 = st.columns(2)
-            start_date_sel = c_d1.date_input("Başlangıç", value=min_avail_date, min_value=min_avail_date, max_value=max_avail_date)
-            end_date_sel = c_d2.date_input("Bitiş", value=max_avail_date, min_value=min_avail_date, max_value=max_avail_date)
-            
-            filtered_logs = df_logs[(df_logs['period_date'].dt.date >= start_date_sel) & (df_logs['period_date'].dt.date <= end_date_sel)].copy()
-            filtered_logs = filtered_logs.sort_values("period_date", ascending=False)
-            filtered_logs['Dönem'] = filtered_logs['period_date'].dt.strftime('%Y-%m')
-            
-            period_options = filtered_logs['Dönem'].tolist()
-            
-            if period_options:
-                selected_period = st.selectbox("Analiz Edilecek Toplantıyı Seçin:", period_options, index=0)
-                
-                target_row = filtered_logs[filtered_logs['Dönem'] == selected_period].iloc[0]
-                target_text = target_row['text_content']
-                target_source = f"Seçilen Kayıt: {target_row['Dönem']}"
-                selected_date_for_chart = target_row['period_date']
-                
-                st.divider()
-                st.subheader(f"Analiz Edilen Metin: {target_source}")
-                
-                # 4. Tahmin Yap
-                prediction = predictor.predict(target_text)
-                
-                if prediction:
-                    c1, c2, c3 = st.columns(3)
-                    direction = prediction['pred_direction']
-                    color = "green" if direction == "ARTIRIM" else "red" if direction == "İNDİRİM" else "gray"
-                    with c1:
-                        st.markdown(f"### Yön: :{color}[{direction}]")
-                        st.caption(f"Güven Skoru: %{prediction['direction_confidence']*100:.1f}")
-                    bps = prediction['pred_change_bps']
-                    with c2: st.metric("Tahmini Değişim", f"{bps:.0f} bps")
-                    lo = prediction['pred_interval_lo']
-                    hi = prediction['pred_interval_hi']
-                    with c3: st.metric("Tahmin Aralığı", f"{lo:.0f} / {hi:.0f} bps")
-                    
-                    st.divider()
-                    
-                    # 5. Grafik
-                    st.subheader("📊 Model Performansı (Geçmiş)")
-                    
-                    if predictor.df_hist is not None:
-                        hist = predictor.df_hist.copy()
-                        hist['date'] = pd.to_datetime(hist['date'])
-                        
-                        chart_start = pd.to_datetime(start_date_sel) - pd.Timedelta(days=90)
-                        chart_end = pd.to_datetime(end_date_sel) + pd.Timedelta(days=90)
-                        
-                        hist_view = hist[(hist['date'] >= chart_start) & (hist['date'] <= chart_end)]
-                        
-                        if not hist_view.empty:
-                            fig = go.Figure()
-                            # Gerçekleşen
-                            fig.add_trace(go.Bar(
-                                x=hist_view['date'], y=hist_view['y_bps'],
-                                name="Gerçekleşen Değişim", marker_color='gray', opacity=0.5
-                            ))
-                            # Geçmiş Tahminler
-                            if 'predicted_bps' in hist_view.columns:
-                                hist_pred = hist_view.dropna(subset=['predicted_bps'])
-                                fig.add_trace(go.Scatter(
-                                    x=hist_pred['date'], y=hist_pred['predicted_bps'],
-                                    name="Model Geçmiş Tahminleri", 
-                                    line=dict(color='blue', width=2, dash='dot')
-                                ))
-                            
-                            # Şu anki tahmin noktası
-                            if chart_start <= selected_date_for_chart <= chart_end:
-                                fig.add_trace(go.Scatter(
-                                    x=[selected_date_for_chart], 
-                                    y=[bps],
-                                    mode='markers',
-                                    marker=dict(color=color, size=15, symbol='star'),
-                                    name=f"Seçilen ({target_source}) Tahmini"
-                                ))
-                            
-                            fig.update_layout(hovermode="x unified", title="Faiz Değişimleri ve Tahminler")
-                            st.plotly_chart(fig, use_container_width=True)
-                        else:
-                            st.warning("Seçilen tarih aralığında görüntülenecek grafik verisi yok.")
-                else:
-                    st.error("Tahmin üretilemedi.")
-            else:
-                st.info("Bu tarih aralığında kayıt bulunamadı.")
-        else:
-            st.warning(f"Model eğitilemedi: {status}")
-    else:
-        st.warning("Model eğitimi için yeterli veri yok (En az 10 toplantı kaydı ve piyasa verisi gerekli).")
 
 with tab_textdata:
     st.header("📚 Text as Data (TF-IDF + Ridge)")

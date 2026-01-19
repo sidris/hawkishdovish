@@ -1160,9 +1160,17 @@ def train_textasdata_ridge(df_td: pd.DataFrame,
     tscv = TimeSeriesSplit(n_splits=min(int(n_splits), max(2, len(df_train) // 3)))
     pred = np.full(len(df_train), np.nan, dtype=float)
 
-    for tr, te in tscv.split(X):
-        pipe.fit(X[tr], y[tr])
-        pred[te] = pipe.predict(X[te])
+    min_train = 10  # slider yapabilirsin
+    pred = np.full(len(df_train), np.nan, dtype=float)
+    
+    for i in range(min_train, len(df_train)):
+        X_tr = X.iloc[:i]
+        y_tr = y[:i]
+        X_te = X.iloc[[i]]
+    
+        pipe.fit(X_tr, y_tr)
+        pred[i] = pipe.predict(X_te)[0]
+
 
     mask = np.isfinite(pred)
     metrics = {"n": int(mask.sum())}

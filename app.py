@@ -454,96 +454,166 @@ with tab4:
 
 
 
+# ==============================================================================
+# TAB: TEXT AS DATA (TF-IDF) — delta_bp tahmini
+# ==============================================================================
 with tab_textdata:
-    st.header("📚 Text as Data (TF-IDF + Ridge)")
-    st.caption("PPK metninden doğrudan baz puan değişimi (delta_bp) tahmini.")
+    st.header("📚 Text as Data (TF-IDF) — PPK Kararı (delta_bp) Tahmini")
 
     if not utils.HAS_ML_DEPS:
         st.error("ML kütüphaneleri eksik (sklearn).")
         st.stop()
 
-    # 1) Data
-    df_tad = utils.fetch_ppk_text_rate_data(source_filter="TCMB PPK Kararı")
-
-    if df_tad is None or df_tad.empty:
-        st.warning("Text-as-Data için veri bulunamadı. (source='TCMB PPK Kararı' ve policy_rate/delta_bp dolu olmalı)")
+    df_logs = utils.fetch_all_data()
+    if df_logs is None or df_logs.empty:
+        st.info("Veri yok.")
         st.stop()
 
-    df_tad["Donem"] = df_tad["period_date"].dt.strftime("%Y-%m")
-    st.write(f"Toplam kayıt: **{len(df_tad)}**")
+    # policy_rate ve delta_bp mevcut varsayıyoruz
+    df_logs = df_logs.copy()
+    df_logs["period_date"] = pd.to_datetime(df_logs["period_date"], errors="coerce")
+    df_logs = df_logs.dropna(subset=["period_date"]).sort_values("period_date")
 
-    # 2) Model
-    bundle = utils.build_text_as_data_model(df_tad)
+    for c in ["policy_rate", "delta_bp"]:
+        if c in df_logs.columns:
+            df_logs[c] = pd.to_numeric(df_logs[c], errors="coerce")
 
-    if bundle is None:
-        st.warning("Model eğitilemedi. (delta_bp dolu en az ~8 kayıt gerekiyor)")
-        st.dataframe(df_tad[["period_date","Donem","policy_rate","delta_bp"]], use_container_width=True)
+    # eğitim datası
+    df_td = utils.textasdata_prepare_df(
+        df_logs,
+        text_col="text_content",
+        date_col="period_date",
+        y_col="delta_bp",
+        rate_col="policy_rate"
+    )
+
+    if df_td.empty or df_td["delta_bp"].notna().sum() < 8:
+        st.warning("Text-as-Data eğitim için yeterli gözlem yok. (En az ~8-10 kayıt önerilir)")
         st.stop()
 
-    st.success(f"Model hazır ✅ (train_n={bundle['train_n']})")
+    # -------------------------
+    # 1) Modeli Eğit / Backtest
+    # -------------------------
+    c1, c2, c3 = st.columns([2, 1, 1])
+    with c1:
+        st.info(
+            "Bu sekme, metinleri TF-IDF vektörlerine çevirip **Ridge regresyon** ile "
+            "**delta_bp (baz puan değişimi)** tahmin eder. Walk-forward backtest gösterir."
+        )
+    with c2:
+        min_df = st.number_input("min_df", min_value=1, max_value=10, value=2, step=1)
+    with c3:
+        alpha = st.number_input("Ridge alpha", min_value=0.1, max_value=50.0, value=2.0, step=0.5)
 
-    # 3) Tahmin için metin seçimi
-    st.subheader("🔍 Seçili dönemden tahmin")
-    sel_period = st.selectbox("Dönem seç:", df_tad["Donem"].tolist(), index=len(df_tad)-1)
-    row = df_tad[df_tad["Donem"] == sel_period].iloc[0]
+    if "textasdata_model" not in st.session_state:
+        st.session_state["textasdata_model"] = None
 
-    with st.expander("Metni Gör", expanded=False):
-        st.write(row["text_content"])
+    if st.button("🚀 Modeli Eğit / Yenile (Text-as-Data)", type="primary"):
+        with st.spinner("Eğitiliyor + walk-forward backtest..."):
+            out = utils.train_textasdata_ridge(
+                df_td,
+                min_df=int(min_df),
+                alpha=float(alpha),
+                n_splits=6,
+                ngram_range=(1, 2),
+                max_features=20000
+            )
+            st.session_state["textasdata_model"] = out
+        st.success("Hazır!")
 
-    pred_bp = utils.predict_text_as_data_delta_bp(row["text_content"], bundle)
+    model_pack = st.session_state.get("textasdata_model")
+    if not model_pack:
+        st.info("Başlamak için yukarıdaki butona bas.")
+        st.stop()
 
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Gerçek delta_bp", f"{float(row['delta_bp']):.0f} bp" if pd.notna(row["delta_bp"]) else "—")
-    c2.metric("Tahmin delta_bp", f"{pred_bp:.0f} bp" if pred_bp is not None else "—")
+    # -------------------------
+    # 2) Backtest Özeti
+    # -------------------------
+    metrics = model_pack.get("metrics", {}) or {}
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("MAE (bps)", f"{metrics.get('mae', np.nan):.1f}")
+    c2.metric("RMSE (bps)", f"{metrics.get('rmse', np.nan):.1f}")
+    c3.metric("R²", f"{metrics.get('r2', np.nan):.2f}")
+    c4.metric("Gözlem", f"{metrics.get('n', 0)}")
 
-    # “implied policy rate” (bir önceki toplantıdan tahmini karar sonrası)
-    # Bu, eğitim target'ı delta olduğu için en mantıklı gösterim:
-    prev_rate = None
-    idx = df_tad.index[df_tad["Donem"] == sel_period][0]
-    if idx > 0 and pd.notna(df_tad.loc[idx-1, "policy_rate"]):
-        prev_rate = float(df_tad.loc[idx-1, "policy_rate"])
+    df_pred = model_pack.get("pred_df")
+    if df_pred is not None and not df_pred.empty:
+        # Grafik: gerçek vs tahmin
+        fig = go.Figure()
+        fig.add_trace(go.Bar(
+            x=df_pred["period_date"], y=df_pred["delta_bp"],
+            name="Gerçek delta_bp", opacity=0.45
+        ))
+        fig.add_trace(go.Scatter(
+            x=df_pred["period_date"], y=df_pred["pred_delta_bp"],
+            name="Walk-forward Tahmin", mode="lines+markers"
+        ))
+        fig.add_hline(y=0, line_color="black", opacity=0.25)
+        fig.update_layout(
+            title="Text-as-Data Backtest — delta_bp (bps)",
+            hovermode="x unified",
+            height=420,
+            legend=dict(orientation="h", yanchor="top", y=-0.2, xanchor="center", x=0.5)
+        )
+        st.plotly_chart(fig, use_container_width=True)
 
-    if prev_rate is not None and pred_bp is not None:
-        implied = prev_rate + (pred_bp / 100.0)
-        c3.metric("Önceki faiz → Tahmini yeni faiz", f"{prev_rate:.2f}% → {implied:.2f}%")
-    else:
-        c3.metric("Önceki faiz → Tahmini yeni faiz", "—")
+        with st.expander("📋 Backtest Tablosu", expanded=False):
+            show = df_pred.copy()
+            show["Donem"] = show["period_date"].dt.strftime("%Y-%m")
+            st.dataframe(
+                show[["Donem", "delta_bp", "pred_delta_bp", "policy_rate"]],
+                use_container_width=True,
+                hide_index=True
+            )
 
+    # -------------------------
+    # 3) Kelime Etkileri (Açıklanabilirlik)
+    # -------------------------
+    coef_df = model_pack.get("coef_df")
+    if coef_df is not None and not coef_df.empty:
+        st.subheader("🧠 Hangi kelimeler 'artırım/indirim' sinyali veriyor? (Ridge katsayıları)")
+
+        k = st.slider("Gösterilecek kelime sayısı", 10, 60, 25, step=5)
+
+        cpos, cneg = st.columns(2)
+        with cpos:
+            st.markdown("### 🔺 Artırım yönlü (pozitif)")
+            st.dataframe(coef_df.sort_values("coef", ascending=False).head(int(k)), use_container_width=True, hide_index=True)
+        with cneg:
+            st.markdown("### 🔻 İndirim yönlü (negatif)")
+            st.dataframe(coef_df.sort_values("coef", ascending=True).head(int(k)), use_container_width=True, hide_index=True)
+
+        st.caption("Not: Bu katsayılar TF-IDF uzayında öğrenilen doğrusal etkileri gösterir; nedensellik iddiası değildir.")
+
+    # -------------------------
+    # 4) Tek Metin Tahmini (delta_bp + implied policy rate)
+    # -------------------------
     st.divider()
+    st.subheader("🔮 Tek Metinle Tahmin")
 
-    # 4) Kelime etkileri
-    st.subheader("🧠 Model hangi kelimeleri nasıl yorumluyor?")
-    top_terms = utils.text_as_data_top_terms(bundle, top_k=20)
-    if top_terms is not None and not top_terms.empty:
-        st.dataframe(top_terms, use_container_width=True)
-        st.caption("coef > 0 → daha çok ARTIRIM yönüne iter, coef < 0 → daha çok İNDİRİM yönüne iter.")
-    else:
-        st.info("Feature importance üretilemedi.")
+    last_rate = float(df_td["policy_rate"].dropna().iloc[-1]) if df_td["policy_rate"].notna().any() else np.nan
+    st.caption(f"Son bilinen policy_rate (DB): {last_rate if np.isfinite(last_rate) else '—'}")
 
-    st.divider()
+    txt = st.text_area("Tahmin etmek istediğin metni yapıştır", height=220, placeholder="PPK metnini buraya yapıştır...")
 
-    # 5) Walk-forward backtest
-    st.subheader("📈 Walk-forward Backtest")
-    wf = utils.text_as_data_walk_forward(df_tad, min_train=8)
-    if wf is None or wf.empty:
-        st.info("Backtest için yeterli veri yok.")
-    else:
-        mae = float(np.mean(np.abs(wf["y_true"] - wf["y_pred"])))
-        rmse = float(np.sqrt(np.mean((wf["y_true"] - wf["y_pred"])**2)))
+    if st.button("🧾 Tahmin Üret", type="secondary"):
+        if not txt or len(txt.strip()) < 30:
+            st.warning("Metin çok kısa.")
+        else:
+            pred = utils.predict_textasdata(model_pack, txt)
+            pred_bp = float(pred.get("pred_delta_bp", 0.0))
+            implied = (last_rate + pred_bp / 100.0) if np.isfinite(last_rate) else np.nan
 
-        c1, c2 = st.columns(2)
-        c1.metric("MAE", f"{mae:.1f} bp")
-        c2.metric("RMSE", f"{rmse:.1f} bp")
+            c1, c2 = st.columns(2)
+            c1.metric("Tahmini delta_bp", f"{pred_bp:.0f} bps")
+            c2.metric("Implied policy_rate", f"{implied:.2f}" if np.isfinite(implied) else "—")
 
-        fig_wf = go.Figure()
-        fig_wf.add_trace(go.Bar(x=wf["date"], y=wf["y_true"], name="Gerçek (bp)", opacity=0.5))
-        fig_wf.add_trace(go.Scatter(x=wf["date"], y=wf["y_pred"], name="Tahmin (bp)", line=dict(dash="dot")))
-        fig_wf.update_layout(hovermode="x unified", height=420, title="Walk-forward: Gerçek vs Tahmin (delta_bp)")
-        st.plotly_chart(fig_wf, use_container_width=True)
-
-        st.dataframe(wf, use_container_width=True)
-
-
+            with st.expander("📌 Tahmini yukarı çeken / aşağı çeken kelimeler", expanded=False):
+                contrib = pred.get("top_contrib_df")
+                if contrib is not None and not contrib.empty:
+                    st.dataframe(contrib, use_container_width=True, hide_index=True)
+                else:
+                    st.info("Katkı tablosu üretilemedi (metin/özellik eşleşmesi yok).")
 
 
 with tab6:

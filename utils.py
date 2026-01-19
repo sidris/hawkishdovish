@@ -117,6 +117,42 @@ def delete_event(rid):
         try: supabase.table("event_logs").delete().eq("id", rid).execute()
         except Exception: pass
 
+def fetch_ppk_text_rate_data(source_filter: str = "TCMB PPK Kararı") -> pd.DataFrame:
+    """
+    Text-as-Data için: text_content + policy_rate + delta_bp çek.
+    """
+    if not supabase:
+        return pd.DataFrame()
+
+    try:
+        res = (
+            supabase.table("market_logs")
+            .select("id, period_date, source, text_content, policy_rate, delta_bp")
+            .eq("source", source_filter)
+            .order("period_date", desc=False)
+            .execute()
+        )
+        data = getattr(res, "data", []) if res else []
+        df = pd.DataFrame(data)
+        if df.empty:
+            return df
+
+        df["period_date"] = pd.to_datetime(df["period_date"], errors="coerce")
+        df = df.dropna(subset=["period_date"])
+
+        df["policy_rate"] = pd.to_numeric(df.get("policy_rate"), errors="coerce")
+        df["delta_bp"] = pd.to_numeric(df.get("delta_bp"), errors="coerce")
+
+        # text boş olanları at
+        df["text_content"] = df["text_content"].fillna("").astype(str)
+        df = df[df["text_content"].str.len() >= 20]
+
+        return df.sort_values("period_date").reset_index(drop=True)
+
+    except Exception:
+        return pd.DataFrame()
+
+
 # --- MARKET DATA ---
 @st.cache_data(ttl=600)
 def fetch_market_data_adapter(start_date, end_date):
@@ -528,6 +564,124 @@ def calculate_abg_scores(df):
             "abg_index": res['net_hawkishness']
         })
     return pd.DataFrame(rows)
+
+
+@st.cache_resource(show_spinner=False)
+def build_text_as_data_model(df: pd.DataFrame):
+    """
+    TF-IDF (1-2 gram) + Ridge ile delta_bp tahmin modeli.
+    """
+    if not HAS_ML_DEPS:
+        return None
+
+    if df is None or df.empty:
+        return None
+
+    # Eğitim datası: delta_bp dolu olmalı
+    d = df.dropna(subset=["delta_bp"]).copy()
+    if len(d) < 8:
+        return None
+
+    X = d["text_content"].astype(str).values
+    y = d["delta_bp"].astype(float).values
+
+    # Not: metinler İngilizce ise stop_words="english" iyi çalışır.
+    # Türkçe metin de gelecekse stop_words=None bırakmak daha güvenli.
+    vec = TfidfVectorizer(
+        ngram_range=(1, 2),
+        min_df=2,
+        max_df=0.9,
+        max_features=50000,
+        sublinear_tf=True,
+        stop_words="english"
+    )
+    Xv = vec.fit_transform(X)
+
+    reg = Ridge(alpha=10.0, random_state=42)
+    reg.fit(Xv, y)
+
+    return {"vectorizer": vec, "model": reg, "train_n": len(d)}
+
+
+def predict_text_as_data_delta_bp(text: str, bundle):
+    if bundle is None or not text:
+        return None
+    vec = bundle["vectorizer"]
+    reg = bundle["model"]
+    Xv = vec.transform([str(text)])
+    return float(reg.predict(Xv)[0])
+
+
+def text_as_data_top_terms(bundle, top_k: int = 20):
+    """
+    Ridge coef -> hangi kelimeler indirime/ artırıma iter?
+    + coef: daha çok ARTIRIM (pozitif bps)
+    - coef: daha çok İNDİRİM (negatif bps)
+    """
+    if bundle is None:
+        return pd.DataFrame()
+
+    vec = bundle["vectorizer"]
+    reg = bundle["model"]
+
+    if not hasattr(reg, "coef_"):
+        return pd.DataFrame()
+
+    coefs = reg.coef_.ravel()
+    feats = vec.get_feature_names_out()
+
+    df = pd.DataFrame({"term": feats, "coef": coefs})
+    df = df.sort_values("coef", ascending=False)
+
+    top_pos = df.head(top_k).copy()
+    top_pos["direction"] = "ARTIRIM (+)"
+
+    top_neg = df.tail(top_k).copy().sort_values("coef", ascending=True)
+    top_neg["direction"] = "İNDİRİM (-)"
+
+    out = pd.concat([top_pos, top_neg], ignore_index=True)
+    return out
+
+
+def text_as_data_walk_forward(df: pd.DataFrame, min_train: int = 8):
+    """
+    Basit walk-forward: her adımda geçmişle eğit, bir sonraki noktayı tahmin et.
+    """
+    if not HAS_ML_DEPS:
+        return None
+
+    if df is None or df.empty:
+        return None
+
+    d = df.dropna(subset=["delta_bp"]).copy().sort_values("period_date")
+    if len(d) < (min_train + 1):
+        return None
+
+    preds = []
+    actuals = []
+    dates = []
+
+    for i in range(min_train, len(d)):
+        train = d.iloc[:i].copy()
+        test_row = d.iloc[i]
+
+        bundle = build_text_as_data_model(train)
+        if bundle is None:
+            continue
+
+        yhat = predict_text_as_data_delta_bp(test_row["text_content"], bundle)
+        preds.append(yhat)
+        actuals.append(float(test_row["delta_bp"]))
+        dates.append(test_row["period_date"])
+
+    out = pd.DataFrame({"date": dates, "y_true": actuals, "y_pred": preds})
+    if out.empty:
+        return None
+
+    out["err"] = out["y_true"] - out["y_pred"]
+    return out
+
+
 
 # =============================================================================
 # 7. ML ALGORİTMASI (Ridge + Logistic)

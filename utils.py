@@ -1847,5 +1847,195 @@ def analyze_sentences_with_roberta(text: str) -> pd.DataFrame:
         gc.collect()
 
 
+# ==========================
+# HYBRID TEXT-AS-DATA HELPERS
+# ==========================
+
+def _slope_from_series(s: pd.Series) -> float:
+    s = pd.to_numeric(s, errors="coerce").dropna()
+    if len(s) < 3:
+        return 0.0
+    x = np.arange(len(s), dtype=float)
+    y = s.values.astype(float)
+    try:
+        return float(np.polyfit(x, y, 1)[0])
+    except Exception:
+        return 0.0
+
+
+def textasdata_prepare_df_hybrid(
+    df_logs: pd.DataFrame,
+    text_col: str = "text_content",
+    date_col: str = "period_date",
+    y_col: str = "delta_bp",
+    rate_col: str = "policy_rate",
+) -> pd.DataFrame:
+    if df_logs is None or df_logs.empty:
+        return pd.DataFrame()
+
+    df = df_logs.copy()
+    df[date_col] = pd.to_datetime(df[date_col], errors="coerce")
+    df = df.dropna(subset=[date_col]).sort_values(date_col).reset_index(drop=True)
+
+    df["text"] = (
+        df.get(text_col, "")
+        .fillna("")
+        .astype(str)
+        .str.replace(r"\s+", " ", regex=True)
+        .str.strip()
+    )
+
+    df["policy_rate"] = pd.to_numeric(df.get(rate_col), errors="coerce")
+    df["delta_bp"] = pd.to_numeric(df.get(y_col), errors="coerce")
+
+    df["policy_rate_lag1"] = df["policy_rate"].shift(1)
+    df["delta_bp_lag1"] = df["delta_bp"].shift(1)
+    df["delta_bp_lag3"] = df["delta_bp"].rolling(3).mean().shift(1)
+    df["policy_rate_trend"] = df["policy_rate"].rolling(3).apply(
+        lambda x: _slope_from_series(pd.Series(x)), raw=False
+    ).shift(1)
+
+    out = df.rename(columns={date_col: "period_date"})[
+        [
+            "period_date",
+            "text",
+            "delta_bp",
+            "policy_rate",
+            "policy_rate_lag1",
+            "delta_bp_lag1",
+            "delta_bp_lag3",
+            "policy_rate_trend",
+        ]
+    ].copy()
+
+    out = out.dropna(
+        subset=["policy_rate_lag1", "delta_bp_lag1", "delta_bp_lag3", "policy_rate_trend"]
+    ).reset_index(drop=True)
+
+    return out
+
+
+def train_textasdata_hybrid_ridge(
+    df_td: pd.DataFrame,
+    min_df: int = 2,
+    alpha: float = 2.0,
+    n_splits: int = 6,
+    ngram_range=(1, 2),
+    max_features: int = 20000,
+) -> dict:
+    if not HAS_ML_DEPS:
+        return {}
+    if df_td is None or df_td.empty:
+        return {}
+
+    df = df_td.copy().dropna(subset=["period_date"]).sort_values("period_date").reset_index(drop=True)
+    df_train = df.dropna(subset=["delta_bp"]).copy()
+    if df_train.empty or df_train["delta_bp"].notna().sum() < 8:
+        return {}
+
+    from sklearn.model_selection import TimeSeriesSplit
+    from sklearn.pipeline import Pipeline
+    from sklearn.compose import ColumnTransformer
+    from sklearn.feature_extraction.text import TfidfVectorizer
+    from sklearn.preprocessing import StandardScaler
+    from sklearn.linear_model import Ridge
+    from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+
+    num_cols = ["policy_rate_lag1", "delta_bp_lag1", "delta_bp_lag3", "policy_rate_trend"]
+
+    X = df_train[["text"] + num_cols].copy()
+    y = df_train["delta_bp"].astype(float).values
+
+    preprocess = ColumnTransformer(
+        transformers=[
+            ("tfidf", TfidfVectorizer(
+                ngram_range=ngram_range,
+                min_df=max(1, int(min_df)),
+                max_features=int(max_features),
+                sublinear_tf=True
+            ), "text"),
+            ("num", Pipeline([("scaler", StandardScaler())]), num_cols),
+        ],
+        remainder="drop",
+        sparse_threshold=0.3
+    )
+
+    pipe = Pipeline([
+        ("prep", preprocess),
+        ("ridge", Ridge(alpha=float(alpha), random_state=42))
+    ])
+
+    tscv = TimeSeriesSplit(n_splits=min(int(n_splits), max(2, len(df_train) // 3)))
+    pred = np.full(len(df_train), np.nan, dtype=float)
+
+    for tr, te in tscv.split(X):
+        pipe.fit(X.iloc[tr], y[tr])
+        pred[te] = pipe.predict(X.iloc[te])
+
+    mask = np.isfinite(pred)
+    metrics = {"n": int(mask.sum())}
+    if mask.sum() >= 3:
+        metrics["mae"] = float(mean_absolute_error(y[mask], pred[mask]))
+        metrics["rmse"] = float(np.sqrt(mean_squared_error(y[mask], pred[mask])))
+        metrics["r2"] = float(r2_score(y[mask], pred[mask]))
+    else:
+        metrics.update({"mae": np.nan, "rmse": np.nan, "r2": np.nan})
+
+    pred_df = df_train[["period_date", "delta_bp", "policy_rate"]].copy()
+    pred_df["pred_delta_bp"] = pred
+
+    pipe.fit(X, y)
+
+    coef_df = pd.DataFrame()
+    try:
+        tfidf = pipe.named_steps["prep"].named_transformers_["tfidf"]
+        feats = tfidf.get_feature_names_out()
+        coefs = pipe.named_steps["ridge"].coef_.ravel()
+        coef_df = pd.DataFrame({"feature": feats, "coef": coefs[:len(feats)]})
+        coef_df["abs"] = coef_df["coef"].abs()
+    except Exception:
+        coef_df = pd.DataFrame()
+
+    return {
+        "model": pipe,
+        "pred_df": pred_df,
+        "metrics": metrics,
+        "coef_df": coef_df,
+        "num_cols": num_cols
+    }
+
+
+def predict_textasdata_hybrid(model_pack: dict, df_hist: pd.DataFrame, text: str) -> dict:
+    if not model_pack or "model" not in model_pack:
+        return {}
+
+    pipe = model_pack["model"]
+    txt = (text or "").strip()
+    if len(txt) < 20:
+        return {}
+
+    if df_hist is None or df_hist.empty:
+        return {}
+
+    df_hist = df_hist.sort_values("period_date").reset_index(drop=True)
+    last = df_hist.iloc[-1]
+
+    last_policy = float(last["policy_rate"]) if pd.notna(last["policy_rate"]) else np.nan
+    last_delta = float(last["delta_bp"]) if pd.notna(last["delta_bp"]) else 0.0
+
+    last3_delta_mean = float(pd.to_numeric(df_hist["delta_bp"], errors="coerce").tail(3).mean())
+    last3_policy = pd.to_numeric(df_hist["policy_rate"], errors="coerce").tail(3)
+    last3_trend = _slope_from_series(last3_policy)
+
+    row = pd.DataFrame([{
+        "text": txt,
+        "policy_rate_lag1": last_policy,
+        "delta_bp_lag1": last_delta,
+        "delta_bp_lag3": last3_delta_mean,
+        "policy_rate_trend": last3_trend
+    }])
+
+    pred_bp = float(pipe.predict(row)[0])
+    return {"pred_delta_bp": pred_bp}
 
 

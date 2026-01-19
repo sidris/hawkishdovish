@@ -2094,7 +2094,8 @@ def textasdata_prepare_df_hybrid_cpi(
     df["delta_bp"] = pd.to_numeric(df.get(y_col), errors="coerce")
 
     # --- merge CPI / market ---
-    m = (df_market or pd.DataFrame()).copy()
+    m = df_market.copy() if isinstance(df_market, pd.DataFrame) else pd.DataFrame()
+
     if not m.empty:
         if "Donem" not in m.columns and "SortDate" in m.columns:
             m["Donem"] = pd.to_datetime(m["SortDate"], errors="coerce").dt.strftime("%Y-%m")

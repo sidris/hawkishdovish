@@ -73,10 +73,10 @@ with c_head1: st.title("🦅 Şahin/Güvercin Paneli")
 with c_head2: 
     if st.button("Çıkış"): st.session_state['logged_in'] = False; st.rerun()
 
-# SEKME YAPILANDIRMASI (TEMİZLENMİŞ HALİ)
-tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab_roberta, tab_imp = st.tabs([
-    "📈 Dashboard", "📝 Veri Girişi", "📊 Veriler", "🔍 Frekans", "🤖 Faiz Tahmini", "☁️ WordCloud", "📜 ABF (2019)", 
-    "🧠 CB-RoBERTa", "📅 Haberler"
+tab1, tab2, tab3, tab4, tab5, tab_textdata, tab6, tab7, tab_roberta, tab_imp = st.tabs([
+    "📈 Dashboard", "📝 Veri Girişi", "📊 Veriler", "🔍 Frekans",
+    "🤖 Faiz Tahmini (Advanced)", "📚 Text as Data (TF-IDF)",
+    "☁️ WordCloud", "📜 ABF (2019)", "🧠 CB-RoBERTa", "📅 Haberler"
 ])
 
 
@@ -583,6 +583,98 @@ with tab5:
             st.warning(f"Model eğitilemedi: {status}")
     else:
         st.warning("Model eğitimi için yeterli veri yok (En az 10 toplantı kaydı ve piyasa verisi gerekli).")
+
+with tab_textdata:
+    st.header("📚 Text as Data (TF-IDF + Ridge)")
+    st.caption("PPK metninden doğrudan baz puan değişimi (delta_bp) tahmini.")
+
+    if not utils.HAS_ML_DEPS:
+        st.error("ML kütüphaneleri eksik (sklearn).")
+        st.stop()
+
+    # 1) Data
+    df_tad = utils.fetch_ppk_text_rate_data(source_filter="TCMB PPK Kararı")
+
+    if df_tad is None or df_tad.empty:
+        st.warning("Text-as-Data için veri bulunamadı. (source='TCMB PPK Kararı' ve policy_rate/delta_bp dolu olmalı)")
+        st.stop()
+
+    df_tad["Donem"] = df_tad["period_date"].dt.strftime("%Y-%m")
+    st.write(f"Toplam kayıt: **{len(df_tad)}**")
+
+    # 2) Model
+    bundle = utils.build_text_as_data_model(df_tad)
+
+    if bundle is None:
+        st.warning("Model eğitilemedi. (delta_bp dolu en az ~8 kayıt gerekiyor)")
+        st.dataframe(df_tad[["period_date","Donem","policy_rate","delta_bp"]], use_container_width=True)
+        st.stop()
+
+    st.success(f"Model hazır ✅ (train_n={bundle['train_n']})")
+
+    # 3) Tahmin için metin seçimi
+    st.subheader("🔍 Seçili dönemden tahmin")
+    sel_period = st.selectbox("Dönem seç:", df_tad["Donem"].tolist(), index=len(df_tad)-1)
+    row = df_tad[df_tad["Donem"] == sel_period].iloc[0]
+
+    with st.expander("Metni Gör", expanded=False):
+        st.write(row["text_content"])
+
+    pred_bp = utils.predict_text_as_data_delta_bp(row["text_content"], bundle)
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Gerçek delta_bp", f"{float(row['delta_bp']):.0f} bp" if pd.notna(row["delta_bp"]) else "—")
+    c2.metric("Tahmin delta_bp", f"{pred_bp:.0f} bp" if pred_bp is not None else "—")
+
+    # “implied policy rate” (bir önceki toplantıdan tahmini karar sonrası)
+    # Bu, eğitim target'ı delta olduğu için en mantıklı gösterim:
+    prev_rate = None
+    idx = df_tad.index[df_tad["Donem"] == sel_period][0]
+    if idx > 0 and pd.notna(df_tad.loc[idx-1, "policy_rate"]):
+        prev_rate = float(df_tad.loc[idx-1, "policy_rate"])
+
+    if prev_rate is not None and pred_bp is not None:
+        implied = prev_rate + (pred_bp / 100.0)
+        c3.metric("Önceki faiz → Tahmini yeni faiz", f"{prev_rate:.2f}% → {implied:.2f}%")
+    else:
+        c3.metric("Önceki faiz → Tahmini yeni faiz", "—")
+
+    st.divider()
+
+    # 4) Kelime etkileri
+    st.subheader("🧠 Model hangi kelimeleri nasıl yorumluyor?")
+    top_terms = utils.text_as_data_top_terms(bundle, top_k=20)
+    if top_terms is not None and not top_terms.empty:
+        st.dataframe(top_terms, use_container_width=True)
+        st.caption("coef > 0 → daha çok ARTIRIM yönüne iter, coef < 0 → daha çok İNDİRİM yönüne iter.")
+    else:
+        st.info("Feature importance üretilemedi.")
+
+    st.divider()
+
+    # 5) Walk-forward backtest
+    st.subheader("📈 Walk-forward Backtest")
+    wf = utils.text_as_data_walk_forward(df_tad, min_train=8)
+    if wf is None or wf.empty:
+        st.info("Backtest için yeterli veri yok.")
+    else:
+        mae = float(np.mean(np.abs(wf["y_true"] - wf["y_pred"])))
+        rmse = float(np.sqrt(np.mean((wf["y_true"] - wf["y_pred"])**2)))
+
+        c1, c2 = st.columns(2)
+        c1.metric("MAE", f"{mae:.1f} bp")
+        c2.metric("RMSE", f"{rmse:.1f} bp")
+
+        fig_wf = go.Figure()
+        fig_wf.add_trace(go.Bar(x=wf["date"], y=wf["y_true"], name="Gerçek (bp)", opacity=0.5))
+        fig_wf.add_trace(go.Scatter(x=wf["date"], y=wf["y_pred"], name="Tahmin (bp)", line=dict(dash="dot")))
+        fig_wf.update_layout(hovermode="x unified", height=420, title="Walk-forward: Gerçek vs Tahmin (delta_bp)")
+        st.plotly_chart(fig_wf, use_container_width=True)
+
+        st.dataframe(wf, use_container_width=True)
+
+
+
 
 with tab6:
     st.header("☁️ Kelime Bulutu (WordCloud)")

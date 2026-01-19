@@ -1066,6 +1066,190 @@ class AdvancedMLPredictor:
         )
 
 # =============================================================================
+# 7B. TEXT-AS-DATA (TF-IDF + Ridge) — delta_bp tahmini
+# =============================================================================
+
+def textasdata_prepare_df(df_logs: pd.DataFrame,
+                          text_col: str = "text_content",
+                          date_col: str = "period_date",
+                          y_col: str = "delta_bp",
+                          rate_col: str = "policy_rate") -> pd.DataFrame:
+    if df_logs is None or df_logs.empty:
+        return pd.DataFrame()
+
+    out = df_logs.copy()
+    if date_col in out.columns:
+        out[date_col] = pd.to_datetime(out[date_col], errors="coerce")
+    out = out.dropna(subset=[date_col])
+
+    if text_col not in out.columns:
+        return pd.DataFrame()
+
+    out["text"] = out[text_col].fillna("").astype(str)
+    out["text"] = out["text"].str.replace(r"\s+", " ", regex=True).str.strip()
+
+    if y_col in out.columns:
+        out[y_col] = pd.to_numeric(out[y_col], errors="coerce")
+    else:
+        out[y_col] = np.nan
+
+    if rate_col in out.columns:
+        out[rate_col] = pd.to_numeric(out[rate_col], errors="coerce")
+    else:
+        out[rate_col] = np.nan
+
+    out = out.rename(columns={
+        date_col: "period_date",
+        y_col: "delta_bp",
+        rate_col: "policy_rate"
+    })
+
+    out = out.sort_values("period_date").reset_index(drop=True)
+    return out[["period_date", "text", "delta_bp", "policy_rate"]]
+
+
+def train_textasdata_ridge(df_td: pd.DataFrame,
+                           min_df: int = 2,
+                           alpha: float = 2.0,
+                           n_splits: int = 6,
+                           ngram_range=(1, 2),
+                           max_features: int = 20000) -> dict:
+    """
+    Walk-forward TimeSeriesSplit ile delta_bp tahmin eden TFIDF+Ridge modeli.
+    Çıktı:
+      - model: trained pipeline
+      - vectorizer, ridge
+      - pred_df: walk-forward tahmin serisi
+      - metrics: mae/rmse/r2/n
+      - coef_df: feature -> coef
+    """
+    if not HAS_ML_DEPS:
+        return {}
+
+    if df_td is None or df_td.empty:
+        return {}
+
+    df = df_td.copy()
+    df = df.dropna(subset=["period_date"]).sort_values("period_date").reset_index(drop=True)
+
+    # hedef yoksa eğitim olmaz
+    df_train = df.dropna(subset=["delta_bp"]).copy()
+    if df_train.empty or df_train["delta_bp"].notna().sum() < 6:
+        return {}
+
+    from sklearn.model_selection import TimeSeriesSplit
+    from sklearn.pipeline import Pipeline
+    from sklearn.feature_extraction.text import TfidfVectorizer
+    from sklearn.linear_model import Ridge
+    from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+
+    X = df_train["text"].astype(str).values
+    y = df_train["delta_bp"].astype(float).values
+
+    vec = TfidfVectorizer(
+        ngram_range=ngram_range,
+        min_df=max(1, int(min_df)),
+        max_features=int(max_features),
+        sublinear_tf=True
+    )
+    ridge = Ridge(alpha=float(alpha), random_state=42)
+
+    pipe = Pipeline([("tfidf", vec), ("ridge", ridge)])
+
+    # walk-forward preds
+    tscv = TimeSeriesSplit(n_splits=min(int(n_splits), max(2, len(df_train) // 3)))
+    pred = np.full(len(df_train), np.nan, dtype=float)
+
+    for tr, te in tscv.split(X):
+        pipe.fit(X[tr], y[tr])
+        pred[te] = pipe.predict(X[te])
+
+    mask = np.isfinite(pred)
+    metrics = {"n": int(mask.sum())}
+    if mask.sum() >= 3:
+        metrics["mae"] = float(mean_absolute_error(y[mask], pred[mask]))
+        metrics["rmse"] = float(np.sqrt(mean_squared_error(y[mask], pred[mask])))
+        metrics["r2"] = float(r2_score(y[mask], pred[mask]))
+    else:
+        metrics["mae"] = np.nan
+        metrics["rmse"] = np.nan
+        metrics["r2"] = np.nan
+
+    pred_df = df_train[["period_date", "delta_bp", "policy_rate"]].copy()
+    pred_df["pred_delta_bp"] = pred
+
+    # final fit (tüm veri)
+    pipe.fit(X, y)
+
+    # katsayılar
+    coef_df = pd.DataFrame()
+    try:
+        feats = pipe.named_steps["tfidf"].get_feature_names_out()
+        coefs = pipe.named_steps["ridge"].coef_.ravel()
+        coef_df = pd.DataFrame({"feature": feats, "coef": coefs})
+        coef_df["abs"] = coef_df["coef"].abs()
+    except Exception:
+        coef_df = pd.DataFrame()
+
+    return {
+        "model": pipe,
+        "vectorizer": vec,
+        "ridge": ridge,
+        "pred_df": pred_df,
+        "metrics": metrics,
+        "coef_df": coef_df
+    }
+
+
+def predict_textasdata(model_pack: dict, text: str, top_k: int = 20) -> dict:
+    """
+    Tek metin için delta_bp tahmini + (yaklaşık) kelime katkıları.
+    """
+    if not model_pack or "model" not in model_pack:
+        return {}
+
+    pipe = model_pack["model"]
+    txt = (text or "").strip()
+    if not txt:
+        return {}
+
+    pred_bp = float(pipe.predict([txt])[0])
+
+    # katkı: TFIDF*coef (yaklaşık açıklama)
+    top_contrib_df = pd.DataFrame()
+    try:
+        vec = pipe.named_steps["tfidf"]
+        ridge = pipe.named_steps["ridge"]
+        X = vec.transform([txt])
+        feats = vec.get_feature_names_out()
+        coefs = ridge.coef_.ravel()
+
+        # sparse dot ürün katkıları
+        # X: 1 x V sparse
+        idx = X.nonzero()[1]
+        vals = X.data
+        contrib = vals * coefs[idx]
+
+        tmp = pd.DataFrame({
+            "term": feats[idx],
+            "tfidf": vals,
+            "coef": coefs[idx],
+            "contrib": contrib
+        })
+        tmp["abs_contrib"] = tmp["contrib"].abs()
+        tmp = tmp.sort_values("abs_contrib", ascending=False).head(int(top_k)).reset_index(drop=True)
+        top_contrib_df = tmp
+    except Exception:
+        top_contrib_df = pd.DataFrame()
+
+    return {
+        "pred_delta_bp": pred_bp,
+        "top_contrib_df": top_contrib_df
+    }
+
+
+
+# =============================================================================
 # 8. CENTRAL BANK RoBERTa ENTEGRASYONU (mrince / STABLE)
 # Model: mrince/CBRT-RoBERTa-HawkishDovish-Classifier
 # =============================================================================

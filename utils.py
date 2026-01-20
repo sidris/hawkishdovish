@@ -687,6 +687,49 @@ def text_as_data_walk_forward(df: pd.DataFrame, min_train: int = 8):
 # 7. ML ALGORİTMASI (Ridge + Logistic)
 # =============================================================================
 
+
+def prepare_next_rate_dataset(df_logs: pd.DataFrame) -> pd.DataFrame:
+    """
+    Her toplantı metninden bir sonraki toplantının policy_rate'ini tahmin etmek için dataset.
+    Çıktı kolonları: date, text, policy_rate, delta_bp, next_policy_rate
+    """
+    if df_logs is None or df_logs.empty:
+        return pd.DataFrame()
+
+    df = df_logs.copy()
+    df["period_date"] = pd.to_datetime(df["period_date"], errors="coerce")
+    df = df.dropna(subset=["period_date"]).sort_values("period_date")
+
+    if "policy_rate" not in df.columns:
+        return pd.DataFrame()
+
+    df["policy_rate"] = pd.to_numeric(df["policy_rate"], errors="coerce")
+    df["delta_bp"] = pd.to_numeric(df.get("delta_bp", np.nan), errors="coerce")
+
+    # delta_bp boşsa otomatik üret (fallback)
+    if df["delta_bp"].isna().all():
+        df["delta_bp"] = df["policy_rate"].diff().fillna(0.0) * 100.0
+
+    df["text"] = df["text_content"].fillna("").apply(normalize_tr_text)
+
+    # hedef = bir sonraki toplantının faizi
+    df["next_policy_rate"] = df["policy_rate"].shift(-1)
+
+    # son satırın hedefi yok
+    df = df.dropna(subset=["next_policy_rate", "policy_rate", "delta_bp"])
+
+    out = pd.DataFrame({
+        "date": df["period_date"],
+        "text": df["text"],
+        "policy_rate": df["policy_rate"].astype(float),
+        "delta_bp": df["delta_bp"].astype(float),
+        "next_policy_rate": df["next_policy_rate"].astype(float),
+    })
+    return out.reset_index(drop=True)
+
+
+
+
 @dataclass
 class CFG:
     cap_low: int = -750

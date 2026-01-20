@@ -73,9 +73,16 @@ with c_head1: st.title("🦅 Şahin/Güvercin Paneli")
 with c_head2: 
     if st.button("Çıkış"): st.session_state['logged_in'] = False; st.rerun()
 
-tab1, tab2, tab3, tab4, tab_text, tab6, tab7, tab_roberta, tab_imp = st.tabs([
-    "📈 Dashboard", "📝 Veri Girişi", "📊 Veriler", "🔍 Frekans", "📚 Text as Data (Next Rate)",
-    "☁️ WordCloud", "📜 ABF (2019)", "🧠 CB-RoBERTa", "📅 Haberler"
+tab1, tab2, tab3, tab4, tab_textdata, tab6, tab7, tab_roberta, tab_imp = st.tabs([
+    "📈 Dashboard",
+    "📝 Veri Girişi",
+    "📊 Veriler",
+    "🔍 Frekans",
+    "📚 Text as Data (TF-IDF)",
+    "☁️ WordCloud",
+    "📜 ABF (2019)",
+    "🧠 CB-RoBERTa",
+    "📅 Haberler"
 ])
 
 
@@ -459,6 +466,8 @@ with tab4:
 # ==============================================================================
 with tab_textdata:
     st.header("📚 Text as Data (TF-IDF) — HYBRID + CPI PPK Kararı (delta_bp) Tahmini")
+
+
 
     if not utils.HAS_ML_DEPS:
         st.error("ML kütüphaneleri eksik (sklearn).")

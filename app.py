@@ -1067,11 +1067,30 @@ Bu yüzden, model 3 sınıf üretse bile grafikteki çizgi “süreklilik” gö
 
             if hasattr(utils, "analyze_sentences_with_roberta"):
                 df_sent = utils.analyze_sentences_with_roberta(txt_input)
-
+            
+                # ✅ Action etiketi (CUT/HIKE/HOLD)
+                action = utils.detect_policy_action(txt_input) if hasattr(utils, "detect_policy_action") else "UNKNOWN"
+            
+                # ✅ Sayım + ağırlıklı özet
+                summary = utils.summarize_sentence_roberta(df_sent) if hasattr(utils, "summarize_sentence_roberta") else {}
+            
+                cA, cB, cC, cD = st.columns(4)
+                cA.metric("Policy Action", action)
+                cB.metric("🦅 Şahin cümle", summary.get("hawk_n", 0))
+                cC.metric("🕊️ Güvercin cümle", summary.get("dove_n", 0))
+                cD.metric("⚖️ Nötr cümle", summary.get("neut_n", 0))
+            
+                c1, c2, c3 = st.columns(3)
+                c1.metric("Diff ortalama", f"{summary.get('diff_mean', np.nan):.3f}" if summary.get("n", 0) else "—")
+                c2.metric("Pozitif toplam (hawk itişi)", f"{summary.get('pos_sum', np.nan):.2f}" if summary.get("n", 0) else "—")
+                c3.metric("Negatif toplam (dove itişi)", f"{summary.get('neg_sum', np.nan):.2f}" if summary.get("n", 0) else "—")
+            
+                st.caption("Not: Net duruş, cümle sayısından değil **Diff (H−D) ağırlıklarından** geliyor. Az sayıda ama çok güçlü ‘rate cut’ cümlesi toplamı negatife çekebilir.")
+            
                 if df_sent is None or df_sent.empty:
                     st.info("Metinden ayrıştırılabilir cümle bulunamadı.")
                 else:
                     st.dataframe(df_sent, use_container_width=True)
-
+            
             else:
                 st.error("analyze_sentences_with_roberta bulunamadı.")

@@ -2383,3 +2383,66 @@ def predict_textasdata_hybrid_cpi(model_pack: dict, df_hist: pd.DataFrame, text:
 
     pred_bp = float(pipe.predict(row)[0])
     return {"pred_delta_bp": pred_bp}
+
+
+def detect_policy_action(text: str) -> str:
+    """
+    Metinde açık politika aksiyonu var mı? (CUT / HIKE / HOLD / UNKNOWN)
+    Basit regex; dashboard için yeterli.
+    """
+    if not text:
+        return "UNKNOWN"
+
+    t = str(text).lower()
+
+    # CUT
+    if re.search(r"\b(reduce|reduced|cut|lower|decrease|decreased)\b.*\b(policy rate|one-week repo|repo auction rate|interest rate)\b", t):
+        return "CUT"
+    if re.search(r"\b(policy rate)\b.*\b(from)\b.*\b(to)\b", t) and re.search(r"\b(reduce|reduced|cut|lower|decrease|decreased)\b", t):
+        return "CUT"
+
+    # HIKE
+    if re.search(r"\b(increase|increased|raise|raised|hike|tighten|tightened)\b.*\b(policy rate|one-week repo|repo auction rate|interest rate)\b", t):
+        return "HIKE"
+
+    # HOLD
+    if re.search(r"\b(keep|kept|maintain|maintained)\b.*\b(unchanged|constant|at)\b", t) and re.search(r"\b(policy rate|one-week repo|repo auction rate|interest rate)\b", t):
+        return "HOLD"
+    if re.search(r"\bdecided to keep\b.*\b(policy rate)\b", t):
+        return "HOLD"
+
+    return "UNKNOWN"
+
+
+def summarize_sentence_roberta(df_sent: pd.DataFrame) -> dict:
+    """
+    Cümle tablosundan:
+      - kaç şahin/güvercin/nötr
+      - ağırlıklı net duruş (Diff ortalaması, poz/neg toplam etkiler)
+    """
+    if df_sent is None or df_sent.empty or "Diff (H-D)" not in df_sent.columns:
+        return {"n": 0, "hawk_n": 0, "dove_n": 0, "neut_n": 0,
+                "diff_mean": np.nan, "diff_sum": np.nan,
+                "pos_sum": np.nan, "neg_sum": np.nan}
+
+    x = pd.to_numeric(df_sent["Diff (H-D)"], errors="coerce").fillna(0.0)
+
+    # stance sayımı (senin stance_3class_from_diff'e göre)
+    hawk_n = int((x >= 0.15).sum())
+    dove_n = int((x <= -0.15).sum())
+    neut_n = int(len(x) - hawk_n - dove_n)
+
+    pos_sum = float(x[x > 0].sum())
+    neg_sum = float(x[x < 0].sum())  # negatif
+    out = {
+        "n": int(len(x)),
+        "hawk_n": hawk_n,
+        "dove_n": dove_n,
+        "neut_n": neut_n,
+        "diff_mean": float(x.mean()),
+        "diff_sum": float(x.sum()),
+        "pos_sum": pos_sum,
+        "neg_sum": neg_sum
+    }
+    return out
+

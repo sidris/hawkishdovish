@@ -422,30 +422,69 @@ with tab3:
         else: st.error(f"Hata: {err}")
 
 with tab4:
-    st.header("🔍 Frekans ve Diff Analizi")
-    df_all = utils.fetch_all_data()
-    if not df_all.empty:
-        df_all['period_date'] = pd.to_datetime(df_all['period_date'])
-        df_all['Donem'] = df_all['period_date'].dt.strftime('%Y-%m')
-        df_all = df_all.sort_values('period_date', ascending=False)
-        st.subheader("📊 En Çok Tekrar Eden Ekonomi Terimleri")
-        st.text_input("🚫 Grafikten Çıkarılacak Kelimeler (Enter)", key="deep_stop_in", on_change=add_deep_stop)
-        if st.session_state['stop_words_deep']:
-            st.write("Filtreler:")
-            cols = st.columns(8)
-            for i, word in enumerate(st.session_state['stop_words_deep']):
-                if cols[i % 8].button(f"{word} ✖", key=f"del_deep_{word}"):
-                    st.session_state['stop_words_deep'].remove(word)
-                    st.rerun()
-        st.divider()
-        freq_df, top_terms = utils.get_top_terms_series(df_all, 7, st.session_state['stop_words_deep'])
-        if not freq_df.empty:
-            fig_freq = go.Figure()
-            for term in top_terms:
-                fig_freq.add_trace(go.Scatter(x=freq_df['period_date'], y=freq_df[term], name=term, mode='lines+markers'))
-            fig_freq.update_layout(title="Kelime Kullanım Sıklığı Trendi", hovermode="x unified", height=400)
-            st.plotly_chart(fig_freq, use_container_width=True)
-        st.divider()
+    st.subheader("📊 İzlenen Ekonomi Terimleri (Custom)")
+
+    DEFAULT_TERMS = [
+        "inflation", "disinflation", "stability", "growth", "gdp",
+        "interest rate", "policy rate", "lowered", "macroprudential",
+        "target", "monetary policy", "tightened", "risks",
+        "exchange rate", "prudently", "global", "recession", "food"
+    ]
+    
+    # Session state
+    if "watch_terms" not in st.session_state:
+        st.session_state["watch_terms"] = DEFAULT_TERMS.copy()
+    
+    # Kullanıcı ekleme alanı
+    user_terms_raw = st.text_input(
+        "➕ İzlenecek kelime/ifadeler (virgülle ayır):",
+        placeholder="ör: liquidity, reserves, demand, credit growth"
+    )
+    
+    c_add, c_reset = st.columns([1,1])
+    with c_add:
+        if st.button("Ekle", type="secondary"):
+            new_terms = [t.strip().lower() for t in (user_terms_raw or "").split(",") if t.strip()]
+            merged = list(dict.fromkeys([*st.session_state["watch_terms"], *new_terms]))  # uniq, sırayı koru
+            st.session_state["watch_terms"] = merged
+            st.rerun()
+    
+    with c_reset:
+        if st.button("Varsayılana dön"):
+            st.session_state["watch_terms"] = DEFAULT_TERMS.copy()
+            st.rerun()
+    
+    # Mevcut listeyi göster + tek tek silme
+    st.caption("İzlenen terimler:")
+    cols = st.columns(6)
+    for i, term in enumerate(st.session_state["watch_terms"]):
+        if cols[i % 6].button(f"{term} ✖", key=f"del_watch_{term}"):
+            st.session_state["watch_terms"] = [t for t in st.session_state["watch_terms"] if t != term]
+            st.rerun()
+    
+    st.divider()
+    
+    # Zaman serisini hazırla
+    freq_df = utils.get_terms_series(
+        df_all,
+        terms=st.session_state["watch_terms"],
+        text_col="text_content",
+        date_col="period_date"
+    )
+    
+    if not freq_df.empty:
+        fig_freq = go.Figure()
+        for term in st.session_state["watch_terms"]:
+            if term in freq_df.columns:
+                fig_freq.add_trace(go.Scatter(
+                    x=freq_df["period_date"], y=freq_df[term],
+                    name=term, mode="lines+markers"
+                ))
+        fig_freq.update_layout(title="Terim Kullanım Sıklığı Trendi", hovermode="x unified", height=420)
+        st.plotly_chart(fig_freq, use_container_width=True)
+    else:
+        st.info("Görüntülenecek veri yok.")
+
         st.subheader("🔄 Metin Farkı (Diff) Analizi")
         c_diff1, c_diff2 = st.columns(2)
         with c_diff1: sel_date1 = st.selectbox("Eski Metin:", df_all['Donem'].tolist(), index=min(1, len(df_all)-1))

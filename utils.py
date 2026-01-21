@@ -249,6 +249,49 @@ def calculate_flesch_reading_ease(text):
     score = 206.835 - (1.015 * average_sentence_length) - (84.6 * average_syllables_per_word)
     return round(score, 2)
 
+def get_terms_series(df: pd.DataFrame,
+                     terms: list,
+                     text_col: str = "text_content",
+                     date_col: str = "period_date") -> pd.DataFrame:
+    """
+    Verilen terms listesi için dönem bazlı sayım serisi üretir.
+    - Tek kelime ve çok kelimeli ifadeleri destekler (örn: "policy rate")
+    - Bulunmayan terimler 0 döner
+    """
+    if df is None or df.empty:
+        return pd.DataFrame()
+
+    out_rows = []
+    tmp = df.copy()
+
+    # tarih normalize
+    tmp[date_col] = pd.to_datetime(tmp[date_col], errors="coerce")
+    tmp = tmp.dropna(subset=[date_col]).sort_values(date_col)
+
+    # metin normalize
+    texts = tmp[text_col].fillna("").astype(str).str.lower()
+
+    # terms normalize
+    terms_norm = [str(t).strip().lower() for t in (terms or []) if str(t).strip()]
+    terms_norm = list(dict.fromkeys(terms_norm))  # uniq
+
+    for i, row in tmp.iterrows():
+        txt = str(row.get(text_col, "") or "").lower()
+
+        rec = {
+            "period_date": row[date_col],
+            "Donem": pd.to_datetime(row[date_col]).strftime("%Y-%m")
+        }
+
+        for term in terms_norm:
+            # basit substring sayımı (ppk metinleri için yeterli ve hızlı)
+            rec[term] = txt.count(term)
+
+        out_rows.append(rec)
+
+    return pd.DataFrame(out_rows)
+
+
 def generate_diff_html(text1, text2):
     if not text1: text1 = ""
     if not text2: text2 = ""

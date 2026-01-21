@@ -421,7 +421,7 @@ with tab3:
             st.dataframe(df, use_container_width=True)
         else: st.error(f"Hata: {err}")
 
-with tab4:
+
 with tab4:
     st.header("🔍 Frekans (İzlenen Terimler)")
 

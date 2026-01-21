@@ -456,6 +456,24 @@ with tab4:
     
     df_all = utils.fetch_all_data()
 
+    df_all = utils.fetch_all_data()
+    if df_all is None or df_all.empty:
+        st.info("Yeterli veri yok.")
+        st.stop()
+    
+    df_all = df_all.copy()
+    
+    # period_date güvenli parse
+    df_all["period_date"] = pd.to_datetime(df_all.get("period_date", None), errors="coerce")
+    df_all = df_all.dropna(subset=["period_date"])
+    
+    # Donem üret (YYYY-MM)
+    df_all["Donem"] = df_all["period_date"].dt.strftime("%Y-%m")
+    
+    # sıralama
+    df_all = df_all.sort_values("period_date", ascending=False).reset_index(drop=True)
+
+
     if df_all is None or df_all.empty:
         st.info("Yeterli veri yok.")
     else:

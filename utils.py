@@ -290,6 +290,36 @@ def get_terms_series(df: pd.DataFrame,
         out_rows.append(rec)
 
     return pd.DataFrame(out_rows)
+def build_watch_terms_timeseries(df: pd.DataFrame, terms: list) -> pd.DataFrame:
+    """
+    df: fetch_all_data() sonrası df (period_date + text_content olmalı)
+    terms: izlenen kelimeler (lower)
+    çıktı: period_date + Donem + her term için count
+    """
+    if df is None or df.empty:
+        return pd.DataFrame()
+
+    out = df.copy()
+    out["period_date"] = pd.to_datetime(out["period_date"], errors="coerce")
+    out = out.dropna(subset=["period_date"]).sort_values("period_date")
+
+    out["Donem"] = out["period_date"].dt.strftime("%Y-%m")
+    out["text_lc"] = out["text_content"].fillna("").astype(str).str.lower()
+
+    terms = [str(t).strip().lower() for t in (terms or []) if str(t).strip()]
+    if not terms:
+        return pd.DataFrame()
+
+    rows = []
+    for _, r in out.iterrows():
+        txt = r["text_lc"]
+        row = {"period_date": r["period_date"], "Donem": r["Donem"]}
+        for t in terms:
+            # basit substring sayımı (phrase için de çalışır)
+            row[t] = int(txt.count(t))
+        rows.append(row)
+
+    return pd.DataFrame(rows)
 
 
 def generate_diff_html(text1, text2):

@@ -424,67 +424,34 @@ with tab3:
 with tab4:
     st.subheader("📊 İzlenen Ekonomi Terimleri (Custom)")
 
-    DEFAULT_TERMS = [
+    # --- WATCH TERMS (Frekans sekmesi için) ---
+    DEFAULT_WATCH_TERMS = [
         "inflation", "disinflation", "stability", "growth", "gdp",
-        "interest rate", "policy rate", "lowered", "macroprudential",
-        "target", "monetary policy", "tightened", "risks",
-        "exchange rate", "prudently", "global", "recession", "food"
+        "interest rate", "policy rate", "lowered",
+        "macroprudential", "target", "monetary policy", "tightened",
+        "risks", "exchange rate", "prudently",
+        "global", "recession", "food"
     ]
     
-    # Session state
     if "watch_terms" not in st.session_state:
-        st.session_state["watch_terms"] = DEFAULT_TERMS.copy()
+        st.session_state["watch_terms"] = DEFAULT_WATCH_TERMS.copy()
     
-    # Kullanıcı ekleme alanı
-    user_terms_raw = st.text_input(
-        "➕ İzlenecek kelime/ifadeler (virgülle ayır):",
-        placeholder="ör: liquidity, reserves, demand, credit growth"
-    )
+    def add_watch_term():
+        raw = st.session_state.get("watch_term_in", "")
+        term = str(raw).strip().lower()
+        st.session_state["watch_term_in"] = ""
+        if not term:
+            return
+        if term not in st.session_state["watch_terms"]:
+            st.session_state["watch_terms"].append(term)
     
-    c_add, c_reset = st.columns([1,1])
-    with c_add:
-        if st.button("Ekle", type="secondary"):
-            new_terms = [t.strip().lower() for t in (user_terms_raw or "").split(",") if t.strip()]
-            merged = list(dict.fromkeys([*st.session_state["watch_terms"], *new_terms]))  # uniq, sırayı koru
-            st.session_state["watch_terms"] = merged
-            st.rerun()
-    
-    with c_reset:
-        if st.button("Varsayılana dön"):
-            st.session_state["watch_terms"] = DEFAULT_TERMS.copy()
-            st.rerun()
-    
-    # Mevcut listeyi göster + tek tek silme
-    st.caption("İzlenen terimler:")
-    cols = st.columns(6)
-    for i, term in enumerate(st.session_state["watch_terms"]):
-        if cols[i % 6].button(f"{term} ✖", key=f"del_watch_{term}"):
-            st.session_state["watch_terms"] = [t for t in st.session_state["watch_terms"] if t != term]
-            st.rerun()
-    
-    st.divider()
-    
-    # Zaman serisini hazırla
-    freq_df = utils.get_terms_series(
-        df_all,
-        terms=st.session_state["watch_terms"],
-        text_col="text_content",
-        date_col="period_date"
-    )
-    
-    if not freq_df.empty:
-        fig_freq = go.Figure()
-        for term in st.session_state["watch_terms"]:
-            if term in freq_df.columns:
-                fig_freq.add_trace(go.Scatter(
-                    x=freq_df["period_date"], y=freq_df[term],
-                    name=term, mode="lines+markers"
-                ))
-        fig_freq.update_layout(title="Terim Kullanım Sıklığı Trendi", hovermode="x unified", height=420)
-        st.plotly_chart(fig_freq, use_container_width=True)
-    else:
-        st.info("Görüntülenecek veri yok.")
+    def reset_watch_terms():
+        st.session_state["watch_terms"] = DEFAULT_WATCH_TERMS.copy()
 
+
+
+
+   
         st.subheader("🔄 Metin Farkı (Diff) Analizi")
         c_diff1, c_diff2 = st.columns(2)
         with c_diff1: sel_date1 = st.selectbox("Eski Metin:", df_all['Donem'].tolist(), index=min(1, len(df_all)-1))

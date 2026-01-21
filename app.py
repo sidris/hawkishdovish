@@ -447,8 +447,8 @@ with tab4:
         st.session_state["watch_term_in"] = ""
     
     def reset_watch_terms():
-        st.session_state["watch_terms"] = DEFAULT_WATCH_TERMS.copy()
-        st.session_state["watch_term_in"] = ""
+        st.session_state["watch_terms"] = []
+
 
 
 

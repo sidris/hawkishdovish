@@ -2519,3 +2519,38 @@ def summarize_sentence_roberta(df_sent: pd.DataFrame) -> dict:
     }
     return out
 
+def build_watch_terms_timeseries(df: pd.DataFrame, terms: list) -> pd.DataFrame:
+    """
+    Verilen terimler için (kelime veya phrase) dönem bazlı sayım zaman serisi üretir.
+    - terms: ["inflation", "policy rate", ...]
+    """
+    if df is None or df.empty or not terms:
+        return pd.DataFrame()
+
+    out = df.copy()
+
+    if "period_date" not in out.columns:
+        return pd.DataFrame()
+
+    out["period_date"] = pd.to_datetime(out["period_date"], errors="coerce")
+    out = out.dropna(subset=["period_date"]).sort_values("period_date")
+    out["Donem"] = out["period_date"].dt.strftime("%Y-%m")
+
+    # metni normalize et
+    txt = out.get("text_content", pd.Series([""] * len(out))).fillna("").astype(str).str.lower()
+    txt = txt.str.replace(r"\s+", " ", regex=True)
+
+    res = pd.DataFrame({
+        "period_date": out["period_date"],
+        "Donem": out["Donem"]
+    })
+
+    for t in terms:
+        t_norm = " ".join(str(t).lower().split())
+        if not t_norm:
+            continue
+
+        # phrase sayımı (regex yok, direkt substring: hızlı ve yeterli)
+        res[t_norm] = txt.apply(lambda s: s.count(t_norm))
+
+    return res

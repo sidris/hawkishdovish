@@ -525,8 +525,8 @@ with tab4:
                 diff_html = utils.generate_diff_html(t1, t2)
                 st.markdown(f"**Kırmızı:** {sel_date1}'den silinenler | **Yeşil:** {sel_date2}'ye eklenenler")
                 with st.container(border=True, height=400): st.markdown(diff_html, unsafe_allow_html=True)
-    else:
-        st.info("Yeterli veri yok.")
+        else:
+            st.info("Yeterli veri yok.")
 
 
 

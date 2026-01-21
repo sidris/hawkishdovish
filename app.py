@@ -422,31 +422,79 @@ with tab3:
         else: st.error(f"Hata: {err}")
 
 with tab4:
-    st.subheader("📊 İzlenen Ekonomi Terimleri (Custom)")
+with tab4:
+    st.header("🔍 Frekans (İzlenen Terimler)")
 
-    # --- WATCH TERMS (Frekans sekmesi için) ---
-    DEFAULT_WATCH_TERMS = [
-        "inflation", "disinflation", "stability", "growth", "gdp",
-        "interest rate", "policy rate", "lowered",
-        "macroprudential", "target", "monetary policy", "tightened",
-        "risks", "exchange rate", "prudently",
-        "global", "recession", "food"
-    ]
-    
-    if "watch_terms" not in st.session_state:
-        st.session_state["watch_terms"] = DEFAULT_WATCH_TERMS.copy()
-    
-    def add_watch_term():
-        raw = st.session_state.get("watch_term_in", "")
-        term = str(raw).strip().lower()
-        st.session_state["watch_term_in"] = ""
-        if not term:
-            return
-        if term not in st.session_state["watch_terms"]:
-            st.session_state["watch_terms"].append(term)
-    
-    def reset_watch_terms():
-        st.session_state["watch_terms"] = DEFAULT_WATCH_TERMS.copy()
+    df_all = utils.fetch_all_data()
+    if df_all is None or df_all.empty:
+        st.info("Yeterli veri yok.")
+    else:
+        st.caption("Bu grafik sadece izlediğin kelimeleri gösterir. Yeni kelime ekleyebilirsin; varsa seriye dahil olur.")
+
+        # --- Kontroller ---
+        cA, cB = st.columns([3, 1])
+        with cA:
+            st.text_input(
+                "➕ Kelime/phrase ekle (Enter)",
+                key="watch_term_in",
+                on_change=add_watch_term,
+                placeholder="ör: liquidity, demand, wage, credit growth ..."
+            )
+        with cB:
+            if st.button("↩️ Reset", type="secondary"):
+                reset_watch_terms()
+                st.rerun()
+
+        # --- Aktif liste (silme) ---
+        if st.session_state["watch_terms"]:
+            st.write("Aktif izlenen terimler:")
+            cols = st.columns(6)
+            for i, w in enumerate(st.session_state["watch_terms"]):
+                if cols[i % 6].button(f"{w} ✖", key=f"del_watch_{w}"):
+                    st.session_state["watch_terms"].remove(w)
+                    st.rerun()
+        else:
+            st.warning("İzlenen terim listesi boş. Yukarıdan ekleyebilirsin.")
+            st.stop()
+
+        st.divider()
+
+        # --- Zaman serisi ---
+        freq_df = utils.build_watch_terms_timeseries(df_all, st.session_state["watch_terms"])
+
+        if freq_df is None or freq_df.empty:
+            st.info("Zaman serisi üretilemedi.")
+        else:
+            # tamamen sıfır olanları otomatik gizle (grafik temiz kalsın)
+            usable_terms = []
+            for t in st.session_state["watch_terms"]:
+                if t in freq_df.columns and freq_df[t].sum() > 0:
+                    usable_terms.append(t)
+
+            if not usable_terms:
+                st.info("Bu terimler metinlerde hiç geçmiyor (toplam=0). Yeni terim ekle.")
+            else:
+                fig_freq = go.Figure()
+                for term in usable_terms:
+                    fig_freq.add_trace(go.Scatter(
+                        x=freq_df["period_date"],
+                        y=freq_df[term],
+                        name=term,
+                        mode="lines+markers"
+                    ))
+
+                fig_freq.update_layout(
+                    title="İzlenen Terimler — Kullanım Sıklığı Trendi",
+                    hovermode="x unified",
+                    height=420,
+                    legend=dict(orientation="h", yanchor="top", y=-0.25, xanchor="center", x=0.5)
+                )
+                st.plotly_chart(fig_freq, use_container_width=True)
+
+                with st.expander("📋 Ham tablo (counts)", expanded=False):
+                    show_cols = ["Donem"] + usable_terms
+                    st.dataframe(freq_df[show_cols], use_container_width=True, hide_index=True)
+
 
 
 

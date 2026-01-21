@@ -425,6 +425,35 @@ with tab3:
 with tab4:
     st.header("🔍 Frekans (İzlenen Terimler)")
 
+
+    # --- WATCH TERMS (Frekans sekmesi) ---
+    DEFAULT_WATCH_TERMS = [
+        "inflation", "disinflation", "stability", "growth", "gdp",
+        "interest rate", "policy rate", "lowered", "macroprudential",
+        "target", "monetary policy", "tightened", "risks", "exchange rate",
+        "prudently", "global", "recession", "food"
+    ]
+    
+    if "watch_terms" not in st.session_state:
+        st.session_state["watch_terms"] = DEFAULT_WATCH_TERMS.copy()
+    
+    def add_watch_term():
+        term = st.session_state.get("watch_term_in", "").strip()
+        if term:
+            # küçük normalizasyon
+            term_norm = " ".join(term.lower().split())
+            if term_norm not in st.session_state["watch_terms"]:
+                st.session_state["watch_terms"].append(term_norm)
+        st.session_state["watch_term_in"] = ""
+    
+    def reset_watch_terms():
+        st.session_state["watch_terms"] = DEFAULT_WATCH_TERMS.copy()
+        st.session_state["watch_term_in"] = ""
+
+
+
+
+    
     df_all = utils.fetch_all_data()
 
     if df_all is None or df_all.empty:

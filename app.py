@@ -406,6 +406,94 @@ with tab2:
                     st.session_state['form_data'] = {'id': int(orig['id']), 'date': pd.to_datetime(orig['period_date']).date(), 'source': orig['source'], 'text': orig['text_content']}
                     st.rerun()
 
+with tab_imp:
+    st.header("📅 Haberler (Event Logs)")
+    st.caption("Seçtiğin tarihe haber linkleri ekle. Dashboard grafiğinde mor çizgiler olarak görünür.")
+
+    try:
+        # --- 1) Yeni event ekleme ---
+        c1, c2 = st.columns([1, 3])
+        with c1:
+            ev_date = st.date_input("Tarih", value=datetime.date.today(), key="ev_date_in")
+        with c2:
+            ev_links = st.text_area(
+                "Haber linkleri (her satıra 1 link)",
+                height=140,
+                placeholder="https://...\nhttps://...\n...",
+                key="ev_links_in"
+            )
+
+        col_add, col_refresh = st.columns([1, 1])
+        with col_add:
+            if st.button("➕ Kaydet", type="primary", key="btn_add_event"):
+                links_clean = "\n".join([l.strip() for l in (ev_links or "").splitlines() if l.strip()])
+                if not links_clean:
+                    st.warning("En az 1 link gir.")
+                else:
+                    utils.add_event(ev_date, links_clean)
+                    st.success("Eklendi!")
+                    st.rerun()
+
+        with col_refresh:
+            if st.button("🔄 Yenile", key="btn_refresh_events"):
+                st.rerun()
+
+        st.divider()
+
+        # --- 2) Event listesi ---
+        df_events = utils.fetch_events()
+
+        if df_events is None or df_events.empty:
+            st.info("Henüz kayıtlı haber yok.")
+        else:
+            df_events = df_events.copy()
+
+            # kolon güvenliği
+            if "event_date" in df_events.columns:
+                df_events["event_date"] = pd.to_datetime(df_events["event_date"], errors="coerce")
+                df_events = df_events.dropna(subset=["event_date"]).sort_values("event_date", ascending=False)
+
+            st.subheader("📌 Kayıtlı Haberler")
+
+            # Görsel liste (kart gibi)
+            for _, row in df_events.iterrows():
+                rid = row.get("id", None)
+                d = row.get("event_date", None)
+                d_str = pd.to_datetime(d).strftime("%Y-%m-%d") if pd.notna(d) else "—"
+
+                links_raw = row.get("links", "") or ""
+                links_list = [l.strip() for l in links_raw.splitlines() if l.strip()]
+
+                with st.container(border=True):
+                    top1, top2 = st.columns([5, 1])
+                    with top1:
+                        st.markdown(f"### {d_str}")
+                        if links_list:
+                            for l in links_list:
+                                st.markdown(f"- {l}")
+                        else:
+                            st.caption("Link yok")
+
+                    with top2:
+                        if rid is not None:
+                            if st.button("🗑️ Sil", key=f"del_event_{rid}"):
+                                utils.delete_event(int(rid))
+                                st.success("Silindi!")
+                                st.rerun()
+
+            # Ham tablo da isteyen için
+            with st.expander("📋 Ham Tablo", expanded=False):
+                st.dataframe(df_events, use_container_width=True, hide_index=True)
+
+    except Exception as e:
+        st.error("Haberler sekmesi hata aldı.")
+        st.exception(e)
+
+
+
+
+
+
 with tab3:
     st.header("Piyasa Verileri")
     d1 = st.date_input("Başlangıç", datetime.date(2023, 1, 1))

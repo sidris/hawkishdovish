@@ -672,8 +672,6 @@ with tab4:
 with tab_textdata:
     st.header("📚 Text as Data (TF-IDF) — HYBRID + CPI PPK Kararı (delta_bp) Tahmini")
 
-
-
     if not utils.HAS_ML_DEPS:
         st.error("ML kütüphaneleri eksik (sklearn).")
         st.stop()
@@ -699,7 +697,7 @@ with tab_textdata:
     if err:
         st.warning(f"Market veri uyarısı: {err}")
 
-    # HYBRID + CPI prepare
+    # HYBRID + CPI prepare (SADECE utils içinden)
     df_td = utils.textasdata_prepare_df_hybrid_cpi(
         df_logs,
         df_market,
@@ -709,7 +707,7 @@ with tab_textdata:
         rate_col="policy_rate"
     )
 
-    if df_td.empty or df_td["delta_bp"].notna().sum() < 10:
+    if df_td is None or df_td.empty or df_td["delta_bp"].notna().sum() < 10:
         st.warning("HYBRID+CPI eğitim için yeterli gözlem yok. (En az ~10 kayıt önerilir)")
         st.stop()
 
@@ -730,7 +728,7 @@ with tab_textdata:
     if "textasdata_model" not in st.session_state:
         st.session_state["textasdata_model"] = None
 
-    if st.button("🚀 Modeli Eğit / Yenile (HYBRID + CPI)", type="primary"):
+    if st.button("🚀 Modeli Eğit / Yenile (HYBRID + CPI)", type="primary", key="btn_td_train"):
         with st.spinner("Eğitiliyor + walk-forward backtest..."):
             out = utils.train_textasdata_hybrid_cpi_ridge(
                 df_td,
@@ -742,7 +740,7 @@ with tab_textdata:
                 max_features_word=12000,
                 max_features_char=20000
             )
-            st.session_state["textasdata_model"] = out
+        st.session_state["textasdata_model"] = out
         st.success("Hazır!")
 
     model_pack = st.session_state.get("textasdata_model")
@@ -786,17 +784,21 @@ with tab_textdata:
     coef_df = model_pack.get("coef_df")
     if coef_df is not None and not coef_df.empty:
         st.subheader("🧠 Which words push hike/cut? (word TF-IDF coefficients)")
-        k = st.slider("Show top K", 10, 60, 25, step=5)
+        k = st.slider("Show top K", 10, 60, 25, step=5, key="td_topk")
 
         cpos, cneg = st.columns(2)
         with cpos:
             st.markdown("### 🔺 Hike-leaning (positive)")
-            st.dataframe(coef_df.sort_values("coef", ascending=False).head(int(k)),
-                         use_container_width=True, hide_index=True)
+            st.dataframe(
+                coef_df.sort_values("coef", ascending=False).head(int(k)),
+                use_container_width=True, hide_index=True
+            )
         with cneg:
             st.markdown("### 🔻 Cut-leaning (negative)")
-            st.dataframe(coef_df.sort_values("coef", ascending=True).head(int(k)),
-                         use_container_width=True, hide_index=True)
+            st.dataframe(
+                coef_df.sort_values("coef", ascending=True).head(int(k)),
+                use_container_width=True, hide_index=True
+            )
 
     # -------------------------
     # 4) Tek Metin Tahmini
@@ -807,339 +809,156 @@ with tab_textdata:
     last_rate = float(df_td["policy_rate"].dropna().iloc[-1]) if df_td["policy_rate"].notna().any() else np.nan
     st.caption(f"Last known policy_rate: {last_rate if np.isfinite(last_rate) else '—'}")
 
-    txt = st.text_area("Paste the statement text", height=220, placeholder="Paste PPK statement...")
+    txt = st.text_area("Paste the statement text", height=220, placeholder="Paste PPK statement...", key="td_input")
 
-    if st.button("🧾 Predict (HYBRID + CPI)", type="secondary"):
+    if st.button("🧾 Predict (HYBRID + CPI)", type="secondary", key="btn_td_pred"):
         if not txt or len(txt.strip()) < 30:
             st.warning("Text too short.")
         else:
             pred = utils.predict_textasdata_hybrid_cpi(model_pack, df_td, txt)
-            pred_bp = float(pred.get("pred_delta_bp", 0.0))
+            pred_bp = float((pred or {}).get("pred_delta_bp", 0.0))
             implied = (last_rate + pred_bp / 100.0) if np.isfinite(last_rate) else np.nan
 
             c1, c2 = st.columns(2)
             c1.metric("Predicted delta_bp", f"{pred_bp:.0f} bps")
             c2.metric("Implied policy_rate", f"{implied:.2f}" if np.isfinite(implied) else "—")
 
-def textasdata_prepare_df_hybrid_cpi(
-    df_logs: pd.DataFrame,
-    df_market: pd.DataFrame,
-    text_col: str = "text_content",
-    date_col: str = "period_date",
-    y_col: str = "delta_bp",
-    rate_col: str = "policy_rate",
-) -> pd.DataFrame:
-    """
-    Amaç: delta_bp (bps) tahmini için text+numeric+TÜFE özellikli dataset hazırlamak.
 
-    Çıktı kolonları:
-      - period_date (datetime)
-      - text (clean)
-      - delta_bp (float)  [target]
-      - policy_rate (float)
-      - cpi_yoy, cpi_mom (float)  [market'ten]
-      - cpi_yoy_l1, cpi_mom_l1 (lag)
-      - prev_delta_bp (lag)
-      - prev_policy_rate (lag)
-    """
-    if df_logs is None or df_logs.empty:
-        return pd.DataFrame()
-
-    df = df_logs.copy()
-    df[date_col] = pd.to_datetime(df[date_col], errors="coerce")
-    df = df.dropna(subset=[date_col]).sort_values(date_col)
-
-    # Sayısal kolonlar
-    if y_col in df.columns:
-        df[y_col] = pd.to_numeric(df[y_col], errors="coerce")
-    else:
-        df[y_col] = np.nan
-
-    if rate_col in df.columns:
-        df[rate_col] = pd.to_numeric(df[rate_col], errors="coerce")
-    else:
-        df[rate_col] = np.nan
-
-    # Donem anahtarı
-    df["Donem"] = df[date_col].dt.strftime("%Y-%m")
-
-    # Market merge (TÜFE)
-    if df_market is not None and not df_market.empty and "Donem" in df_market.columns:
-        mk = df_market.copy()
-        # beklenen kolonlar: "Yıllık TÜFE", "Aylık TÜFE" (senin adapter bunları döndürüyor)
-        if "Yıllık TÜFE" in mk.columns:
-            mk["Yıllık TÜFE"] = pd.to_numeric(mk["Yıllık TÜFE"], errors="coerce")
-        if "Aylık TÜFE" in mk.columns:
-            mk["Aylık TÜFE"] = pd.to_numeric(mk["Aylık TÜFE"], errors="coerce")
-
-        df = pd.merge(df, mk[["Donem"] + [c for c in ["Yıllık TÜFE", "Aylık TÜFE"] if c in mk.columns]],
-                      on="Donem", how="left")
-
-    # Text clean
-    df["text"] = df[text_col].fillna("").astype(str).apply(normalize_tr_text)
-
-    # CPI feature names
-    df["cpi_yoy"] = pd.to_numeric(df.get("Yıllık TÜFE", np.nan), errors="coerce")
-    df["cpi_mom"] = pd.to_numeric(df.get("Aylık TÜFE", np.nan), errors="coerce")
-
-    # Lagged CPI
-    df["cpi_yoy_l1"] = df["cpi_yoy"].shift(1)
-    df["cpi_mom_l1"] = df["cpi_mom"].shift(1)
-
-    # Lagged policy vars
-    df["prev_delta_bp"] = pd.to_numeric(df[y_col].shift(1), errors="coerce")
-    df["prev_policy_rate"] = pd.to_numeric(df[rate_col].shift(1), errors="coerce")
-
-    # Son temizlik
-    out = df[[date_col, "text", y_col, rate_col, "cpi_yoy", "cpi_mom", "cpi_yoy_l1", "cpi_mom_l1", "prev_delta_bp", "prev_policy_rate"]].copy()
-    out = out.rename(columns={date_col: "period_date"})
-    return out
-
-
-def train_textasdata_hybrid_cpi_ridge(
-    df_td: pd.DataFrame,
-    min_df: int = 2,
-    alpha: float = 10.0,
-    n_splits: int = 6,
-    word_ngram=(1, 2),
-    char_ngram=(3, 5),
-    max_features_word: int = 12000,
-    max_features_char: int = 20000,
-):
-    """
-    HYBRID model:
-      - word TF-IDF
-      - char TF-IDF
-      - numeric features (policy_rate, prev_*, cpi*)
-    Target: delta_bp
-
-    Walk-forward backtest: TimeSeriesSplit
-    Returns: dict(model, metrics, pred_df, coef_df)
-    """
-    if not HAS_ML_DEPS:
-        return {}
-
-    # --- Input guard ---
-    if df_td is None or df_td.empty:
-        return {}
-
-    df = df_td.copy().sort_values("period_date").reset_index(drop=True)
-    df["delta_bp"] = pd.to_numeric(df["delta_bp"], errors="coerce")
-
-    # target boş olanları at
-    df = df.dropna(subset=["delta_bp", "text"])
-    if len(df) < max(10, n_splits + 3):
-        return {}
-
-    # numeric features
-    num_cols = ["policy_rate", "prev_delta_bp", "prev_policy_rate", "cpi_yoy", "cpi_mom", "cpi_yoy_l1", "cpi_mom_l1"]
-    for c in num_cols:
-        if c not in df.columns:
-            df[c] = np.nan
-        df[c] = pd.to_numeric(df[c], errors="coerce").fillna(method="ffill").fillna(0.0)
-
-    from sklearn.model_selection import TimeSeriesSplit
-    from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
-    from sklearn.pipeline import Pipeline
-    from sklearn.compose import ColumnTransformer
-    from sklearn.feature_extraction.text import TfidfVectorizer
-    from sklearn.preprocessing import StandardScaler
-    from sklearn.linear_model import Ridge
-
-    # preprocess
-    word_vec = TfidfVectorizer(
-        analyzer="word",
-        ngram_range=word_ngram,
-        min_df=int(min_df),
-        max_features=int(max_features_word),
-        sublinear_tf=True
-    )
-    char_vec = TfidfVectorizer(
-        analyzer="char",
-        ngram_range=char_ngram,
-        min_df=int(min_df),
-        max_features=int(max_features_char),
-        sublinear_tf=True
-    )
-
-    pre = ColumnTransformer(
-        transformers=[
-            ("w", word_vec, "text"),
-            ("c", char_vec, "text"),
-            ("n", Pipeline([("sc", StandardScaler(with_mean=False))]), num_cols),
-        ],
-        remainder="drop",
-        sparse_threshold=0.3
-    )
-
-    model = Pipeline([
-        ("prep", pre),
-        ("reg", Ridge(alpha=float(alpha), random_state=42))
-    ])
-
-    X = df[["text"] + num_cols]
-    y = df["delta_bp"].values.astype(float)
-
-    # --- Walk-forward ---
-    tscv = TimeSeriesSplit(n_splits=min(int(n_splits), max(2, len(df) // 4)))
-    pred = np.full(len(df), np.nan)
-
-    for tr, te in tscv.split(X):
-        model.fit(X.iloc[tr], y[tr])
-        pred[te] = model.predict(X.iloc[te])
-
-    mask = np.isfinite(pred)
-    mae = float(mean_absolute_error(y[mask], pred[mask])) if mask.any() else np.nan
-    rmse = float(np.sqrt(mean_squared_error(y[mask], pred[mask]))) if mask.any() else np.nan
-    r2 = float(r2_score(y[mask], pred[mask])) if mask.any() else np.nan
-
-    pred_df = df[["period_date", "delta_bp"]].copy()
-    pred_df["pred_delta_bp"] = pred
-
-    # --- Fit final on all data ---
-    model.fit(X, y)
-
-    # --- Coef extraction (word tfidf only) ---
-    coef_df = pd.DataFrame()
-    try:
-        # pipeline -> prep -> 'w' vectorizer feature names
-        reg = model.named_steps["reg"]
-        prep = model.named_steps["prep"]
-        w_vec = prep.named_transformers_["w"]
-        w_names = np.array(w_vec.get_feature_names_out(), dtype=object)
-
-        # coef vector = [word_feats, char_feats, numeric_feats] birleşik.
-        # word boyutu:
-        n_w = len(w_names)
-        coefs = np.asarray(reg.coef_).ravel()
-        w_coef = coefs[:n_w]
-
-        coef_df = pd.DataFrame({"term": w_names, "coef": w_coef})
-        coef_df = coef_df.replace([np.inf, -np.inf], np.nan).dropna()
-    except Exception:
-        coef_df = pd.DataFrame()
-
-    return {
-        "model": model,
-        "metrics": {"mae": mae, "rmse": rmse, "r2": r2, "n": int(len(df))},
-        "pred_df": pred_df,
-        "coef_df": coef_df
-    }
-
-
-def predict_textasdata_hybrid_cpi(model_pack: dict, df_td: pd.DataFrame, text: str) -> dict:
-    """
-    Tek metin için delta_bp tahmin eder.
-    Numeric side: df_td'nin son satırındaki (policy_rate, cpi lag vs.) değerleri kullanır.
-    """
-    if not model_pack or "model" not in model_pack:
-        return {"pred_delta_bp": 0.0}
-
-    model = model_pack["model"]
-    if df_td is None or df_td.empty:
-        last = {}
-    else:
-        last = df_td.sort_values("period_date").iloc[-1].to_dict()
-
-    num_cols = ["policy_rate", "prev_delta_bp", "prev_policy_rate", "cpi_yoy", "cpi_mom", "cpi_yoy_l1", "cpi_mom_l1"]
-    row = {"text": normalize_tr_text(text)}
-    for c in num_cols:
-        v = last.get(c, 0.0)
-        try:
-            row[c] = float(v) if np.isfinite(float(v)) else 0.0
-        except Exception:
-            row[c] = 0.0
-
-    X_one = pd.DataFrame([row])
-    pred = float(model.predict(X_one)[0])
-    return {"pred_delta_bp": pred}
-
-
-
+# ==============================================================================
+# TAB6: WordCloud
+# ==============================================================================
 with tab6:
     st.header("☁️ Kelime Bulutu (WordCloud)")
-    if not df_all.empty:
-        st.text_input("🚫 Buluttan Çıkarılacak Kelimeler (Enter)", key="cloud_stop_in", on_change=add_cloud_stop)
-        if st.session_state['stop_words_cloud']:
-            st.write("Filtreler:")
-            cols = st.columns(8)
-            for i, word in enumerate(st.session_state['stop_words_cloud']):
-                if cols[i % 8].button(f"{word} ✖", key=f"del_cloud_{word}"):
-                    st.session_state['stop_words_cloud'].remove(word)
-                    st.rerun()
-        st.divider()
-        dates = df_all['Donem'].tolist()
-        sel_cloud_date = st.selectbox("Dönem Seçin:", ["Tüm Zamanlar"] + dates)
-        if st.button("Bulutu Oluştur", type="primary"):
-            if sel_cloud_date == "Tüm Zamanlar": text_cloud = " ".join(df_all['text_content'].astype(str).tolist())
-            else: text_cloud = df_all[df_all['Donem'] == sel_cloud_date].iloc[0]['text_content']
-            fig_wc = utils.generate_wordcloud_img(text_cloud, st.session_state['stop_words_cloud'])
-            if fig_wc: st.pyplot(fig_wc)
-            else: st.error("Kütüphane eksik veya metin boş.")
-    else: st.info("Veri yok.")
 
+    df_all = utils.fetch_all_data()
+    if df_all is None or df_all.empty:
+        st.info("Veri yok.")
+        st.stop()
+
+    df_all = df_all.copy()
+    df_all["period_date"] = pd.to_datetime(df_all["period_date"], errors="coerce")
+    df_all = df_all.dropna(subset=["period_date"]).sort_values("period_date", ascending=False)
+    df_all["Donem"] = df_all["period_date"].dt.strftime("%Y-%m")
+
+    st.text_input("🚫 Buluttan Çıkarılacak Kelimeler (Enter)", key="cloud_stop_in", on_change=add_cloud_stop)
+
+    if st.session_state.get("stop_words_cloud"):
+        st.write("Filtreler:")
+        cols = st.columns(8)
+        for i, word in enumerate(st.session_state["stop_words_cloud"]):
+            if cols[i % 8].button(f"{word} ✖", key=f"del_cloud_{word}"):
+                st.session_state["stop_words_cloud"].remove(word)
+                st.rerun()
+
+    st.divider()
+
+    dates = df_all["Donem"].tolist()
+    sel_cloud_date = st.selectbox("Dönem Seçin:", ["Tüm Zamanlar"] + dates, key="cloud_sel")
+
+    if st.button("Bulutu Oluştur", type="primary", key="btn_cloud"):
+        if sel_cloud_date == "Tüm Zamanlar":
+            text_cloud = " ".join(df_all["text_content"].astype(str).tolist())
+        else:
+            text_cloud = df_all[df_all["Donem"] == sel_cloud_date].iloc[0]["text_content"]
+
+        fig_wc = utils.generate_wordcloud_img(text_cloud, st.session_state.get("stop_words_cloud", []))
+        if fig_wc:
+            st.pyplot(fig_wc)
+        else:
+            st.error("Kütüphane eksik veya metin boş.")
+
+
+# ==============================================================================
+# TAB7: ABF (2019)
+# ==============================================================================
 with tab7:
     st.header("📜 Apel, Blix ve Grimaldi (2019) Analizi")
-    st.info("Bu yöntem, kelimeleri 'enflasyon', 'büyüme', 'istihdam' gibi kategorilere ayırarak, yanlarındaki sıfatlara göre 'Şahin' veya 'Güvercin' olarak puanlar.")
-    df_abg_source = utils.fetch_all_data()
-    if not df_abg_source.empty:
-        df_abg_source = df_abg_source.copy()
-        df_abg_source['period_date'] = pd.to_datetime(df_abg_source['period_date'])
-        df_abg_source['Donem'] = df_abg_source['period_date'].dt.strftime('%Y-%m')
-        abg_df = utils.calculate_abg_scores(df_abg_source)
-        fig_abg = go.Figure()
-        fig_abg.add_trace(go.Scatter(x=abg_df['period_date'], y=abg_df['abg_index'], name="ABF Net Hawkishness", line=dict(color='purple', width=3), marker=dict(size=8)))
-        fig_abg.add_shape(type="line", x0=abg_df['period_date'].min(), x1=abg_df['period_date'].max(), y0=1, y1=1, line=dict(color="gray", dash="dash"))
-        fig_abg.update_layout(title="ABF (2019) Endeksi Zaman Serisi (Nötr=1.0)", yaxis_title="Hawkishness Index (0 - 2)", hovermode="x unified")
-        st.plotly_chart(fig_abg, use_container_width=True)
-        st.divider()
-        st.subheader("🔍 Dönem Bazlı Detaylar")
-        sel_abg_period = st.selectbox("İncelenecek Dönem:", abg_df['Donem'].tolist())
-        if sel_abg_period:
-            subset = df_abg_source[df_abg_source['Donem'] == sel_abg_period]
-            if not subset.empty:
-                text_abg = subset.iloc[0]['text_content']
-                
-                # Analiz fonksiyonunu çağır
-                res = utils.analyze_hawk_dove(
-                    text_abg, 
-                    DICT=utils.DICT, 
-                    window_words=10, 
-                    dedupe_within_term_window=True, 
-                    nearest_only=True
-                )
-                
-                net_h = res.get('net_hawkishness', 0)
-                h_cnt = res.get('hawk_count', 0)
-                d_cnt = res.get('dove_count', 0)
-                details = res.get('match_details', [])
-                
-                c1, c2, c3 = st.columns(3)
-                c1.metric("Net Endeks", f"{net_h:.4f}")
-                c2.metric("🦅 Şahin Eşleşme", h_cnt)
-                c3.metric("🕊️ Güvercin Eşleşme", d_cnt)
-                
-                if "topic_counts" in res:
-                      with st.expander("Detaylı Kırılım (Topic Counts)"):
-                          st.json(res["topic_counts"])
+    st.info("Bu yöntem, kelimeleri kategorilere ayırır ve sıfat bağlamına göre 'Şahin/Güvercin' puanlar.")
 
-                with st.expander("📝 Detaylı Eşleşme Tablosu (Cümle Bağlamı)", expanded=True):
-                    if details:
-                        detail_data = []
-                        for m in details:
-                            detail_data.append({"Tip": "🦅 ŞAHİN" if m['type'] == "HAWK" else "🕊️ GÜVERCİN", "Eşleşen Terim": m['term'], "Cümle": m['sentence']})
-                        st.dataframe(pd.DataFrame(detail_data), use_container_width=True, hide_index=True)
-                    else: 
-                        st.info("Bu metinde herhangi bir ABF sözlük eşleşmesi bulunamadı.")
-                
-                with st.expander("Metin Önizleme"): st.write(text_abg)
-            else: st.error("Seçilen dönem için metin bulunamadı.")
-    else: st.info("Analiz için veri yok.")
+    df_abg_source = utils.fetch_all_data()
+    if df_abg_source is None or df_abg_source.empty:
+        st.info("Analiz için veri yok.")
+        st.stop()
+
+    df_abg_source = df_abg_source.copy()
+    df_abg_source["period_date"] = pd.to_datetime(df_abg_source["period_date"], errors="coerce")
+    df_abg_source = df_abg_source.dropna(subset=["period_date"]).sort_values("period_date")
+    df_abg_source["Donem"] = df_abg_source["period_date"].dt.strftime("%Y-%m")
+
+    abg_df = utils.calculate_abg_scores(df_abg_source)
+
+    fig_abg = go.Figure()
+    fig_abg.add_trace(go.Scatter(
+        x=abg_df["period_date"], y=abg_df["abg_index"],
+        name="ABF Net Hawkishness", line=dict(color="purple", width=3),
+        marker=dict(size=8)
+    ))
+    fig_abg.add_shape(
+        type="line",
+        x0=abg_df["period_date"].min(), x1=abg_df["period_date"].max(),
+        y0=1, y1=1,
+        line=dict(color="gray", dash="dash")
+    )
+    fig_abg.update_layout(
+        title="ABF (2019) Endeksi Zaman Serisi (Nötr=1.0)",
+        yaxis_title="Hawkishness Index (0 - 2)",
+        hovermode="x unified"
+    )
+    st.plotly_chart(fig_abg, use_container_width=True)
+
+    st.divider()
+    st.subheader("🔍 Dönem Bazlı Detaylar")
+
+    sel_abg_period = st.selectbox("İncelenecek Dönem:", abg_df["Donem"].tolist(), key="abg_sel")
+    subset = df_abg_source[df_abg_source["Donem"] == sel_abg_period]
+
+    if subset.empty:
+        st.error("Seçilen dönem için metin bulunamadı.")
+        st.stop()
+
+    text_abg = subset.iloc[0]["text_content"]
+    res = utils.analyze_hawk_dove(
+        text_abg,
+        DICT=utils.DICT,
+        window_words=10,
+        dedupe_within_term_window=True,
+        nearest_only=True
+    )
+
+    net_h = res.get("net_hawkishness", 0)
+    h_cnt = res.get("hawk_count", 0)
+    d_cnt = res.get("dove_count", 0)
+    details = res.get("match_details", [])
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Net Endeks", f"{net_h:.4f}")
+    c2.metric("🦅 Şahin Eşleşme", h_cnt)
+    c3.metric("🕊️ Güvercin Eşleşme", d_cnt)
+
+    if "topic_counts" in res:
+        with st.expander("Detaylı Kırılım (Topic Counts)"):
+            st.json(res["topic_counts"])
+
+    with st.expander("📝 Detaylı Eşleşme Tablosu (Cümle Bağlamı)", expanded=True):
+        if details:
+            detail_data = []
+            for m in details:
+                detail_data.append({
+                    "Tip": "🦅 ŞAHİN" if m["type"] == "HAWK" else "🕊️ GÜVERCİN",
+                    "Eşleşen Terim": m["term"],
+                    "Cümle": m["sentence"]
+                })
+            st.dataframe(pd.DataFrame(detail_data), use_container_width=True, hide_index=True)
+        else:
+            st.info("Bu metinde herhangi bir ABF sözlük eşleşmesi bulunamadı.")
+
+    with st.expander("Metin Önizleme"):
+        st.write(text_abg)
+
 
 # ==============================================================================
 # TAB ROBERTA: CB-RoBERTa
 # ==============================================================================
-
 with tab_roberta:
     st.header("🧠 CentralBankRoBERTa (Yapay Zeka Analizi)")
 
@@ -1152,25 +971,20 @@ with tab_roberta:
     # -------------------------
     st.subheader("📈 Tarihsel Trend (Calib + EMA + Hysteresis)")
 
-    # Trend hesapla / göster
     if st.session_state.get("ai_trend_df") is not None and not st.session_state["ai_trend_df"].empty:
         df_tr = st.session_state["ai_trend_df"]
 
-        fig_trend = None
-        if hasattr(utils, "create_ai_trend_chart"):
-            fig_trend = utils.create_ai_trend_chart(df_tr)
-
+        fig_trend = utils.create_ai_trend_chart(df_tr) if hasattr(utils, "create_ai_trend_chart") else None
         if fig_trend:
             st.plotly_chart(fig_trend, use_container_width=True, key="ai_chart_roberta")
         else:
             st.warning("Grafik oluşturulamadı.")
 
-        cbtn1, cbtn2 = st.columns([1, 3])
+        cbtn1, _ = st.columns([1, 3])
         with cbtn1:
             if st.button("🔄 Tekrar Hesapla", key="btn_ai_recalc"):
                 st.session_state["ai_trend_df"] = None
                 st.rerun()
-
     else:
         st.info("Tarihsel trend için tüm metinler taranır. (Biraz zaman alabilir)")
         if st.button("🚀 Tüm Geçmişi Analiz Et", type="primary", key="btn_ai_run_all"):
@@ -1184,7 +998,6 @@ with tab_roberta:
                 st.session_state["ai_trend_df"] = res_df
                 st.rerun()
 
-    # Açıklama kutusu
     with st.expander("ℹ️ Bu grafik nasıl hesaplanıyor?", expanded=False):
         st.markdown("""
 Bu grafik, modelin verdiği **3 sınıf olasılığından** (Şahin / Güvercin / Nötr) türetilmiş bir **endeks**tir.
@@ -1195,8 +1008,6 @@ Bu grafik, modelin verdiği **3 sınıf olasılığından** (Şahin / Güvercin 
 4) `tanh` ile skor **−100..+100** bandına sıkıştırılır  
 5) **EMA (span=7)** ile yumuşatılır  
 6) Rejim etiketinde hızlı flip olmasın diye **histerezis** uygulanır (±25 eşikleri)
-
-Bu yüzden, model 3 sınıf üretse bile grafikteki çizgi “süreklilik” gösterir: bu bir **türetilmiş duruş endeksi**dir.
         """)
 
     st.divider()
@@ -1235,67 +1046,59 @@ Bu yüzden, model 3 sınıf üretse bile grafikteki çizgi “süreklilik” gö
 
         if not isinstance(roberta_res, dict):
             st.error(f"Model hata döndürdü: {roberta_res}")
-        else:
-            scores = roberta_res.get("scores_map", {}) or {}
-            h = float(scores.get("HAWK", 0.0))
-            d = float(scores.get("DOVE", 0.0))
-            n = float(scores.get("NEUT", 0.0))
-            diff = float(roberta_res.get("diff", h - d))
-            stance = str(roberta_res.get("stance", ""))
+            st.stop()
 
-            # Eğer trend serisinde EMA skor varsa, bu dönemin EMA skorunu da yakalayalım
-            ema_score = None
-            if st.session_state.get("ai_trend_df") is not None and not st.session_state["ai_trend_df"].empty:
-                tmp = st.session_state["ai_trend_df"]
-                hit = tmp[tmp["Dönem"] == sel_rob_period]
-                if not hit.empty and "AI Score (EMA)" in hit.columns:
-                    ema_score = float(hit.iloc[0]["AI Score (EMA)"])
+        scores = roberta_res.get("scores_map", {}) or {}
+        h = float(scores.get("HAWK", 0.0))
+        d = float(scores.get("DOVE", 0.0))
+        n = float(scores.get("NEUT", 0.0))
+        diff = float(roberta_res.get("diff", h - d))
+        stance = str(roberta_res.get("stance", ""))
+
+        ema_score = None
+        if st.session_state.get("ai_trend_df") is not None and not st.session_state["ai_trend_df"].empty:
+            tmp = st.session_state["ai_trend_df"]
+            hit = tmp[tmp["Dönem"] == sel_rob_period]
+            if not hit.empty and "AI Score (EMA)" in hit.columns:
+                ema_score = float(hit.iloc[0]["AI Score (EMA)"])
+
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Duruş", stance)
+        c2.metric("Diff (H-D)", f"{diff:.3f}")
+        c3.metric("AI Score (EMA)", f"{ema_score:.1f}" if ema_score is not None else "—")
+
+        st.write("Sınıf Skorları:")
+        st.json({"HAWK": h, "DOVE": d, "NEUT": n})
+
+        with st.expander("DEBUG (ham çıktı)", expanded=False):
+            st.json(roberta_res)
+
+        # ✅ Cümle bazlı analiz (DEBUG expander DIŞINDA — kritik fix)
+        st.markdown("---")
+        st.subheader("🧩 Cümle Bazlı Ayrıştırma (RoBERTa)")
+
+        if hasattr(utils, "analyze_sentences_with_roberta"):
+            df_sent = utils.analyze_sentences_with_roberta(txt_input)
+
+            action = utils.detect_policy_action(txt_input) if hasattr(utils, "detect_policy_action") else "UNKNOWN"
+            summary = utils.summarize_sentence_roberta(df_sent) if hasattr(utils, "summarize_sentence_roberta") else {}
+
+            cA, cB, cC, cD = st.columns(4)
+            cA.metric("Policy Action", action)
+            cB.metric("🦅 Şahin cümle", summary.get("hawk_n", 0))
+            cC.metric("🕊️ Güvercin cümle", summary.get("dove_n", 0))
+            cD.metric("⚖️ Nötr cümle", summary.get("neut_n", 0))
 
             c1, c2, c3 = st.columns(3)
-            c1.metric("Duruş", stance)
-            c2.metric("Diff (H-D)", f"{diff:.3f}")
-            if ema_score is not None:
-                c3.metric("AI Score (EMA)", f"{ema_score:.1f}")
+            c1.metric("Diff ortalama", f"{summary.get('diff_mean', np.nan):.3f}" if summary.get("n", 0) else "—")
+            c2.metric("Pozitif toplam (hawk itişi)", f"{summary.get('pos_sum', np.nan):.2f}" if summary.get("n", 0) else "—")
+            c3.metric("Negatif toplam (dove itişi)", f"{summary.get('neg_sum', np.nan):.2f}" if summary.get("n", 0) else "—")
+
+            st.caption("Not: Net duruş, cümle sayısından değil **Diff (H−D) ağırlıklarından** geliyor.")
+
+            if df_sent is None or df_sent.empty:
+                st.info("Metinden ayrıştırılabilir cümle bulunamadı.")
             else:
-                c3.metric("AI Score (EMA)", "—")
-
-            st.write("Sınıf Skorları:")
-            st.json({"HAWK": h, "DOVE": d, "NEUT": n})
-
-            # Debug
-            with st.expander("DEBUG (ham çıktı)", expanded=False):
-                st.json(roberta_res)
-
-                        # Cümle bazlı analiz
-            st.markdown("---")
-            st.subheader("🧩 Cümle Bazlı Ayrıştırma (RoBERTa)")
-
-            if hasattr(utils, "analyze_sentences_with_roberta"):
-                df_sent = utils.analyze_sentences_with_roberta(txt_input)
-            
-                # ✅ Action etiketi (CUT/HIKE/HOLD)
-                action = utils.detect_policy_action(txt_input) if hasattr(utils, "detect_policy_action") else "UNKNOWN"
-            
-                # ✅ Sayım + ağırlıklı özet
-                summary = utils.summarize_sentence_roberta(df_sent) if hasattr(utils, "summarize_sentence_roberta") else {}
-            
-                cA, cB, cC, cD = st.columns(4)
-                cA.metric("Policy Action", action)
-                cB.metric("🦅 Şahin cümle", summary.get("hawk_n", 0))
-                cC.metric("🕊️ Güvercin cümle", summary.get("dove_n", 0))
-                cD.metric("⚖️ Nötr cümle", summary.get("neut_n", 0))
-            
-                c1, c2, c3 = st.columns(3)
-                c1.metric("Diff ortalama", f"{summary.get('diff_mean', np.nan):.3f}" if summary.get("n", 0) else "—")
-                c2.metric("Pozitif toplam (hawk itişi)", f"{summary.get('pos_sum', np.nan):.2f}" if summary.get("n", 0) else "—")
-                c3.metric("Negatif toplam (dove itişi)", f"{summary.get('neg_sum', np.nan):.2f}" if summary.get("n", 0) else "—")
-            
-                st.caption("Not: Net duruş, cümle sayısından değil **Diff (H−D) ağırlıklarından** geliyor. Az sayıda ama çok güçlü ‘rate cut’ cümlesi toplamı negatife çekebilir.")
-            
-                if df_sent is None or df_sent.empty:
-                    st.info("Metinden ayrıştırılabilir cümle bulunamadı.")
-                else:
-                    st.dataframe(df_sent, use_container_width=True)
-            
-            else:
-                st.error("analyze_sentences_with_roberta bulunamadı.")
+                st.dataframe(df_sent, use_container_width=True)
+        else:
+            st.error("analyze_sentences_with_roberta bulunamadı.")

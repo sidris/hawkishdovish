@@ -290,25 +290,28 @@ def get_terms_series(df: pd.DataFrame,
         out_rows.append(rec)
 
     return pd.DataFrame(out_rows)
-def build_watch_terms_timeseries(df: pd.DataFrame, terms: list) -> pd.DataFrame:
-    """
-    df: fetch_all_data() sonrası df (period_date + text_content olmalı)
-    terms: izlenen kelimeler (lower)
-    çıktı: period_date + Donem + her term için count
-    """
-    if df is None or df.empty:
+def build_watch_terms_timeseries(df_all: pd.DataFrame, terms: list) -> pd.DataFrame:
+    if df_all is None or df_all.empty or not terms:
         return pd.DataFrame()
 
-    out = df.copy()
-    out["period_date"] = pd.to_datetime(out["period_date"], errors="coerce")
-    out = out.dropna(subset=["period_date"]).sort_values("period_date")
-
-    out["Donem"] = out["period_date"].dt.strftime("%Y-%m")
-    out["text_lc"] = out["text_content"].fillna("").astype(str).str.lower()
-
-    terms = [str(t).strip().lower() for t in (terms or []) if str(t).strip()]
-    if not terms:
+    df = df_all.copy()
+    if "period_date" not in df.columns:
         return pd.DataFrame()
+
+    df["period_date"] = pd.to_datetime(df["period_date"], errors="coerce")
+    df = df.dropna(subset=["period_date"]).sort_values("period_date")
+    df["Donem"] = df["period_date"].dt.strftime("%Y-%m")
+
+    rows = []
+    for _, r in df.iterrows():
+        txt = str(r.get("text_content", "") or "").lower()
+        rec = {"period_date": r["period_date"], "Donem": r["Donem"]}
+        for t in terms:
+            rec[t] = txt.count(str(t).lower())
+        rows.append(rec)
+
+    return pd.DataFrame(rows).reset_index(drop=True)
+
 
     rows = []
     for _, r in out.iterrows():

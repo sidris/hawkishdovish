@@ -1185,156 +1185,15 @@ class AdvancedMLPredictor:
         )
 
 # =============================================================================
-# 7B. TEXT-AS-DATA (TF-IDF + Ridge) — delta_bp tahmini
+# 7D. TEXT-AS-DATA HYBRID + CPI (ENGLISH TEXT) — delta_bp prediction
+#   X = TFIDF(word+char)(text) + lags(policy/delta) + CPI features (lagged)
+#   FIXES:
+#     - Numeric pipeline: SimpleImputer(median) + StandardScaler(with_mean=False)
+#     - Predict row: NaN/Inf-safe construction
 # =============================================================================
 
-def textasdata_prepare_df(df_logs: pd.DataFrame,
-                          text_col: str = "text_content",
-                          date_col: str = "period_date",
-                          y_col: str = "delta_bp",
-                          rate_col: str = "policy_rate") -> pd.DataFrame:
-    if df_logs is None or df_logs.empty:
-        return pd.DataFrame()
-
-    out = df_logs.copy()
-    if date_col in out.columns:
-        out[date_col] = pd.to_datetime(out[date_col], errors="coerce")
-    out = out.dropna(subset=[date_col])
-
-    if text_col not in out.columns:
-        return pd.DataFrame()
-
-    out["text"] = out[text_col].fillna("").astype(str)
-    out["text"] = out["text"].str.replace(r"\s+", " ", regex=True).str.strip()
-
-    if y_col in out.columns:
-        out[y_col] = pd.to_numeric(out[y_col], errors="coerce")
-    else:
-        out[y_col] = np.nan
-
-    if rate_col in out.columns:
-        out[rate_col] = pd.to_numeric(out[rate_col], errors="coerce")
-    else:
-        out[rate_col] = np.nan
-
-    out = out.rename(columns={
-        date_col: "period_date",
-        y_col: "delta_bp",
-        rate_col: "policy_rate"
-    })
-
-    out = out.sort_values("period_date").reset_index(drop=True)
-    return out[["period_date", "text", "delta_bp", "policy_rate"]]
-
-
-def train_textasdata_ridge(df_td: pd.DataFrame,
-                           min_df: int = 2,
-                           alpha: float = 2.0,
-                           n_splits: int = 6,
-                           ngram_range=(1, 2),
-                           max_features: int = 20000) -> dict:
-    """
-    Walk-forward TimeSeriesSplit ile delta_bp tahmin eden TFIDF+Ridge modeli.
-    Çıktı:
-      - model: trained pipeline
-      - vectorizer, ridge
-      - pred_df: walk-forward tahmin serisi
-      - metrics: mae/rmse/r2/n
-      - coef_df: feature -> coef
-    """
-    if not HAS_ML_DEPS:
-        return {}
-
-    if df_td is None or df_td.empty:
-        return {}
-
-    df = df_td.copy()
-    df = df.dropna(subset=["period_date"]).sort_values("period_date").reset_index(drop=True)
-
-    # hedef yoksa eğitim olmaz
-    df_train = df.dropna(subset=["delta_bp"]).copy()
-    if df_train.empty or df_train["delta_bp"].notna().sum() < 6:
-        return {}
-
-    from sklearn.model_selection import TimeSeriesSplit
-    from sklearn.pipeline import Pipeline
-    from sklearn.feature_extraction.text import TfidfVectorizer
-    from sklearn.linear_model import Ridge
-    from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
-
-    X = df_train["text"].astype(str).values
-    y = df_train["delta_bp"].astype(float).values
-
-    vec = TfidfVectorizer(
-        ngram_range=ngram_range,
-        min_df=max(1, int(min_df)),
-        max_features=int(max_features),
-        sublinear_tf=True
-    )
-    ridge = Ridge(alpha=float(alpha), random_state=42)
-
-    pipe = Pipeline([("tfidf", vec), ("ridge", ridge)])
-
-    # walk-forward preds
-    tscv = TimeSeriesSplit(n_splits=min(int(n_splits), max(2, len(df_train) // 3)))
-    pred = np.full(len(df_train), np.nan, dtype=float)
-
-    min_train = 10  # slider yapabilirsin
-    pred = np.full(len(df_train), np.nan, dtype=float)
-    
-    for i in range(min_train, len(df_train)):
-        X_tr = X.iloc[:i]
-        y_tr = y[:i]
-        X_te = X.iloc[[i]]
-    
-        pipe.fit(X_tr, y_tr)
-        pred[i] = pipe.predict(X_te)[0]
-
-
-    mask = np.isfinite(pred)
-    metrics = {"n": int(mask.sum())}
-    if mask.sum() >= 3:
-        metrics["mae"] = float(mean_absolute_error(y[mask], pred[mask]))
-        metrics["rmse"] = float(np.sqrt(mean_squared_error(y[mask], pred[mask])))
-        metrics["r2"] = float(r2_score(y[mask], pred[mask]))
-    else:
-        metrics["mae"] = np.nan
-        metrics["rmse"] = np.nan
-        metrics["r2"] = np.nan
-
-    pred_df = df_train[["period_date", "delta_bp", "policy_rate"]].copy()
-    pred_df["pred_delta_bp"] = pred
-
-    # final fit (tüm veri)
-    pipe.fit(X, y)
-
-    # katsayılar
-    coef_df = pd.DataFrame()
-    try:
-        feats = pipe.named_steps["tfidf"].get_feature_names_out()
-        coefs = pipe.named_steps["ridge"].coef_.ravel()
-        coef_df = pd.DataFrame({"feature": feats, "coef": coefs})
-        coef_df["abs"] = coef_df["coef"].abs()
-    except Exception:
-        coef_df = pd.DataFrame()
-
-    return {
-        "model": pipe,
-        "vectorizer": vec,
-        "ridge": ridge,
-        "pred_df": pred_df,
-        "metrics": metrics,
-        "coef_df": coef_df
-    }
-
-
-# =============================================================================
-# 7C. TEXT-AS-DATA HYBRID (TF-IDF + Lag Features) — delta_bp tahmini
-#    X = TFIDF(text) + [policy_rate_lag1, delta_bp_lag1, delta_bp_lag3, policy_rate_trend]
-# =============================================================================
-
-def _slope_from_series(s: pd.Series) -> float:
-    s = pd.to_numeric(s, errors="coerce").dropna()
+def _safe_slope(series: pd.Series) -> float:
+    s = pd.to_numeric(series, errors="coerce").dropna()
     if len(s) < 3:
         return 0.0
     x = np.arange(len(s), dtype=float)
@@ -1345,28 +1204,29 @@ def _slope_from_series(s: pd.Series) -> float:
         return 0.0
 
 
-def textasdata_prepare_df_hybrid(
+def textasdata_prepare_df_hybrid_cpi(
     df_logs: pd.DataFrame,
+    df_market: pd.DataFrame,
     text_col: str = "text_content",
     date_col: str = "period_date",
     y_col: str = "delta_bp",
     rate_col: str = "policy_rate",
 ) -> pd.DataFrame:
     """
-    Hibrit model datası hazırlar:
-      - text: temiz metin
-      - delta_bp: hedef
-      - policy_rate: seviyeler
-      - lag feature’lar (shift(1) ile, leakage yok)
+    HYBRID + CPI dataset builder.
+    - English texts -> we'll use stop_words='english' in model.
+    - CPI columns expected in df_market: 'Yıllık TÜFE' (and optionally 'Aylık TÜFE')
+    - IMPORTANT: CPI is lagged (t-1) to avoid leakage.
     """
     if df_logs is None or df_logs.empty:
         return pd.DataFrame()
 
     df = df_logs.copy()
-
-    # date
     df[date_col] = pd.to_datetime(df[date_col], errors="coerce")
     df = df.dropna(subset=[date_col]).sort_values(date_col).reset_index(drop=True)
+
+    # month key
+    df["Donem"] = df[date_col].dt.strftime("%Y-%m")
 
     # text
     df["text"] = (
@@ -1377,19 +1237,65 @@ def textasdata_prepare_df_hybrid(
         .str.strip()
     )
 
-    # numeric
+    # core numeric
     df["policy_rate"] = pd.to_numeric(df.get(rate_col), errors="coerce")
     df["delta_bp"] = pd.to_numeric(df.get(y_col), errors="coerce")
 
-    # lag features (t-1)
+    # --- merge CPI / market ---
+    m = df_market.copy() if isinstance(df_market, pd.DataFrame) else pd.DataFrame()
+
+    if not m.empty:
+        if "Donem" not in m.columns and "SortDate" in m.columns:
+            m["Donem"] = pd.to_datetime(m["SortDate"], errors="coerce").dt.strftime("%Y-%m")
+
+        # normalize numeric
+        if "Yıllık TÜFE" in m.columns:
+            m["cpi_yoy"] = pd.to_numeric(m["Yıllık TÜFE"], errors="coerce")
+        else:
+            m["cpi_yoy"] = np.nan
+
+        if "Aylık TÜFE" in m.columns:
+            m["cpi_mom"] = pd.to_numeric(m["Aylık TÜFE"], errors="coerce")
+        else:
+            # fallback: aylık yoksa yoy farkını momentum gibi kullan
+            m["cpi_mom"] = m["cpi_yoy"].diff()
+
+        m = m[["Donem", "cpi_yoy", "cpi_mom"]].drop_duplicates(subset=["Donem"])
+        df = pd.merge(df, m, on="Donem", how="left")
+    else:
+        df["cpi_yoy"] = np.nan
+        df["cpi_mom"] = np.nan
+
+    # --- CPI features (LAGGED to avoid leakage) ---
+    df = df.sort_values(date_col).reset_index(drop=True)
+    df["cpi_yoy_lag1"] = df["cpi_yoy"].shift(1)
+    df["cpi_mom_lag1"] = df["cpi_mom"].shift(1)
+    df["cpi_trend3_lag1"] = df["cpi_yoy"].rolling(3).apply(lambda x: _safe_slope(pd.Series(x)), raw=False).shift(1)
+
+    # --- rate/delta dynamics (lagged) ---
     df["policy_rate_lag1"] = df["policy_rate"].shift(1)
     df["delta_bp_lag1"] = df["delta_bp"].shift(1)
     df["delta_bp_lag3"] = df["delta_bp"].rolling(3).mean().shift(1)
+    df["policy_rate_trend"] = df["policy_rate"].rolling(3).apply(lambda x: _safe_slope(pd.Series(x)), raw=False).shift(1)
 
-    # policy rate trend (slope of last 3) then shift(1)
-    df["policy_rate_trend"] = (
-        df["policy_rate"].rolling(3).apply(lambda x: _slope_from_series(pd.Series(x)), raw=False).shift(1)
-    )
+    # hold streak (how many consecutive holds before this meeting)
+    streak = []
+    cur = 0
+    prev_changes = df["delta_bp"].shift(1).fillna(0.0).values
+    for v in prev_changes:
+        if float(v) == 0.0:
+            cur += 1
+        else:
+            cur = 0
+        streak.append(cur)
+    df["hold_streak"] = np.array(streak, dtype=int)
+
+    df["prev_sign"] = np.sign(df["delta_bp_lag1"].fillna(0.0)).astype(int)
+    df["mean_abs_last3"] = df["delta_bp"].shift(1).abs().rolling(3).mean()
+
+    # days since prev meeting
+    med = float(df[date_col].diff().dt.days.dropna().median()) if len(df) > 2 else 30.0
+    df["days_since_prev"] = df[date_col].diff().dt.days.fillna(med).clip(lower=0).astype(float)
 
     out = df.rename(columns={date_col: "period_date"})[
         [
@@ -1397,44 +1303,50 @@ def textasdata_prepare_df_hybrid(
             "text",
             "delta_bp",
             "policy_rate",
-            "policy_rate_lag1",
-            "delta_bp_lag1",
-            "delta_bp_lag3",
-            "policy_rate_trend",
+
+            # lags
+            "policy_rate_lag1", "delta_bp_lag1", "delta_bp_lag3", "policy_rate_trend",
+            "hold_streak", "prev_sign", "mean_abs_last3", "days_since_prev",
+
+            # CPI (lagged)
+            "cpi_yoy_lag1", "cpi_mom_lag1", "cpi_trend3_lag1",
         ]
     ].copy()
 
-    # hibrit feature’lar boşsa o satırı at
-    out = out.dropna(
-        subset=["policy_rate_lag1", "delta_bp_lag1", "delta_bp_lag3", "policy_rate_trend"]
-    ).reset_index(drop=True)
-
+    # drop rows where core features are missing (avoid breaking model)
+    need = [
+        "policy_rate_lag1", "delta_bp_lag1", "delta_bp_lag3", "policy_rate_trend",
+        "hold_streak", "prev_sign", "mean_abs_last3", "days_since_prev",
+        "cpi_yoy_lag1", "cpi_mom_lag1", "cpi_trend3_lag1",
+    ]
+    out = out.dropna(subset=need).reset_index(drop=True)
     return out
 
 
-def train_textasdata_hybrid_ridge(
+def train_textasdata_hybrid_cpi_ridge(
     df_td: pd.DataFrame,
     min_df: int = 2,
-    alpha: float = 2.0,
+    alpha: float = 10.0,
     n_splits: int = 6,
-    ngram_range=(1, 2),
-    max_features: int = 20000,
+    word_ngram=(1, 2),
+    char_ngram=(3, 5),
+    max_features_word: int = 12000,
+    max_features_char: int = 20000,
 ) -> dict:
     """
-    TFIDF(text) + lag numeric features ile Ridge.
-    Walk-forward TimeSeriesSplit backtest döndürür.
+    English text:
+      - word TFIDF + char TFIDF
+      - numeric macro/history features
+      - Ridge regression
     """
     if not HAS_ML_DEPS:
         return {}
-
     if df_td is None or df_td.empty:
         return {}
 
-    df = df_td.copy()
-    df = df.dropna(subset=["period_date"]).sort_values("period_date").reset_index(drop=True)
-
+    df = df_td.copy().dropna(subset=["period_date"]).sort_values("period_date").reset_index(drop=True)
     df_train = df.dropna(subset=["delta_bp"]).copy()
-    if df_train.empty or df_train["delta_bp"].notna().sum() < 8:
+    if df_train["delta_bp"].notna().sum() < 10:
         return {}
 
     from sklearn.model_selection import TimeSeriesSplit
@@ -1442,23 +1354,42 @@ def train_textasdata_hybrid_ridge(
     from sklearn.compose import ColumnTransformer
     from sklearn.feature_extraction.text import TfidfVectorizer
     from sklearn.preprocessing import StandardScaler
+    from sklearn.impute import SimpleImputer
     from sklearn.linear_model import Ridge
     from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 
-    num_cols = ["policy_rate_lag1", "delta_bp_lag1", "delta_bp_lag3", "policy_rate_trend"]
+    num_cols = [
+        "policy_rate_lag1", "delta_bp_lag1", "delta_bp_lag3", "policy_rate_trend",
+        "hold_streak", "prev_sign", "mean_abs_last3", "days_since_prev",
+        "cpi_yoy_lag1", "cpi_mom_lag1", "cpi_trend3_lag1"
+    ]
 
     X = df_train[["text"] + num_cols].copy()
     y = df_train["delta_bp"].astype(float).values
 
     preprocess = ColumnTransformer(
         transformers=[
-            ("tfidf", TfidfVectorizer(
-                ngram_range=ngram_range,
+            ("w_tfidf", TfidfVectorizer(
+                stop_words="english",
+                ngram_range=word_ngram,
                 min_df=max(1, int(min_df)),
-                max_features=int(max_features),
+                max_df=0.95,
+                max_features=int(max_features_word),
                 sublinear_tf=True
             ), "text"),
-            ("num", Pipeline([("scaler", StandardScaler())]), num_cols),
+            ("c_tfidf", TfidfVectorizer(
+                analyzer="char_wb",
+                ngram_range=char_ngram,
+                min_df=max(1, int(min_df)),
+                max_df=0.95,
+                max_features=int(max_features_char),
+                sublinear_tf=True
+            ), "text"),
+            # FIX: NaN-safe + sparse-safe scaling
+            ("num", Pipeline([
+                ("imp", SimpleImputer(strategy="median")),
+                ("scaler", StandardScaler(with_mean=False))
+            ]), num_cols),
         ],
         remainder="drop",
         sparse_threshold=0.3
@@ -1469,7 +1400,6 @@ def train_textasdata_hybrid_ridge(
         ("ridge", Ridge(alpha=float(alpha), random_state=42))
     ])
 
-    # walk-forward preds
     tscv = TimeSeriesSplit(n_splits=min(int(n_splits), max(2, len(df_train) // 3)))
     pred = np.full(len(df_train), np.nan, dtype=float)
 
@@ -1489,19 +1419,19 @@ def train_textasdata_hybrid_ridge(
     pred_df = df_train[["period_date", "delta_bp", "policy_rate"]].copy()
     pred_df["pred_delta_bp"] = pred
 
-    # final fit (all)
+    # fit final
     pipe.fit(X, y)
 
-    # katsayılar: TFIDF tarafı (explain)
+    # explain only word TFIDF (most interpretable)
     coef_df = pd.DataFrame()
     try:
-        tfidf = pipe.named_steps["prep"].named_transformers_["tfidf"]
-        feats = tfidf.get_feature_names_out()
+        wvec = pipe.named_steps["prep"].named_transformers_["w_tfidf"]
+        feats = wvec.get_feature_names_out()
         coefs = pipe.named_steps["ridge"].coef_.ravel()
 
-        # ColumnTransformer sırası: tfidf sonra num => ilk len(feats) tfidf coef
-        tfidf_dim = len(feats)
-        coef_df = pd.DataFrame({"feature": feats, "coef": coefs[:tfidf_dim]})
+        # Order: w_tfidf then c_tfidf then num
+        w_dim = len(feats)
+        coef_df = pd.DataFrame({"feature": feats, "coef": coefs[:w_dim]})
         coef_df["abs"] = coef_df["coef"].abs()
     except Exception:
         coef_df = pd.DataFrame()
@@ -1515,90 +1445,65 @@ def train_textasdata_hybrid_ridge(
     }
 
 
-def predict_textasdata_hybrid(model_pack: dict, df_hist: pd.DataFrame, text: str) -> dict:
+# --- helper: NaN/Inf-safe float ---
+def _sf(x, default=0.0) -> float:
+    try:
+        v = float(pd.to_numeric(x, errors="coerce"))
+        return v if np.isfinite(v) else float(default)
+    except Exception:
+        return float(default)
+
+
+def predict_textasdata_hybrid_cpi(model_pack: dict, df_hist: pd.DataFrame, text: str) -> dict:
     """
-    Hibrit tek metin tahmini:
-      - metin + son gözlemden türetilen lag feature’lar
+    For single-text prediction we need the latest known macro/history values from df_hist.
+    df_hist should be the output of textasdata_prepare_df_hybrid_cpi (sorted).
     """
     if not model_pack or "model" not in model_pack:
         return {}
-
     pipe = model_pack["model"]
+
     txt = (text or "").strip()
-    if len(txt) < 20:
+    if len(txt) < 30:
         return {}
 
     if df_hist is None or df_hist.empty:
         return {}
 
     df_hist = df_hist.sort_values("period_date").reset_index(drop=True)
-
     last = df_hist.iloc[-1]
-    last_policy = float(last["policy_rate"]) if pd.notna(last["policy_rate"]) else np.nan
-    last_delta = float(last["delta_bp"]) if pd.notna(last["delta_bp"]) else 0.0
 
-    last3_delta_mean = float(pd.to_numeric(df_hist["delta_bp"], errors="coerce").tail(3).mean())
-    last3_policy = pd.to_numeric(df_hist["policy_rate"], errors="coerce").tail(3)
-    last3_trend = _slope_from_series(last3_policy)
+    # NaN-safe last state
+    last_policy = _sf(last.get("policy_rate", np.nan), default=0.0)
+    last_delta  = _sf(last.get("delta_bp", np.nan), default=0.0)
 
     row = pd.DataFrame([{
         "text": txt,
+
         "policy_rate_lag1": last_policy,
         "delta_bp_lag1": last_delta,
-        "delta_bp_lag3": last3_delta_mean,
-        "policy_rate_trend": last3_trend
+        "delta_bp_lag3": _sf(df_hist["delta_bp"].tail(3).mean(), default=0.0),
+        "policy_rate_trend": _sf(_safe_slope(df_hist["policy_rate"].tail(3)), default=0.0),
+
+        "hold_streak": _sf(last.get("hold_streak", 0.0), default=0.0),
+        "prev_sign": float(np.sign(last_delta)),
+        "mean_abs_last3": _sf(df_hist["delta_bp"].tail(3).abs().mean(), default=0.0),
+        "days_since_prev": _sf(last.get("days_since_prev", 30.0), default=30.0),
+
+        "cpi_yoy_lag1": _sf(last.get("cpi_yoy_lag1", np.nan), default=0.0),
+        "cpi_mom_lag1": _sf(last.get("cpi_mom_lag1", np.nan), default=0.0),
+        "cpi_trend3_lag1": _sf(last.get("cpi_trend3_lag1", np.nan), default=0.0),
     }])
+
+    # final safety sweep
+    row = row.replace([np.inf, -np.inf], np.nan)
+    for c in row.columns:
+        if c != "text":
+            row[c] = pd.to_numeric(row[c], errors="coerce")
+    row = row.fillna(0.0)
 
     pred_bp = float(pipe.predict(row)[0])
     return {"pred_delta_bp": pred_bp}
-
-
-
-def predict_textasdata(model_pack: dict, text: str, top_k: int = 20) -> dict:
-    """
-    Tek metin için delta_bp tahmini + (yaklaşık) kelime katkıları.
-    """
-    if not model_pack or "model" not in model_pack:
-        return {}
-
-    pipe = model_pack["model"]
-    txt = (text or "").strip()
-    if not txt:
-        return {}
-
-    pred_bp = float(pipe.predict([txt])[0])
-
-    # katkı: TFIDF*coef (yaklaşık açıklama)
-    top_contrib_df = pd.DataFrame()
-    try:
-        vec = pipe.named_steps["tfidf"]
-        ridge = pipe.named_steps["ridge"]
-        X = vec.transform([txt])
-        feats = vec.get_feature_names_out()
-        coefs = ridge.coef_.ravel()
-
-        # sparse dot ürün katkıları
-        # X: 1 x V sparse
-        idx = X.nonzero()[1]
-        vals = X.data
-        contrib = vals * coefs[idx]
-
-        tmp = pd.DataFrame({
-            "term": feats[idx],
-            "tfidf": vals,
-            "coef": coefs[idx],
-            "contrib": contrib
-        })
-        tmp["abs_contrib"] = tmp["contrib"].abs()
-        tmp = tmp.sort_values("abs_contrib", ascending=False).head(int(top_k)).reset_index(drop=True)
-        top_contrib_df = tmp
-    except Exception:
-        top_contrib_df = pd.DataFrame()
-
-    return {
-        "pred_delta_bp": pred_bp,
-        "top_contrib_df": top_contrib_df
-    }
 
 
 

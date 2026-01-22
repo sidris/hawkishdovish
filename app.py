@@ -425,155 +425,155 @@ with tab3:
 with tab4:
     st.header("🔍 Frekans (İzlenen Terimler)")
 
-
-    # --- WATCH TERMS (Frekans sekmesi) ---
+    # -----------------------------
+    # 0) Varsayılan izlenecek terimler
+    # -----------------------------
     DEFAULT_WATCH_TERMS = [
         "inflation", "disinflation", "stability", "growth", "gdp",
         "interest rate", "policy rate", "lowered", "macroprudential",
         "target", "monetary policy", "tightened", "risks", "exchange rate",
         "prudently", "global", "recession", "food"
     ]
-    
+
     if "watch_terms" not in st.session_state:
         st.session_state["watch_terms"] = DEFAULT_WATCH_TERMS.copy()
-    
+
+    # -----------------------------
+    # 1) Helper fonksiyonlar (TAB içinde güvenli)
+    # -----------------------------
     def add_watch_term():
-        term = st.session_state.get("watch_term_in", "").strip()
-        if term:
-            # küçük normalizasyon
-            term_norm = " ".join(term.lower().split())
-            if term_norm not in st.session_state["watch_terms"]:
-                st.session_state["watch_terms"].append(term_norm)
-        st.session_state["watch_term_in"] = ""
-    
+        t = (st.session_state.get("watch_term_in", "") or "").strip().lower()
+        if not t:
+            return
+        if t not in st.session_state["watch_terms"]:
+            st.session_state["watch_terms"].append(t)
+        # widget key'ine dokunma (StreamlitAPIException önlemi)
+
     def reset_watch_terms():
-        st.session_state["watch_terms"] = []
+        st.session_state["watch_terms"] = DEFAULT_WATCH_TERMS.copy()
 
+    def _fallback_build_watch_terms_timeseries(df_in: pd.DataFrame, terms: list) -> pd.DataFrame:
+        """utils'te fonksiyon yoksa diye basit fallback: substring count"""
+        rows = []
+        for _, r in df_in.iterrows():
+            txt = str(r.get("text_content", "") or "").lower()
+            rec = {"period_date": r["period_date"], "Donem": r["Donem"]}
+            for term in terms:
+                rec[term] = txt.count(term.lower())
+            rows.append(rec)
+        return pd.DataFrame(rows).sort_values("period_date").reset_index(drop=True)
 
-
-
-
-    
-    df_all = utils.fetch_all_data()
-
+    # -----------------------------
+    # 2) Veri çek / temizle
+    # -----------------------------
     df_all = utils.fetch_all_data()
     if df_all is None or df_all.empty:
         st.info("Yeterli veri yok.")
         st.stop()
-    
+
     df_all = df_all.copy()
-    
-    # period_date güvenli parse
     df_all["period_date"] = pd.to_datetime(df_all.get("period_date", None), errors="coerce")
-    df_all = df_all.dropna(subset=["period_date"])
-    
-    # Donem üret (YYYY-MM)
+    df_all = df_all.dropna(subset=["period_date"]).sort_values("period_date", ascending=False).reset_index(drop=True)
     df_all["Donem"] = df_all["period_date"].dt.strftime("%Y-%m")
-    
-    # sıralama
-    df_all = df_all.sort_values("period_date", ascending=False).reset_index(drop=True)
 
+    # -----------------------------
+    # 3) UI: kelime ekleme / reset / silme
+    # -----------------------------
+    st.caption(
+        "Bu bölüm sadece izlediğin kelimeleri gösterir. "
+        "Yeni kelime eklersen ve metinlerde geçiyorsa otomatik seriye girer."
+    )
 
-    if df_all is None or df_all.empty:
-        st.info("Yeterli veri yok.")
+    c1, c2 = st.columns([3, 1])
+    with c1:
+        st.text_input(
+            "➕ Kelime veya phrase ekle (Enter)",
+            key="watch_term_in",
+            on_change=add_watch_term,
+            placeholder="ör: liquidity, demand, wage, credit growth"
+        )
+    with c2:
+        if st.button("↩️ Reset", type="secondary"):
+            reset_watch_terms()
+            st.rerun()
+
+    terms = st.session_state.get("watch_terms", [])
+    if not terms:
+        st.warning("İzlenen kelime yok. Yukarıdan ekleyebilirsin.")
+        st.stop()
+
+    st.write("Aktif izlenen terimler:")
+    cols = st.columns(6)
+    for i, term in enumerate(list(terms)):
+        if cols[i % 6].button(f"{term} ✖", key=f"watch_del_{term}"):
+            st.session_state["watch_terms"].remove(term)
+            st.rerun()
+
+    st.divider()
+
+    # -----------------------------
+    # 4) Zaman serisi üret
+    # -----------------------------
+    if hasattr(utils, "build_watch_terms_timeseries"):
+        freq_df = utils.build_watch_terms_timeseries(df_all, terms)
     else:
-        st.caption(
-            "Bu grafik sadece izlediğin kelimeleri gösterir. "
-            "Yeni kelime eklersen ve metinlerde varsa otomatik seriye girer."
-        )
+        freq_df = _fallback_build_watch_terms_timeseries(df_all, terms)
 
-        # --- Kelime ekleme / reset ---
-        c1, c2 = st.columns([3, 1])
-        with c1:
-            st.text_input(
-                "➕ Kelime veya phrase ekle (Enter)",
-                key="watch_term_in",
-                on_change=add_watch_term,
-                placeholder="ör: liquidity, demand, wage, credit growth"
-            )
-        with c2:
-            if st.button("↩️ Reset", type="secondary"):
-                reset_watch_terms()
-                st.rerun()
+    if freq_df is None or freq_df.empty:
+        st.info("Zaman serisi üretilemedi.")
+    else:
+        usable_terms = [t for t in terms if t in freq_df.columns and pd.to_numeric(freq_df[t], errors="coerce").fillna(0).sum() > 0]
 
-        # --- Aktif kelimeler ---
-        if st.session_state["watch_terms"]:
-            st.write("Aktif izlenen terimler:")
-            cols = st.columns(6)
-            for i, term in enumerate(st.session_state["watch_terms"]):
-                if cols[i % 6].button(f"{term} ✖", key=f"watch_del_{term}"):
-                    st.session_state["watch_terms"].remove(term)
-                    st.rerun()
+        if not usable_terms:
+            st.info("Bu kelimeler metinlerde hiç geçmiyor.")
         else:
-            st.warning("İzlenen kelime yok. Yukarıdan ekleyebilirsin.")
-            st.stop()
+            fig = go.Figure()
+            for t in usable_terms:
+                fig.add_trace(go.Scatter(
+                    x=freq_df["period_date"],
+                    y=freq_df[t],
+                    name=t,
+                    mode="lines+markers"
+                ))
 
-        st.divider()
-
-        # --- Zaman serisi ---
-        freq_df = utils.build_watch_terms_timeseries(
-            df_all,
-            st.session_state["watch_terms"]
-        )
-
-        if freq_df is None or freq_df.empty:
-            st.info("Zaman serisi üretilemedi.")
-        else:
-            usable_terms = []
-            for t in st.session_state["watch_terms"]:
-                if t in freq_df.columns and freq_df[t].sum() > 0:
-                    usable_terms.append(t)
-
-            if not usable_terms:
-                st.info("Bu kelimeler metinlerde hiç geçmiyor.")
-            else:
-                fig = go.Figure()
-                for t in usable_terms:
-                    fig.add_trace(go.Scatter(
-                        x=freq_df["period_date"],
-                        y=freq_df[t],
-                        name=t,
-                        mode="lines+markers"
-                    ))
-
-                fig.update_layout(
-                    title="İzlenen Ekonomi Terimleri — Zaman Serisi",
-                    hovermode="x unified",
-                    height=420,
-                    legend=dict(
-                        orientation="h",
-                        yanchor="top",
-                        y=-0.25,
-                        xanchor="center",
-                        x=0.5
-                    )
+            fig.update_layout(
+                title="İzlenen Ekonomi Terimleri — Zaman Serisi",
+                hovermode="x unified",
+                height=420,
+                legend=dict(
+                    orientation="h",
+                    yanchor="top",
+                    y=-0.25,
+                    xanchor="center",
+                    x=0.5
                 )
+            )
+            st.plotly_chart(fig, use_container_width=True)
 
-                st.plotly_chart(fig, use_container_width=True)
+            with st.expander("📋 Ham tablo", expanded=False):
+                show_cols = ["Donem"] + usable_terms
+                st.dataframe(freq_df[show_cols], use_container_width=True, hide_index=True)
 
-                with st.expander("📋 Ham tablo", expanded=False):
-                    show_cols = ["Donem"] + usable_terms
-                    st.dataframe(
-                        freq_df[show_cols],
-                        use_container_width=True,
-                        hide_index=True
-                    )
+    # -----------------------------
+    # 5) Diff analizi
+    # -----------------------------
+    st.markdown("---")
+    st.subheader("🔄 Metin Farkı (Diff) Analizi")
 
+    c_diff1, c_diff2 = st.columns(2)
+    with c_diff1:
+        sel_date1 = st.selectbox("Eski Metin:", df_all["Donem"].tolist(), index=min(1, len(df_all) - 1), key="diff_old")
+    with c_diff2:
+        sel_date2 = st.selectbox("Yeni Metin:", df_all["Donem"].tolist(), index=0, key="diff_new")
 
-   
-        st.subheader("🔄 Metin Farkı (Diff) Analizi")
-        c_diff1, c_diff2 = st.columns(2)
-        with c_diff1: sel_date1 = st.selectbox("Eski Metin:", df_all['Donem'].tolist(), index=min(1, len(df_all)-1))
-        with c_diff2: sel_date2 = st.selectbox("Yeni Metin:", df_all['Donem'].tolist(), index=0)
-        if st.button("Farkları Göster", type="primary"):
-            if sel_date1 and sel_date2:
-                t1 = df_all[df_all['Donem'] == sel_date1].iloc[0]['text_content']
-                t2 = df_all[df_all['Donem'] == sel_date2].iloc[0]['text_content']
-                diff_html = utils.generate_diff_html(t1, t2)
-                st.markdown(f"**Kırmızı:** {sel_date1}'den silinenler | **Yeşil:** {sel_date2}'ye eklenenler")
-                with st.container(border=True, height=400): st.markdown(diff_html, unsafe_allow_html=True)
-        else:
-            st.info("Yeterli veri yok.")
+    if st.button("Farkları Göster", type="primary", key="btn_diff"):
+        t1 = str(df_all[df_all["Donem"] == sel_date1].iloc[0].get("text_content", "") or "")
+        t2 = str(df_all[df_all["Donem"] == sel_date2].iloc[0].get("text_content", "") or "")
+        diff_html = utils.generate_diff_html(t1, t2)
+
+        st.markdown(f"**Kırmızı:** {sel_date1}'den silinenler | **Yeşil:** {sel_date2}'ye eklenenler")
+        with st.container(border=True, height=400):
+            st.markdown(diff_html, unsafe_allow_html=True)
 
 
 

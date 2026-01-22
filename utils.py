@@ -1333,12 +1333,6 @@ def train_textasdata_hybrid_cpi_ridge(
     max_features_word: int = 12000,
     max_features_char: int = 20000,
 ) -> dict:
-    """
-    English text:
-      - word TFIDF + char TFIDF
-      - numeric macro/history features
-      - Ridge regression
-    """
     if not HAS_ML_DEPS:
         return {}
     if df_td is None or df_td.empty:
@@ -1349,6 +1343,8 @@ def train_textasdata_hybrid_cpi_ridge(
     if df_train["delta_bp"].notna().sum() < 10:
         return {}
 
+    import numpy as np
+    import pandas as pd
     from sklearn.model_selection import TimeSeriesSplit
     from sklearn.pipeline import Pipeline
     from sklearn.compose import ColumnTransformer
@@ -1357,6 +1353,31 @@ def train_textasdata_hybrid_cpi_ridge(
     from sklearn.impute import SimpleImputer
     from sklearn.linear_model import Ridge
     from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+
+    # >>> ADD THESE IMPORTS + CLASS
+    from sklearn.base import BaseEstimator, TransformerMixin
+    import scipy.sparse as sp
+
+    class SparseFiniteFixer(BaseEstimator, TransformerMixin):
+        """Replace NaN/Inf in dense or sparse matrices with 0.0 (safety net)."""
+        def fit(self, X, y=None):
+            return self
+
+        def transform(self, X):
+            if sp.issparse(X):
+                X = X.tocsr(copy=True)
+                data = X.data
+                bad = ~np.isfinite(data)
+                if bad.any():
+                    data[bad] = 0.0
+                    X.data = data
+                    X.eliminate_zeros()
+                return X
+            else:
+                X = np.array(X, copy=True)
+                X[~np.isfinite(X)] = 0.0
+                return X
+    # <<< END ADD
 
     num_cols = [
         "policy_rate_lag1", "delta_bp_lag1", "delta_bp_lag3", "policy_rate_trend",
@@ -1385,19 +1406,20 @@ def train_textasdata_hybrid_cpi_ridge(
                 max_features=int(max_features_char),
                 sublinear_tf=True
             ), "text"),
-            # FIX: NaN-safe + sparse-safe scaling
             ("num", Pipeline([
                 ("imp", SimpleImputer(strategy="median")),
-                ("scaler", StandardScaler(with_mean=False))
+                ("scaler", StandardScaler(with_mean=False)),
             ]), num_cols),
         ],
         remainder="drop",
         sparse_threshold=0.3
     )
 
+    # >>> IMPORTANT: add finite fixer between prep and ridge
     pipe = Pipeline([
         ("prep", preprocess),
-        ("ridge", Ridge(alpha=float(alpha), random_state=42))
+        ("finite", SparseFiniteFixer()),
+        ("ridge", Ridge(alpha=float(alpha), random_state=42)),
     ])
 
     tscv = TimeSeriesSplit(n_splits=min(int(n_splits), max(2, len(df_train) // 3)))
@@ -1419,17 +1441,13 @@ def train_textasdata_hybrid_cpi_ridge(
     pred_df = df_train[["period_date", "delta_bp", "policy_rate"]].copy()
     pred_df["pred_delta_bp"] = pred
 
-    # fit final
     pipe.fit(X, y)
 
-    # explain only word TFIDF (most interpretable)
     coef_df = pd.DataFrame()
     try:
         wvec = pipe.named_steps["prep"].named_transformers_["w_tfidf"]
         feats = wvec.get_feature_names_out()
         coefs = pipe.named_steps["ridge"].coef_.ravel()
-
-        # Order: w_tfidf then c_tfidf then num
         w_dim = len(feats)
         coef_df = pd.DataFrame({"feature": feats, "coef": coefs[:w_dim]})
         coef_df["abs"] = coef_df["coef"].abs()
@@ -1443,6 +1461,7 @@ def train_textasdata_hybrid_cpi_ridge(
         "coef_df": coef_df,
         "num_cols": num_cols
     }
+
 
 
 # --- helper: NaN/Inf-safe float ---
@@ -2209,256 +2228,3 @@ def textasdata_prepare_df_hybrid_cpi(
     return out
 
 
-def train_textasdata_hybrid_cpi_ridge(
-    df_td: pd.DataFrame,
-    min_df: int = 2,
-    alpha: float = 10.0,
-    n_splits: int = 6,
-    word_ngram=(1, 2),
-    char_ngram=(3, 5),
-    max_features_word: int = 12000,
-    max_features_char: int = 20000,
-) -> dict:
-    """
-    English text:
-      - word TFIDF + char TFIDF
-      - numeric macro/history features
-      - Ridge regression
-    """
-    if not HAS_ML_DEPS:
-        return {}
-    if df_td is None or df_td.empty:
-        return {}
-
-    df = df_td.copy().dropna(subset=["period_date"]).sort_values("period_date").reset_index(drop=True)
-    df_train = df.dropna(subset=["delta_bp"]).copy()
-    if df_train["delta_bp"].notna().sum() < 10:
-        return {}
-
-    from sklearn.model_selection import TimeSeriesSplit
-    from sklearn.pipeline import Pipeline
-    from sklearn.compose import ColumnTransformer
-    from sklearn.feature_extraction.text import TfidfVectorizer
-    from sklearn.preprocessing import StandardScaler
-    from sklearn.linear_model import Ridge
-    from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
-
-    num_cols = [
-        "policy_rate_lag1", "delta_bp_lag1", "delta_bp_lag3", "policy_rate_trend",
-        "hold_streak", "prev_sign", "mean_abs_last3", "days_since_prev",
-        "cpi_yoy_lag1", "cpi_mom_lag1", "cpi_trend3_lag1"
-    ]
-
-    X = df_train[["text"] + num_cols].copy()
-    y = df_train["delta_bp"].astype(float).values
-
-    preprocess = ColumnTransformer(
-        transformers=[
-            ("w_tfidf", TfidfVectorizer(
-                stop_words="english",
-                ngram_range=word_ngram,
-                min_df=max(1, int(min_df)),
-                max_df=0.95,
-                max_features=int(max_features_word),
-                sublinear_tf=True
-            ), "text"),
-            ("c_tfidf", TfidfVectorizer(
-                analyzer="char_wb",
-                ngram_range=char_ngram,
-                min_df=max(1, int(min_df)),
-                max_df=0.95,
-                max_features=int(max_features_char),
-                sublinear_tf=True
-            ), "text"),
-            ("num", Pipeline([("scaler", StandardScaler())]), num_cols),
-        ],
-        remainder="drop",
-        sparse_threshold=0.3
-    )
-
-    pipe = Pipeline([
-        ("prep", preprocess),
-        ("ridge", Ridge(alpha=float(alpha), random_state=42))
-    ])
-
-    tscv = TimeSeriesSplit(n_splits=min(int(n_splits), max(2, len(df_train) // 3)))
-    pred = np.full(len(df_train), np.nan, dtype=float)
-
-    for tr, te in tscv.split(X):
-        pipe.fit(X.iloc[tr], y[tr])
-        pred[te] = pipe.predict(X.iloc[te])
-
-    mask = np.isfinite(pred)
-    metrics = {"n": int(mask.sum())}
-    if mask.sum() >= 3:
-        metrics["mae"] = float(mean_absolute_error(y[mask], pred[mask]))
-        metrics["rmse"] = float(np.sqrt(mean_squared_error(y[mask], pred[mask])))
-        metrics["r2"] = float(r2_score(y[mask], pred[mask]))
-    else:
-        metrics.update({"mae": np.nan, "rmse": np.nan, "r2": np.nan})
-
-    pred_df = df_train[["period_date", "delta_bp", "policy_rate"]].copy()
-    pred_df["pred_delta_bp"] = pred
-
-    # fit final
-    pipe.fit(X, y)
-
-    # explain only word TFIDF (most interpretable)
-    coef_df = pd.DataFrame()
-    try:
-        wvec = pipe.named_steps["prep"].named_transformers_["w_tfidf"]
-        feats = wvec.get_feature_names_out()
-        coefs = pipe.named_steps["ridge"].coef_.ravel()
-
-        # Order: w_tfidf then c_tfidf then num
-        w_dim = len(feats)
-        coef_df = pd.DataFrame({"feature": feats, "coef": coefs[:w_dim]})
-        coef_df["abs"] = coef_df["coef"].abs()
-    except Exception:
-        coef_df = pd.DataFrame()
-
-    return {
-        "model": pipe,
-        "pred_df": pred_df,
-        "metrics": metrics,
-        "coef_df": coef_df,
-        "num_cols": num_cols
-    }
-
-
-def predict_textasdata_hybrid_cpi(model_pack: dict, df_hist: pd.DataFrame, text: str) -> dict:
-    """
-    For single-text prediction we need the latest known macro/history values from df_hist.
-    df_hist should be the output of textasdata_prepare_df_hybrid_cpi (sorted).
-    """
-    if not model_pack or "model" not in model_pack:
-        return {}
-    pipe = model_pack["model"]
-    txt = (text or "").strip()
-    if len(txt) < 30:
-        return {}
-
-    if df_hist is None or df_hist.empty:
-        return {}
-
-    df_hist = df_hist.sort_values("period_date").reset_index(drop=True)
-    last = df_hist.iloc[-1]
-
-    row = pd.DataFrame([{
-        "text": txt,
-        # numeric features: take last row values as “current state”
-        "policy_rate_lag1": float(last["policy_rate"]),
-        "delta_bp_lag1": float(last["delta_bp"]),
-        "delta_bp_lag3": float(df_hist["delta_bp"].tail(3).mean()),
-        "policy_rate_trend": float(_safe_slope(df_hist["policy_rate"].tail(3))),
-
-        "hold_streak": float(last["hold_streak"]),
-        "prev_sign": float(np.sign(last["delta_bp"])),
-        "mean_abs_last3": float(df_hist["delta_bp"].tail(3).abs().mean()),
-        "days_since_prev": float(last["days_since_prev"]),
-
-        "cpi_yoy_lag1": float(last["cpi_yoy_lag1"]),
-        "cpi_mom_lag1": float(last["cpi_mom_lag1"]),
-        "cpi_trend3_lag1": float(last["cpi_trend3_lag1"]),
-    }])
-
-    pred_bp = float(pipe.predict(row)[0])
-    return {"pred_delta_bp": pred_bp}
-
-
-def detect_policy_action(text: str) -> str:
-    """
-    Metinde açık politika aksiyonu var mı? (CUT / HIKE / HOLD / UNKNOWN)
-    Basit regex; dashboard için yeterli.
-    """
-    if not text:
-        return "UNKNOWN"
-
-    t = str(text).lower()
-
-    # CUT
-    if re.search(r"\b(reduce|reduced|cut|lower|decrease|decreased)\b.*\b(policy rate|one-week repo|repo auction rate|interest rate)\b", t):
-        return "CUT"
-    if re.search(r"\b(policy rate)\b.*\b(from)\b.*\b(to)\b", t) and re.search(r"\b(reduce|reduced|cut|lower|decrease|decreased)\b", t):
-        return "CUT"
-
-    # HIKE
-    if re.search(r"\b(increase|increased|raise|raised|hike|tighten|tightened)\b.*\b(policy rate|one-week repo|repo auction rate|interest rate)\b", t):
-        return "HIKE"
-
-    # HOLD
-    if re.search(r"\b(keep|kept|maintain|maintained)\b.*\b(unchanged|constant|at)\b", t) and re.search(r"\b(policy rate|one-week repo|repo auction rate|interest rate)\b", t):
-        return "HOLD"
-    if re.search(r"\bdecided to keep\b.*\b(policy rate)\b", t):
-        return "HOLD"
-
-    return "UNKNOWN"
-
-
-def summarize_sentence_roberta(df_sent: pd.DataFrame) -> dict:
-    """
-    Cümle tablosundan:
-      - kaç şahin/güvercin/nötr
-      - ağırlıklı net duruş (Diff ortalaması, poz/neg toplam etkiler)
-    """
-    if df_sent is None or df_sent.empty or "Diff (H-D)" not in df_sent.columns:
-        return {"n": 0, "hawk_n": 0, "dove_n": 0, "neut_n": 0,
-                "diff_mean": np.nan, "diff_sum": np.nan,
-                "pos_sum": np.nan, "neg_sum": np.nan}
-
-    x = pd.to_numeric(df_sent["Diff (H-D)"], errors="coerce").fillna(0.0)
-
-    # stance sayımı (senin stance_3class_from_diff'e göre)
-    hawk_n = int((x >= 0.15).sum())
-    dove_n = int((x <= -0.15).sum())
-    neut_n = int(len(x) - hawk_n - dove_n)
-
-    pos_sum = float(x[x > 0].sum())
-    neg_sum = float(x[x < 0].sum())  # negatif
-    out = {
-        "n": int(len(x)),
-        "hawk_n": hawk_n,
-        "dove_n": dove_n,
-        "neut_n": neut_n,
-        "diff_mean": float(x.mean()),
-        "diff_sum": float(x.sum()),
-        "pos_sum": pos_sum,
-        "neg_sum": neg_sum
-    }
-    return out
-
-def build_watch_terms_timeseries(df: pd.DataFrame, terms: list) -> pd.DataFrame:
-    """
-    Verilen terimler için (kelime veya phrase) dönem bazlı sayım zaman serisi üretir.
-    - terms: ["inflation", "policy rate", ...]
-    """
-    if df is None or df.empty or not terms:
-        return pd.DataFrame()
-
-    out = df.copy()
-
-    if "period_date" not in out.columns:
-        return pd.DataFrame()
-
-    out["period_date"] = pd.to_datetime(out["period_date"], errors="coerce")
-    out = out.dropna(subset=["period_date"]).sort_values("period_date")
-    out["Donem"] = out["period_date"].dt.strftime("%Y-%m")
-
-    # metni normalize et
-    txt = out.get("text_content", pd.Series([""] * len(out))).fillna("").astype(str).str.lower()
-    txt = txt.str.replace(r"\s+", " ", regex=True)
-
-    res = pd.DataFrame({
-        "period_date": out["period_date"],
-        "Donem": out["Donem"]
-    })
-
-    for t in terms:
-        t_norm = " ".join(str(t).lower().split())
-        if not t_norm:
-            continue
-
-        # phrase sayımı (regex yok, direkt substring: hızlı ve yeterli)
-        res[t_norm] = txt.apply(lambda s: s.count(t_norm))
-
-    return res

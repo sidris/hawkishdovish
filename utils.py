@@ -1837,9 +1837,24 @@ def create_ai_trend_chart(df_res: pd.DataFrame):
     return fig
 
 
+import re
+import gc
+import pandas as pd
+import numpy as np
+
+def _fallback_sentence_split(text: str) -> list[str]:
+    # Basit ama sağlam: . ! ? ; : ve satır sonlarından böl
+    t = re.sub(r"\s+", " ", str(text)).strip()
+    if not t:
+        return []
+    parts = re.split(r"(?<=[\.\!\?\;\:])\s+", t)
+    # Çok kısa parçaları temizle
+    return [p.strip() for p in parts if p and len(p.strip()) >= 10]
+
 def analyze_sentences_with_roberta(text: str) -> pd.DataFrame:
     """
-    max_sentences parametresi yok (kafa karıştırmasın).
+    Cümle bazlı RoBERTa analizi.
+    split_sentences_nlp boş dönerse regex fallback kullanır.
     """
     if not text:
         return pd.DataFrame()
@@ -1848,28 +1863,43 @@ def analyze_sentences_with_roberta(text: str) -> pd.DataFrame:
     if clf is None:
         return pd.DataFrame()
 
-    sentences = split_sentences_nlp(str(text))
-    sentences = [s.strip() for s in sentences if s.strip() and len(s.split()) > 3]
+    t = str(text).strip()
+    if len(t) < 30:
+        return pd.DataFrame()
+
+    # 1) Cümleleme: NLP -> boşsa fallback
+    try:
+        sentences = split_sentences_nlp(t)
+        sentences = [s.strip() for s in (sentences or [])]
+    except Exception:
+        sentences = []
+
+    # fallback
+    if not sentences:
+        sentences = _fallback_sentence_split(t)
+
+    # filtreyi biraz yumuşat (çok agresif olmasın)
+    sentences = [s for s in sentences if s and len(s.split()) >= 3]
     if not sentences:
         return pd.DataFrame()
 
+    # 2) Tahmin
     try:
         preds = clf(sentences)
-        rows = []
 
+        rows = []
         for sent, pred in zip(sentences, preds):
+            # pipeline çıktısını normalize et: list-of-dicts olsun
             if isinstance(pred, list) and pred and isinstance(pred[0], list):
                 pred = pred[0]
 
+            if isinstance(pred, dict):
+                pred = [pred]
+
             scores_map = {"HAWK": 0.0, "DOVE": 0.0, "NEUT": 0.0}
-            if isinstance(pred, list):
-                for r in pred:
-                    lbl = _normalize_label_mrince(r.get("label", ""))
-                    sc = float(r.get("score", 0.0))
-                    scores_map[lbl] = sc
-            else:
-                lbl = _normalize_label_mrince(pred.get("label", ""))
-                sc = float(pred.get("score", 0.0))
+            for r in (pred or []):
+                lbl = _normalize_label_mrince(r.get("label", ""))
+                sc = float(r.get("score", 0.0))
                 scores_map[lbl] = sc
 
             h = float(scores_map["HAWK"])
@@ -1883,7 +1913,7 @@ def analyze_sentences_with_roberta(text: str) -> pd.DataFrame:
                 "Diff (H-D)": float(diff),
                 "HAWK": h,
                 "DOVE": d,
-                "NEUT": n
+                "NEUT": n,
             })
 
         df = pd.DataFrame(rows)
@@ -1894,8 +1924,10 @@ def analyze_sentences_with_roberta(text: str) -> pd.DataFrame:
     except Exception as e:
         print(f"[RoBERTa] Cümle analizi hatası: {repr(e)}")
         return pd.DataFrame()
+
     finally:
         gc.collect()
+
 
 
 # ==========================

@@ -1326,3 +1326,68 @@ def predict_textasdata_hybrid_cpi(model_pack: dict, df_hist: pd.DataFrame, text:
     row = row.fillna(0.0)
     pred_bp = float(pipe.predict(row)[0])
     return {"pred_delta_bp": pred_bp}
+
+
+# =============================================================================
+# 10. EKSİK KALAN YARDIMCI FONKSİYONLAR (ROBERTA İSTATİSTİKLERİ)
+# =============================================================================
+
+def detect_policy_action(text: str) -> str:
+    """
+    Metin içerisindeki faiz kararı aksiyonunu (Cut/Hike/Hold) basit kelime taramasıyla bulur.
+    Hem İngilizce (model dili) hem Türkçe anahtar kelimelere bakar.
+    """
+    if not text: return "UNKNOWN"
+    t = text.lower()
+    
+    # İndirim Sinyalleri
+    if any(x in t for x in ["decided to reduce", "decided to cut", "decided to lower", "indirilmesine", "indirimine"]):
+        return "📉 CUT (İndirim)"
+    
+    # Artırım Sinyalleri
+    if any(x in t for x in ["decided to raise", "decided to hike", "decided to increase", "artırılmasına", "artırımına"]):
+        return "📈 HIKE (Artırım)"
+    
+    # Sabit Sinyalleri
+    if any(x in t for x in ["decided to keep", "remain unchanged", "kept constant", "sabit tutulmasına", "değiştirilmemesine"]):
+        return "⚖️ HOLD (Sabit)"
+        
+    return "❓ UNCERTAIN"
+
+def summarize_sentence_roberta(df_sent: pd.DataFrame) -> dict:
+    """
+    analyze_sentences_with_roberta fonksiyonundan dönen DataFrame'i özetler.
+    Toplam şahinlik/güvercinlik 'hacmini' hesaplar.
+    """
+    if df_sent is None or df_sent.empty:
+        return {}
+    
+    # Diff (H-D) kolonu yoksa hesapla
+    if "Diff (H-D)" not in df_sent.columns:
+        if "HAWK" in df_sent.columns and "DOVE" in df_sent.columns:
+            df_sent["Diff (H-D)"] = df_sent["HAWK"] - df_sent["DOVE"]
+        else:
+            return {}
+
+    diffs = df_sent["Diff (H-D)"].values
+    
+    # İstatistikler
+    # Pozitif diff = Şahin baskısı, Negatif diff = Güvercin baskısı
+    pos_sum = diffs[diffs > 0].sum()
+    neg_sum = diffs[diffs < 0].sum()
+    
+    # Duruş sayıları
+    hawk_n = len(df_sent[df_sent["Duruş"].str.contains("Şahin", na=False)])
+    dove_n = len(df_sent[df_sent["Duruş"].str.contains("Güvercin", na=False)])
+    neut_n = len(df_sent[df_sent["Duruş"].str.contains("Nötr", na=False)])
+    
+    return {
+        "n": len(df_sent),
+        "diff_mean": diffs.mean(),
+        "diff_std": diffs.std(),
+        "pos_sum": pos_sum,  # Toplam Şahin İtişi
+        "neg_sum": neg_sum,  # Toplam Güvercin İtişi
+        "hawk_n": hawk_n,
+        "dove_n": dove_n,
+        "neut_n": neut_n
+    }

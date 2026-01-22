@@ -10,22 +10,27 @@ from collections import Counter
 import numpy as np
 from dataclasses import dataclass
 from typing import List, Dict, Tuple, Any, Optional
+import gc
+import scipy.sparse as sp
 
-# --- 1. KÜTÜPHANE KONTROLLERİ VE GLOBAL FLAGLER ---
+# =============================================================================
+# 1. KÜTÜPHANE KONTROLLERİ VE GLOBAL FLAGLER
+# =============================================================================
 HAS_ML_DEPS = False
 HAS_TRANSFORMERS = False
 
 # ML Kütüphaneleri
 try:
     import sklearn
-    from sklearn.base import clone
+    from sklearn.base import clone, BaseEstimator, TransformerMixin
     from sklearn.compose import ColumnTransformer
     from sklearn.pipeline import Pipeline
     from sklearn.preprocessing import StandardScaler, FunctionTransformer
     from sklearn.feature_extraction.text import TfidfVectorizer
     from sklearn.linear_model import LogisticRegression, Ridge
     from sklearn.model_selection import TimeSeriesSplit
-    from sklearn.metrics import mean_absolute_error, mean_squared_error, classification_report, confusion_matrix
+    from sklearn.metrics import mean_absolute_error, mean_squared_error, classification_report, confusion_matrix, r2_score
+    from sklearn.impute import SimpleImputer
     from wordcloud import WordCloud, STOPWORDS
     import matplotlib.pyplot as plt
     HAS_ML_DEPS = True
@@ -41,7 +46,9 @@ try:
 except ImportError:
     HAS_TRANSFORMERS = False
 
-# --- 2. AYARLAR VE BAĞLANTI ---
+# =============================================================================
+# 2. AYARLAR VE BAĞLANTI
+# =============================================================================
 try:
     if "supabase" in st.secrets:
         url = st.secrets["supabase"]["url"]
@@ -63,7 +70,71 @@ EVDS_BASE = "https://evds2.tcmb.gov.tr/service/evds"
 EVDS_TUFE_SERIES = "TP.FG.J0"
 
 # =============================================================================
-# 3. VERİTABANI İŞLEMLERİ
+# 3. ORTAK YARDIMCI FONKSİYONLAR (Global Helpers)
+# =============================================================================
+
+def normalize_text(text: str) -> str:
+    """Metni temizler ve normalize eder (Türkçe karakter desteği ile)."""
+    if not text: return ""
+    t = str(text).lower().replace("’", "'").replace("`", "'")
+    t = re.sub(r"(?<=\w)-(?=\w)", " ", t) # Kelime içi tireleri boşluk yap
+    t = re.sub(r"\brun\s+up\b", "runup", t)
+    t = re.sub(r"\s+", " ", t).strip()
+    return t
+
+def _fallback_sentence_split(text: str) -> list[str]:
+    """NLP kütüphanesi yüklenemezse kullanılacak basit cümle bölücü."""
+    t = re.sub(r"\s+", " ", str(text)).strip()
+    if not t: return []
+    parts = re.split(r"(?<=[\.\!\?\;\:])\s+", t)
+    return [p.strip() for p in parts if p and len(p.strip()) >= 10]
+
+def split_sentences_nlp(text: str):
+    """Gelişmiş cümle bölme."""
+    text = re.sub(r"\n+", ". ", text)
+    sents = re.split(r"(?<=[\.\!\?\;])\s+", text)
+    return [s.strip() for s in sents if s.strip()]
+
+def _safe_slope(series: pd.Series) -> float:
+    """Trend (Eğim) hesaplamak için güvenli fonksiyon."""
+    s = pd.to_numeric(series, errors="coerce").dropna()
+    if len(s) < 3: return 0.0
+    x = np.arange(len(s), dtype=float)
+    y = s.values.astype(float)
+    try:
+        return float(np.polyfit(x, y, 1)[0])
+    except Exception:
+        return 0.0
+
+def _sf(x, default=0.0) -> float:
+    """Safe Float conversion (NaN/Inf korumalı)."""
+    try:
+        v = float(pd.to_numeric(x, errors="coerce"))
+        return v if np.isfinite(v) else float(default)
+    except Exception:
+        return float(default)
+
+# ML Pipeline için Sparse/NaN düzeltici
+if HAS_ML_DEPS:
+    class SparseFiniteFixer(BaseEstimator, TransformerMixin):
+        def fit(self, X, y=None): return self
+        def transform(self, X):
+            if sp.issparse(X):
+                X = X.tocsr(copy=True)
+                data = X.data
+                bad = ~np.isfinite(data)
+                if bad.any():
+                    data[bad] = 0.0
+                    X.data = data
+                    X.eliminate_zeros()
+                return X
+            else:
+                X = np.array(X, copy=True)
+                X[~np.isfinite(X)] = 0.0
+                return X
+
+# =============================================================================
+# 4. VERİTABANI İŞLEMLERİ
 # =============================================================================
 
 def fetch_all_data():
@@ -79,7 +150,7 @@ def insert_entry(date, text, source, s_dict, s_abg):
     if not supabase: return
     try:
         data = {"period_date": str(date), "text_content": text, "source": source,
-            "score_dict": s_dict, "score_abg": s_abg}
+                "score_dict": s_dict, "score_abg": s_abg}
         supabase.table("market_logs").insert(data).execute()
     except Exception: pass
 
@@ -87,14 +158,13 @@ def update_entry(rid, date, text, source, s_dict, s_abg):
     if not supabase: return
     try:
         data = {"period_date": str(date), "text_content": text, "source": source,
-            "score_dict": s_dict, "score_abg": s_abg}
+                "score_dict": s_dict, "score_abg": s_abg}
         supabase.table("market_logs").update(data).eq("id", rid).execute()
     except Exception: pass
 
 def delete_entry(rid):
     if supabase: 
-        try:
-            supabase.table("market_logs").delete().eq("id", rid).execute()
+        try: supabase.table("market_logs").delete().eq("id", rid).execute()
         except Exception: pass
 
 def fetch_events():
@@ -118,40 +188,24 @@ def delete_event(rid):
         except Exception: pass
 
 def fetch_ppk_text_rate_data(source_filter: str = "TCMB PPK Kararı") -> pd.DataFrame:
-    """
-    Text-as-Data için: text_content + policy_rate + delta_bp çek.
-    """
-    if not supabase:
-        return pd.DataFrame()
-
+    if not supabase: return pd.DataFrame()
     try:
-        res = (
-            supabase.table("market_logs")
-            .select("id, period_date, source, text_content, policy_rate, delta_bp")
-            .eq("source", source_filter)
-            .order("period_date", desc=False)
-            .execute()
-        )
+        res = (supabase.table("market_logs")
+               .select("id, period_date, source, text_content, policy_rate, delta_bp")
+               .eq("source", source_filter)
+               .order("period_date", desc=False).execute())
         data = getattr(res, "data", []) if res else []
         df = pd.DataFrame(data)
-        if df.empty:
-            return df
+        if df.empty: return df
 
         df["period_date"] = pd.to_datetime(df["period_date"], errors="coerce")
         df = df.dropna(subset=["period_date"])
-
         df["policy_rate"] = pd.to_numeric(df.get("policy_rate"), errors="coerce")
         df["delta_bp"] = pd.to_numeric(df.get("delta_bp"), errors="coerce")
-
-        # text boş olanları at
         df["text_content"] = df["text_content"].fillna("").astype(str)
         df = df[df["text_content"].str.len() >= 20]
-
         return df.sort_values("period_date").reset_index(drop=True)
-
-    except Exception:
-        return pd.DataFrame()
-
+    except Exception: return pd.DataFrame()
 
 # --- MARKET DATA ---
 @st.cache_data(ttl=600)
@@ -162,10 +216,8 @@ def fetch_market_data_adapter(start_date, end_date):
         dates = pd.date_range(start=start_date, end=end_date, freq='M')
         if len(dates) == 0: return empty_df, "Tarih Yok"
         return pd.DataFrame({
-            'Donem': dates.strftime('%Y-%m'),
-            'Yıllık TÜFE': [0]*len(dates),
-            'PPK Faizi': [0]*len(dates),
-            'SortDate': dates
+            'Donem': dates.strftime('%Y-%m'), 'Yıllık TÜFE': [0]*len(dates),
+            'PPK Faizi': [0]*len(dates), 'SortDate': dates
         }), "API Key Yok"
 
     df_inf = pd.DataFrame()
@@ -213,7 +265,7 @@ def fetch_market_data_adapter(start_date, end_date):
     return master_df.sort_values("SortDate"), None
 
 # =============================================================================
-# 4. OKUNABİLİRLİK VE FREKANS ANALİZİ
+# 5. OKUNABİLİRLİK, KELİME SAYIMI VE GÖRSELLEŞTİRME
 # =============================================================================
 
 def count_syllables_en(word):
@@ -233,97 +285,16 @@ def calculate_flesch_reading_ease(text):
     
     sentences = re.findall(r'[^\.!\?]+[\.!\?]+', cleaned_text)
     sentence_count = len(sentences) if sentences else 1
-    
-    words_cleaned = [w for w in re.split(r'\s+', cleaned_text) if w]
-    total_words_cleaned = len(words_cleaned)
-    average_sentence_length = total_words_cleaned / sentence_count if sentence_count > 0 else 0
-    
     words_raw = [w for w in re.split(r'\s+', text) if w]
     total_words_raw = len(words_raw)
-    
     if total_words_raw == 0: return 0
     
+    words_cleaned = [w for w in re.split(r'\s+', cleaned_text) if w]
+    average_sentence_length = len(words_cleaned) / sentence_count if sentence_count > 0 else 0
     total_syllables_raw = sum(count_syllables_en(w) for w in words_raw)
     average_syllables_per_word = total_syllables_raw / total_words_raw
-    
     score = 206.835 - (1.015 * average_sentence_length) - (84.6 * average_syllables_per_word)
     return round(score, 2)
-
-def get_terms_series(df: pd.DataFrame,
-                     terms: list,
-                     text_col: str = "text_content",
-                     date_col: str = "period_date") -> pd.DataFrame:
-    """
-    Verilen terms listesi için dönem bazlı sayım serisi üretir.
-    - Tek kelime ve çok kelimeli ifadeleri destekler (örn: "policy rate")
-    - Bulunmayan terimler 0 döner
-    """
-    if df is None or df.empty:
-        return pd.DataFrame()
-
-    out_rows = []
-    tmp = df.copy()
-
-    # tarih normalize
-    tmp[date_col] = pd.to_datetime(tmp[date_col], errors="coerce")
-    tmp = tmp.dropna(subset=[date_col]).sort_values(date_col)
-
-    # metin normalize
-    texts = tmp[text_col].fillna("").astype(str).str.lower()
-
-    # terms normalize
-    terms_norm = [str(t).strip().lower() for t in (terms or []) if str(t).strip()]
-    terms_norm = list(dict.fromkeys(terms_norm))  # uniq
-
-    for i, row in tmp.iterrows():
-        txt = str(row.get(text_col, "") or "").lower()
-
-        rec = {
-            "period_date": row[date_col],
-            "Donem": pd.to_datetime(row[date_col]).strftime("%Y-%m")
-        }
-
-        for term in terms_norm:
-            # basit substring sayımı (ppk metinleri için yeterli ve hızlı)
-            rec[term] = txt.count(term)
-
-        out_rows.append(rec)
-
-    return pd.DataFrame(out_rows)
-def build_watch_terms_timeseries(df_all: pd.DataFrame, terms: list) -> pd.DataFrame:
-    if df_all is None or df_all.empty or not terms:
-        return pd.DataFrame()
-
-    df = df_all.copy()
-    if "period_date" not in df.columns:
-        return pd.DataFrame()
-
-    df["period_date"] = pd.to_datetime(df["period_date"], errors="coerce")
-    df = df.dropna(subset=["period_date"]).sort_values("period_date")
-    df["Donem"] = df["period_date"].dt.strftime("%Y-%m")
-
-    rows = []
-    for _, r in df.iterrows():
-        txt = str(r.get("text_content", "") or "").lower()
-        rec = {"period_date": r["period_date"], "Donem": r["Donem"]}
-        for t in terms:
-            rec[t] = txt.count(str(t).lower())
-        rows.append(rec)
-
-    return pd.DataFrame(rows).reset_index(drop=True)
-
-
-    rows = []
-    for _, r in out.iterrows():
-        txt = r["text_lc"]
-        row = {"period_date": r["period_date"], "Donem": r["Donem"]}
-        for t in terms:
-            # basit substring sayımı (phrase için de çalışır)
-            row[t] = int(txt.count(t))
-        rows.append(row)
-
-    return pd.DataFrame(rows)
-
 
 def generate_diff_html(text1, text2):
     if not text1: text1 = ""
@@ -348,8 +319,8 @@ def get_top_terms_series(df, top_n=7, custom_stops=None):
     if df.empty: return pd.DataFrame(), []
     all_text = " ".join(df['text_content'].astype(str).tolist()).lower()
     words = re.findall(r"\b[a-z]{4,}\b", all_text)
-    
-    stops = set([
+    stops = set(STOPWORDS) if HAS_ML_DEPS else set()
+    stops.update([
         "that", "with", "this", "from", "have", "which", "will", "been", "were", 
         "market", "central", "bank", "committee", "monetary", "policy", "decision", 
         "percent", "rates", "level", "year", "their", "over", "also", "under", 
@@ -357,10 +328,9 @@ def get_top_terms_series(df, top_n=7, custom_stops=None):
         "period", "has", "are", "for", "and", "the", "decided", "keep", "constant",
         "take", "taking", "account"
     ])
-    
     if custom_stops:
         for s in custom_stops: stops.add(s.lower().strip())
-        
+    
     filtered_words = [w for w in words if w not in stops]
     common = Counter(filtered_words).most_common(top_n)
     top_terms = [t[0] for t in common]
@@ -386,7 +356,7 @@ def generate_wordcloud_img(text, custom_stops=None):
     return fig
 
 # =============================================================================
-# 5. ABF (APEL, BLIX, GRIMALDI - 2019) ALGORİTMASI (ORİJİNAL)
+# 6. ABF (APEL, BLIX, GRIMALDI) ALGORİTMASI
 # =============================================================================
 
 def M(token_or_phrase: str, wildcard_first: bool = False):
@@ -452,18 +422,6 @@ DICT = {
         },
     ],
 }
-
-def normalize_text(text: str) -> str:
-    t = text.lower().replace("’", "'").replace("`", "'")
-    t = re.sub(r"(?<=\w)-(?=\w)", " ", t)
-    t = re.sub(r"\brun\s+up\b", "runup", t)
-    t = re.sub(r"\s+", " ", t).strip()
-    return t
-
-def split_sentences_nlp(text: str):
-    text = re.sub(r"\n+", ". ", text)
-    sents = re.split(r"(?<=[\.\!\?\;])\s+", text)
-    return [s.strip() for s in sents if s.strip()]
 
 def tokenize(sent: str):
     return re.findall(r"[a-z]+", sent)
@@ -592,10 +550,6 @@ def analyze_hawk_dove(text: str, DICT: dict, window_words: int = 7, dedupe_withi
        "dove_count": dove_total
     }
 
-# =============================================================================
-# 6. ENTEGRASYON VE ML YARDIMCILARI
-# =============================================================================
-
 class ABGAnalyzer:
     def analyze(self, text):
         return analyze_hawk_dove(text, DICT=DICT, window_words=10, dedupe_within_term_window=True, nearest_only=True)
@@ -605,12 +559,10 @@ def run_full_analysis(text):
     s_abg = res['net_hawkishness']
     h_cnt = res['hawk_count']
     d_cnt = res['dove_count']
-    
     h_list = []
     d_list = []
     h_ctx = {}
     d_ctx = {}
-    
     for m in res['matches']:
         item = f"{m['term_found']} ({m['modifier_found']})"
         if m['direction'] == 'hawk':
@@ -621,7 +573,6 @@ def run_full_analysis(text):
             d_list.append(item)
             if m['term_found'] not in d_ctx: d_ctx[m['term_found']] = []
             d_ctx[m['term_found']].append(m['sentence'])
-            
     flesch = calculate_flesch_reading_ease(text)
     return s_abg, h_cnt, d_cnt, h_list, d_list, h_ctx, d_ctx, flesch
 
@@ -641,170 +592,9 @@ def calculate_abg_scores(df):
         })
     return pd.DataFrame(rows)
 
-
-@st.cache_resource(show_spinner=False)
-def build_text_as_data_model(df: pd.DataFrame):
-    """
-    TF-IDF (1-2 gram) + Ridge ile delta_bp tahmin modeli.
-    """
-    if not HAS_ML_DEPS:
-        return None
-
-    if df is None or df.empty:
-        return None
-
-    # Eğitim datası: delta_bp dolu olmalı
-    d = df.dropna(subset=["delta_bp"]).copy()
-    if len(d) < 8:
-        return None
-
-    X = d["text_content"].astype(str).values
-    y = d["delta_bp"].astype(float).values
-
-    # Not: metinler İngilizce ise stop_words="english" iyi çalışır.
-    # Türkçe metin de gelecekse stop_words=None bırakmak daha güvenli.
-    vec = TfidfVectorizer(
-        ngram_range=(1, 2),
-        min_df=2,
-        max_df=0.9,
-        max_features=50000,
-        sublinear_tf=True,
-        stop_words="english"
-    )
-    Xv = vec.fit_transform(X)
-
-    reg = Ridge(alpha=10.0, random_state=42)
-    reg.fit(Xv, y)
-
-    return {"vectorizer": vec, "model": reg, "train_n": len(d)}
-
-
-def predict_text_as_data_delta_bp(text: str, bundle):
-    if bundle is None or not text:
-        return None
-    vec = bundle["vectorizer"]
-    reg = bundle["model"]
-    Xv = vec.transform([str(text)])
-    return float(reg.predict(Xv)[0])
-
-
-def text_as_data_top_terms(bundle, top_k: int = 20):
-    """
-    Ridge coef -> hangi kelimeler indirime/ artırıma iter?
-    + coef: daha çok ARTIRIM (pozitif bps)
-    - coef: daha çok İNDİRİM (negatif bps)
-    """
-    if bundle is None:
-        return pd.DataFrame()
-
-    vec = bundle["vectorizer"]
-    reg = bundle["model"]
-
-    if not hasattr(reg, "coef_"):
-        return pd.DataFrame()
-
-    coefs = reg.coef_.ravel()
-    feats = vec.get_feature_names_out()
-
-    df = pd.DataFrame({"term": feats, "coef": coefs})
-    df = df.sort_values("coef", ascending=False)
-
-    top_pos = df.head(top_k).copy()
-    top_pos["direction"] = "ARTIRIM (+)"
-
-    top_neg = df.tail(top_k).copy().sort_values("coef", ascending=True)
-    top_neg["direction"] = "İNDİRİM (-)"
-
-    out = pd.concat([top_pos, top_neg], ignore_index=True)
-    return out
-
-
-def text_as_data_walk_forward(df: pd.DataFrame, min_train: int = 8):
-    """
-    Basit walk-forward: her adımda geçmişle eğit, bir sonraki noktayı tahmin et.
-    """
-    if not HAS_ML_DEPS:
-        return None
-
-    if df is None or df.empty:
-        return None
-
-    d = df.dropna(subset=["delta_bp"]).copy().sort_values("period_date")
-    if len(d) < (min_train + 1):
-        return None
-
-    preds = []
-    actuals = []
-    dates = []
-
-    for i in range(min_train, len(d)):
-        train = d.iloc[:i].copy()
-        test_row = d.iloc[i]
-
-        bundle = build_text_as_data_model(train)
-        if bundle is None:
-            continue
-
-        yhat = predict_text_as_data_delta_bp(test_row["text_content"], bundle)
-        preds.append(yhat)
-        actuals.append(float(test_row["delta_bp"]))
-        dates.append(test_row["period_date"])
-
-    out = pd.DataFrame({"date": dates, "y_true": actuals, "y_pred": preds})
-    if out.empty:
-        return None
-
-    out["err"] = out["y_true"] - out["y_pred"]
-    return out
-
-
-
 # =============================================================================
-# 7. ML ALGORİTMASI (Ridge + Logistic)
+# 7. ML CLASS (AdvancedMLPredictor - KARMAŞIK MODEL)
 # =============================================================================
-
-
-def prepare_next_rate_dataset(df_logs: pd.DataFrame) -> pd.DataFrame:
-    """
-    Her toplantı metninden bir sonraki toplantının policy_rate'ini tahmin etmek için dataset.
-    Çıktı kolonları: date, text, policy_rate, delta_bp, next_policy_rate
-    """
-    if df_logs is None or df_logs.empty:
-        return pd.DataFrame()
-
-    df = df_logs.copy()
-    df["period_date"] = pd.to_datetime(df["period_date"], errors="coerce")
-    df = df.dropna(subset=["period_date"]).sort_values("period_date")
-
-    if "policy_rate" not in df.columns:
-        return pd.DataFrame()
-
-    df["policy_rate"] = pd.to_numeric(df["policy_rate"], errors="coerce")
-    df["delta_bp"] = pd.to_numeric(df.get("delta_bp", np.nan), errors="coerce")
-
-    # delta_bp boşsa otomatik üret (fallback)
-    if df["delta_bp"].isna().all():
-        df["delta_bp"] = df["policy_rate"].diff().fillna(0.0) * 100.0
-
-    df["text"] = df["text_content"].fillna("").apply(normalize_tr_text)
-
-    # hedef = bir sonraki toplantının faizi
-    df["next_policy_rate"] = df["policy_rate"].shift(-1)
-
-    # son satırın hedefi yok
-    df = df.dropna(subset=["next_policy_rate", "policy_rate", "delta_bp"])
-
-    out = pd.DataFrame({
-        "date": df["period_date"],
-        "text": df["text"],
-        "policy_rate": df["policy_rate"].astype(float),
-        "delta_bp": df["delta_bp"].astype(float),
-        "next_policy_rate": df["next_policy_rate"].astype(float),
-    })
-    return out.reset_index(drop=True)
-
-
-
 
 @dataclass
 class CFG:
@@ -829,12 +619,6 @@ class CFG:
     fallback_hike_bps: float = 75.0
 
 cfg = CFG()
-
-def normalize_tr_text(s: str) -> str:
-    if s is None: return ""
-    s = str(s).lower()
-    s = re.sub(r"\s+", " ", s).strip()
-    return s
 
 def clip_bps(x, lo=cfg.cap_low, hi=cfg.cap_high):
     return np.clip(x, lo, hi)
@@ -1046,7 +830,7 @@ def build_next_row(df_hist: pd.DataFrame, next_text: str) -> pd.DataFrame:
     vol_ratio = float(roll_std / base) if base > 0 else 1.0
 
     row = pd.DataFrame([{
-        "text": normalize_tr_text(next_text),
+        "text": normalize_text(next_text),
         "prev_change_bps": prev_change_bps,
         "prev_abs_change": abs(prev_change_bps),
         "prev_sign": int(np.sign(prev_change_bps)),
@@ -1108,14 +892,10 @@ def prepare_ml_dataset(df_logs, df_market):
     if 'Donem' not in df_market.columns: return pd.DataFrame()
     
     df = pd.merge(df_logs, df_market, on="Donem", how="left")
+    df['text'] = df['text_content'].fillna("").apply(normalize_text)
     
-    # Colab mantığına uygun text clean
-    df['text'] = df['text_content'].fillna("").apply(normalize_tr_text)
-    
-    # FAİZ DEĞİŞİMİ HESAPLAMA (PPK Faizi'nden otomatik)
     if 'PPK Faizi' in df.columns:
         df['rate_change_bps'] = df['PPK Faizi'].diff().fillna(0.0) * 100
-        # Colab'da kullanılan kolon isimleri: date, text, rate_change_bps
         return pd.DataFrame({
             "date": df['period_date'],
             "text": df['text'],
@@ -1136,7 +916,7 @@ class AdvancedMLPredictor:
         if not HAS_ML_DEPS: return "Kütüphane eksik"
         
         df = add_features(ml_df, trend_window=cfg.trend_window)
-        self.df_hist = df # Tahmin için lazım
+        self.df_hist = df
         
         numeric_cols = [
             "prev_change_bps", "prev_abs_change", "prev_sign",
@@ -1152,21 +932,17 @@ class AdvancedMLPredictor:
         preprocess = build_preprocess(numeric_cols)
         clf, r_cut, r_hike, r_all = build_models(preprocess)
         
-        # Walk Forward Validation
         n_splits = choose_splits(len(df))
         y_p, d_p, c_p, res, res_dir = walk_forward_fast(X, y_bps, y_dir, dates, clf, r_cut, r_hike, r_all, n_splits)
         
-        # Store predictions in df_hist for visualization
         self.df_hist['predicted_bps'] = y_p
 
-        # Metrics
         mask = ~np.isnan(y_p)
         if np.any(mask):
             self.metrics['mae'] = mean_absolute_error(y_bps[mask], y_p[mask])
             self.metrics['rmse'] = rmse_metric(y_bps[mask], y_p[mask])
             self.metrics['acc'] = np.mean(y_dir[mask] == d_p[mask].astype(int))
         
-        # Fit Final Models
         overall_q, by_dir_q = compute_interval(res, res_dir)
         self.intervals = {'overall': overall_q, 'by_dir': by_dir_q}
         
@@ -1185,368 +961,13 @@ class AdvancedMLPredictor:
         )
 
 # =============================================================================
-# 7D. TEXT-AS-DATA HYBRID + CPI (ENGLISH TEXT) — delta_bp prediction
-#   X = TFIDF(word+char)(text) + lags(policy/delta) + CPI features (lagged)
-#   FIXES:
-#     - Numeric pipeline: SimpleImputer(median) + StandardScaler(with_mean=False)
-#     - Predict row: NaN/Inf-safe construction
-# =============================================================================
-
-def _safe_slope(series: pd.Series) -> float:
-    s = pd.to_numeric(series, errors="coerce").dropna()
-    if len(s) < 3:
-        return 0.0
-    x = np.arange(len(s), dtype=float)
-    y = s.values.astype(float)
-    try:
-        return float(np.polyfit(x, y, 1)[0])
-    except Exception:
-        return 0.0
-
-
-def textasdata_prepare_df_hybrid_cpi(
-    df_logs: pd.DataFrame,
-    df_market: pd.DataFrame,
-    text_col: str = "text_content",
-    date_col: str = "period_date",
-    y_col: str = "delta_bp",
-    rate_col: str = "policy_rate",
-) -> pd.DataFrame:
-    """
-    HYBRID + CPI dataset builder.
-    - English texts -> we'll use stop_words='english' in model.
-    - CPI columns expected in df_market: 'Yıllık TÜFE' (and optionally 'Aylık TÜFE')
-    - IMPORTANT: CPI is lagged (t-1) to avoid leakage.
-    """
-    if df_logs is None or df_logs.empty:
-        return pd.DataFrame()
-
-    df = df_logs.copy()
-    df[date_col] = pd.to_datetime(df[date_col], errors="coerce")
-    df = df.dropna(subset=[date_col]).sort_values(date_col).reset_index(drop=True)
-
-    # month key
-    df["Donem"] = df[date_col].dt.strftime("%Y-%m")
-
-    # text
-    df["text"] = (
-        df.get(text_col, "")
-        .fillna("")
-        .astype(str)
-        .str.replace(r"\s+", " ", regex=True)
-        .str.strip()
-    )
-
-    # core numeric
-    df["policy_rate"] = pd.to_numeric(df.get(rate_col), errors="coerce")
-    df["delta_bp"] = pd.to_numeric(df.get(y_col), errors="coerce")
-
-    # --- merge CPI / market ---
-    m = df_market.copy() if isinstance(df_market, pd.DataFrame) else pd.DataFrame()
-
-    if not m.empty:
-        if "Donem" not in m.columns and "SortDate" in m.columns:
-            m["Donem"] = pd.to_datetime(m["SortDate"], errors="coerce").dt.strftime("%Y-%m")
-
-        # normalize numeric
-        if "Yıllık TÜFE" in m.columns:
-            m["cpi_yoy"] = pd.to_numeric(m["Yıllık TÜFE"], errors="coerce")
-        else:
-            m["cpi_yoy"] = np.nan
-
-        if "Aylık TÜFE" in m.columns:
-            m["cpi_mom"] = pd.to_numeric(m["Aylık TÜFE"], errors="coerce")
-        else:
-            # fallback: aylık yoksa yoy farkını momentum gibi kullan
-            m["cpi_mom"] = m["cpi_yoy"].diff()
-
-        m = m[["Donem", "cpi_yoy", "cpi_mom"]].drop_duplicates(subset=["Donem"])
-        df = pd.merge(df, m, on="Donem", how="left")
-    else:
-        df["cpi_yoy"] = np.nan
-        df["cpi_mom"] = np.nan
-
-    # --- CPI features (LAGGED to avoid leakage) ---
-    df = df.sort_values(date_col).reset_index(drop=True)
-    df["cpi_yoy_lag1"] = df["cpi_yoy"].shift(1)
-    df["cpi_mom_lag1"] = df["cpi_mom"].shift(1)
-    df["cpi_trend3_lag1"] = df["cpi_yoy"].rolling(3).apply(lambda x: _safe_slope(pd.Series(x)), raw=False).shift(1)
-
-    # --- rate/delta dynamics (lagged) ---
-    df["policy_rate_lag1"] = df["policy_rate"].shift(1)
-    df["delta_bp_lag1"] = df["delta_bp"].shift(1)
-    df["delta_bp_lag3"] = df["delta_bp"].rolling(3).mean().shift(1)
-    df["policy_rate_trend"] = df["policy_rate"].rolling(3).apply(lambda x: _safe_slope(pd.Series(x)), raw=False).shift(1)
-
-    # hold streak (how many consecutive holds before this meeting)
-    streak = []
-    cur = 0
-    prev_changes = df["delta_bp"].shift(1).fillna(0.0).values
-    for v in prev_changes:
-        if float(v) == 0.0:
-            cur += 1
-        else:
-            cur = 0
-        streak.append(cur)
-    df["hold_streak"] = np.array(streak, dtype=int)
-
-    df["prev_sign"] = np.sign(df["delta_bp_lag1"].fillna(0.0)).astype(int)
-    df["mean_abs_last3"] = df["delta_bp"].shift(1).abs().rolling(3).mean()
-
-    # days since prev meeting
-    med = float(df[date_col].diff().dt.days.dropna().median()) if len(df) > 2 else 30.0
-    df["days_since_prev"] = df[date_col].diff().dt.days.fillna(med).clip(lower=0).astype(float)
-
-    out = df.rename(columns={date_col: "period_date"})[
-        [
-            "period_date",
-            "text",
-            "delta_bp",
-            "policy_rate",
-
-            # lags
-            "policy_rate_lag1", "delta_bp_lag1", "delta_bp_lag3", "policy_rate_trend",
-            "hold_streak", "prev_sign", "mean_abs_last3", "days_since_prev",
-
-            # CPI (lagged)
-            "cpi_yoy_lag1", "cpi_mom_lag1", "cpi_trend3_lag1",
-        ]
-    ].copy()
-
-    # drop rows where core features are missing (avoid breaking model)
-    need = [
-        "policy_rate_lag1", "delta_bp_lag1", "delta_bp_lag3", "policy_rate_trend",
-        "hold_streak", "prev_sign", "mean_abs_last3", "days_since_prev",
-        "cpi_yoy_lag1", "cpi_mom_lag1", "cpi_trend3_lag1",
-    ]
-    out = out.dropna(subset=need).reset_index(drop=True)
-    return out
-
-
-def train_textasdata_hybrid_cpi_ridge(
-    df_td: pd.DataFrame,
-    min_df: int = 2,
-    alpha: float = 10.0,
-    n_splits: int = 6,
-    word_ngram=(1, 2),
-    char_ngram=(3, 5),
-    max_features_word: int = 12000,
-    max_features_char: int = 20000,
-) -> dict:
-    if not HAS_ML_DEPS:
-        return {}
-    if df_td is None or df_td.empty:
-        return {}
-
-    df = df_td.copy().dropna(subset=["period_date"]).sort_values("period_date").reset_index(drop=True)
-    df_train = df.dropna(subset=["delta_bp"]).copy()
-    if df_train["delta_bp"].notna().sum() < 10:
-        return {}
-
-    import numpy as np
-    import pandas as pd
-    from sklearn.model_selection import TimeSeriesSplit
-    from sklearn.pipeline import Pipeline
-    from sklearn.compose import ColumnTransformer
-    from sklearn.feature_extraction.text import TfidfVectorizer
-    from sklearn.preprocessing import StandardScaler
-    from sklearn.impute import SimpleImputer
-    from sklearn.linear_model import Ridge
-    from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
-
-    # >>> ADD THESE IMPORTS + CLASS
-    from sklearn.base import BaseEstimator, TransformerMixin
-    import scipy.sparse as sp
-
-    class SparseFiniteFixer(BaseEstimator, TransformerMixin):
-        """Replace NaN/Inf in dense or sparse matrices with 0.0 (safety net)."""
-        def fit(self, X, y=None):
-            return self
-
-        def transform(self, X):
-            if sp.issparse(X):
-                X = X.tocsr(copy=True)
-                data = X.data
-                bad = ~np.isfinite(data)
-                if bad.any():
-                    data[bad] = 0.0
-                    X.data = data
-                    X.eliminate_zeros()
-                return X
-            else:
-                X = np.array(X, copy=True)
-                X[~np.isfinite(X)] = 0.0
-                return X
-    # <<< END ADD
-
-    num_cols = [
-        "policy_rate_lag1", "delta_bp_lag1", "delta_bp_lag3", "policy_rate_trend",
-        "hold_streak", "prev_sign", "mean_abs_last3", "days_since_prev",
-        "cpi_yoy_lag1", "cpi_mom_lag1", "cpi_trend3_lag1"
-    ]
-
-    X = df_train[["text"] + num_cols].copy()
-    y = df_train["delta_bp"].astype(float).values
-
-    preprocess = ColumnTransformer(
-        transformers=[
-            ("w_tfidf", TfidfVectorizer(
-                stop_words="english",
-                ngram_range=word_ngram,
-                min_df=max(1, int(min_df)),
-                max_df=0.95,
-                max_features=int(max_features_word),
-                sublinear_tf=True
-            ), "text"),
-            ("c_tfidf", TfidfVectorizer(
-                analyzer="char_wb",
-                ngram_range=char_ngram,
-                min_df=max(1, int(min_df)),
-                max_df=0.95,
-                max_features=int(max_features_char),
-                sublinear_tf=True
-            ), "text"),
-            ("num", Pipeline([
-                ("imp", SimpleImputer(strategy="median")),
-                ("scaler", StandardScaler(with_mean=False)),
-            ]), num_cols),
-        ],
-        remainder="drop",
-        sparse_threshold=0.3
-    )
-
-    # >>> IMPORTANT: add finite fixer between prep and ridge
-    pipe = Pipeline([
-        ("prep", preprocess),
-        ("finite", SparseFiniteFixer()),
-        ("ridge", Ridge(alpha=float(alpha), random_state=42)),
-    ])
-
-    tscv = TimeSeriesSplit(n_splits=min(int(n_splits), max(2, len(df_train) // 3)))
-    pred = np.full(len(df_train), np.nan, dtype=float)
-
-    for tr, te in tscv.split(X):
-        pipe.fit(X.iloc[tr], y[tr])
-        pred[te] = pipe.predict(X.iloc[te])
-
-    mask = np.isfinite(pred)
-    metrics = {"n": int(mask.sum())}
-    if mask.sum() >= 3:
-        metrics["mae"] = float(mean_absolute_error(y[mask], pred[mask]))
-        metrics["rmse"] = float(np.sqrt(mean_squared_error(y[mask], pred[mask])))
-        metrics["r2"] = float(r2_score(y[mask], pred[mask]))
-    else:
-        metrics.update({"mae": np.nan, "rmse": np.nan, "r2": np.nan})
-
-    pred_df = df_train[["period_date", "delta_bp", "policy_rate"]].copy()
-    pred_df["pred_delta_bp"] = pred
-
-    pipe.fit(X, y)
-
-    coef_df = pd.DataFrame()
-    try:
-        wvec = pipe.named_steps["prep"].named_transformers_["w_tfidf"]
-        feats = wvec.get_feature_names_out()
-        coefs = pipe.named_steps["ridge"].coef_.ravel()
-        w_dim = len(feats)
-        coef_df = pd.DataFrame({"feature": feats, "coef": coefs[:w_dim]})
-        coef_df["abs"] = coef_df["coef"].abs()
-    except Exception:
-        coef_df = pd.DataFrame()
-
-    return {
-        "model": pipe,
-        "pred_df": pred_df,
-        "metrics": metrics,
-        "coef_df": coef_df,
-        "num_cols": num_cols
-    }
-
-
-
-# --- helper: NaN/Inf-safe float ---
-def _sf(x, default=0.0) -> float:
-    try:
-        v = float(pd.to_numeric(x, errors="coerce"))
-        return v if np.isfinite(v) else float(default)
-    except Exception:
-        return float(default)
-
-
-def predict_textasdata_hybrid_cpi(model_pack: dict, df_hist: pd.DataFrame, text: str) -> dict:
-    """
-    For single-text prediction we need the latest known macro/history values from df_hist.
-    df_hist should be the output of textasdata_prepare_df_hybrid_cpi (sorted).
-    """
-    if not model_pack or "model" not in model_pack:
-        return {}
-    pipe = model_pack["model"]
-
-    txt = (text or "").strip()
-    if len(txt) < 30:
-        return {}
-
-    if df_hist is None or df_hist.empty:
-        return {}
-
-    df_hist = df_hist.sort_values("period_date").reset_index(drop=True)
-    last = df_hist.iloc[-1]
-
-    # NaN-safe last state
-    last_policy = _sf(last.get("policy_rate", np.nan), default=0.0)
-    last_delta  = _sf(last.get("delta_bp", np.nan), default=0.0)
-
-    row = pd.DataFrame([{
-        "text": txt,
-
-        "policy_rate_lag1": last_policy,
-        "delta_bp_lag1": last_delta,
-        "delta_bp_lag3": _sf(df_hist["delta_bp"].tail(3).mean(), default=0.0),
-        "policy_rate_trend": _sf(_safe_slope(df_hist["policy_rate"].tail(3)), default=0.0),
-
-        "hold_streak": _sf(last.get("hold_streak", 0.0), default=0.0),
-        "prev_sign": float(np.sign(last_delta)),
-        "mean_abs_last3": _sf(df_hist["delta_bp"].tail(3).abs().mean(), default=0.0),
-        "days_since_prev": _sf(last.get("days_since_prev", 30.0), default=30.0),
-
-        "cpi_yoy_lag1": _sf(last.get("cpi_yoy_lag1", np.nan), default=0.0),
-        "cpi_mom_lag1": _sf(last.get("cpi_mom_lag1", np.nan), default=0.0),
-        "cpi_trend3_lag1": _sf(last.get("cpi_trend3_lag1", np.nan), default=0.0),
-    }])
-
-    # final safety sweep
-    row = row.replace([np.inf, -np.inf], np.nan)
-    for c in row.columns:
-        if c != "text":
-            row[c] = pd.to_numeric(row[c], errors="coerce")
-    row = row.fillna(0.0)
-
-    pred_bp = float(pipe.predict(row)[0])
-    return {"pred_delta_bp": pred_bp}
-
-
-
-# =============================================================================
 # 8. CENTRAL BANK RoBERTa ENTEGRASYONU (mrince / STABLE)
-# Model: mrince/CBRT-RoBERTa-HawkishDovish-Classifier
 # =============================================================================
 
-import gc
-import numpy as np
-import pandas as pd
-import streamlit as st
-
-# --- MODEL CACHE ---
 @st.cache_resource(show_spinner=False)
 def load_roberta_pipeline():
-    """
-    mrince/CBRT-RoBERTa-HawkishDovish-Classifier pipeline
-    top_k=None -> tüm sınıf skorlarını döndürür.
-    """
-    if not HAS_TRANSFORMERS:
-        return None
+    if not HAS_TRANSFORMERS: return None
     try:
-        from transformers import pipeline
         model_name = "mrince/CBRT-RoBERTa-HawkishDovish-Classifier"
         clf = pipeline("text-classification", model=model_name, top_k=None)
         return clf
@@ -1554,107 +975,57 @@ def load_roberta_pipeline():
         print(f"Model Yükleme Hatası: {e}")
         return None
 
-
-# --- AUTO LABEL MAP (en kritik fix) ---
 @st.cache_resource(show_spinner=False)
 def _mrince_label_map():
-    """
-    Modelin LABEL_* -> {HAWK, DOVE, NEUT} eşlemesini otomatik bulur.
-    Çünkü pratikte LABEL_1/2/0 sabit varsayımı bazı durumlarda ters çıkabiliyor.
-    """
     clf = load_roberta_pipeline()
-    # güvenli fallback (çalışmazsa)
     fallback = {"HAWK": "LABEL_1", "DOVE": "LABEL_2", "NEUT": "LABEL_0"}
-    if clf is None:
-        return fallback
+    if clf is None: return fallback
 
     tests = {
         "HAWK": "The committee will tighten monetary policy further and deliver additional rate hikes.",
         "DOVE": "The committee will begin monetary easing soon and deliver rate cuts in the coming meetings.",
         "NEUT": "The committee decided to keep the policy rate unchanged."
     }
-
     def best_label(text: str) -> str:
         out = clf(text)
-        if isinstance(out, list) and out and isinstance(out[0], list):
-            out = out[0]
-        if not isinstance(out, list) or not out:
-            return ""
+        if isinstance(out, list) and out and isinstance(out[0], list): out = out[0]
+        if not isinstance(out, list) or not out: return ""
         best = max(out, key=lambda x: float(x.get("score", 0.0)))
         return str(best.get("label", "")).strip()
 
     hawk_lab = best_label(tests["HAWK"])
     dove_lab = best_label(tests["DOVE"])
     neut_lab = best_label(tests["NEUT"])
-
-    # çakışma olursa fallback’e dön
     labs = [hawk_lab, dove_lab, neut_lab]
-    if any(l == "" for l in labs) or len(set(labs)) < 3:
-        return fallback
-
+    if any(l == "" for l in labs) or len(set(labs)) < 3: return fallback
     return {"HAWK": hawk_lab, "DOVE": dove_lab, "NEUT": neut_lab}
 
-
 def _normalize_label_mrince(raw_label: str) -> str:
-    """
-    Otomatik çıkarılan label_map ile normalize eder.
-    """
     m = _mrince_label_map()
     lbl = str(raw_label).strip()
-
-    if lbl == m.get("HAWK"):
-        return "HAWK"
-    if lbl == m.get("DOVE"):
-        return "DOVE"
-    if lbl == m.get("NEUT"):
-        return "NEUT"
-
-    # fallback heuristik
+    if lbl == m.get("HAWK"): return "HAWK"
+    if lbl == m.get("DOVE"): return "DOVE"
+    if lbl == m.get("NEUT"): return "NEUT"
     low = lbl.lower()
-    if "hawk" in low:
-        return "HAWK"
-    if "dove" in low:
-        return "DOVE"
-    if "neut" in low or "neutral" in low:
-        return "NEUT"
-    if "label_0" in low:
-        return "NEUT"
+    if "hawk" in low: return "HAWK"
+    if "dove" in low: return "DOVE"
     return "NEUT"
 
-
 def stance_3class_from_diff(diff: float, deadband: float = 0.15) -> str:
-    """
-    diff = P(HAWK) - P(DOVE)
-    3 etiket: Şahin / Güvercin / Nötr
-    """
-    if diff >= deadband:
-        return "🦅 Şahin"
-    if diff <= -deadband:
-        return "🕊️ Güvercin"
+    if diff >= deadband: return "🦅 Şahin"
+    if diff <= -deadband: return "🕊️ Güvercin"
     return "⚖️ Nötr"
 
-
 def analyze_with_roberta(text: str):
-    """
-    Tek metin için sınıf olasılıkları + diff + basit duruş.
-    """
-    if not text:
-        return None
-
+    if not text: return None
     clf = load_roberta_pipeline()
-    if clf is None:
-        return "ERROR"
-
-    truncated_text = str(text)[:1200]  # RAM koruması
-
+    if clf is None: return "ERROR"
+    truncated_text = str(text)[:1200]
     try:
         raw = clf(truncated_text)
-        if isinstance(raw, list) and raw and isinstance(raw[0], list):
-            raw = raw[0]
-
+        if isinstance(raw, list) and raw and isinstance(raw[0], list): raw = raw[0]
         scores_map = {"HAWK": 0.0, "DOVE": 0.0, "NEUT": 0.0}
         best_score = -1.0
-
         for r in (raw or []):
             lbl_raw = r.get("label", "")
             sc = float(r.get("score", 0.0))
@@ -1666,101 +1037,60 @@ def analyze_with_roberta(text: str):
         d = float(scores_map.get("DOVE", 0.0))
         n = float(scores_map.get("NEUT", 0.0))
         diff = h - d
-
         return {
             "scores_map": scores_map,
             "best_score": float(best_score),
             "diff": float(diff),
             "stance": stance_3class_from_diff(diff),
-            "label_map": _mrince_label_map(),  # debug için (istersen UI'da göster)
             "h": h, "d": d, "n": n
         }
+    except Exception as e: return f"Error: {str(e)}"
+    finally: gc.collect()
 
-    except Exception as e:
-        return f"Error: {str(e)}"
-    finally:
-        gc.collect()
-
-
-def postprocess_ai_series(df: pd.DataFrame,
-                          diff_col: str = "Diff (H-D)",
-                          span: int = 7,
-                          z_scale: float = 2.0,
-                          hyst: float = 25.0) -> pd.DataFrame:
-    """
-    diff -> robust z-score -> tanh -> score
-    score -> EMA smoothing
-    EMA -> hysteresis regime etiketi
-    """
-    if df is None or df.empty or diff_col not in df.columns:
-        return df
-
+def postprocess_ai_series(df: pd.DataFrame, diff_col: str = "Diff (H-D)", span: int = 7, z_scale: float = 2.0, hyst: float = 25.0) -> pd.DataFrame:
+    if df is None or df.empty or diff_col not in df.columns: return df
     out = df.copy()
     x = out[diff_col].astype(float)
-
     med = float(x.median())
     mad = float((x - med).abs().median()) + 1e-6
     z = (x - med) / (1.4826 * mad)
-
     out["AI Score (Calib)"] = np.tanh(z / float(z_scale)) * 100.0
     out["AI Score (EMA)"] = out["AI Score (Calib)"].ewm(span=span, adjust=False).mean()
-
     regime = []
     prev = "⚖️ Nötr"
     for v in out["AI Score (EMA)"].values:
         v = float(v)
-        if prev in ["⚖️ Nötr", "🦅 Şahin"] and v >= hyst:
-            prev = "🦅 Şahin"
-        elif prev in ["⚖️ Nötr", "🕊️ Güvercin"] and v <= -hyst:
-            prev = "🕊️ Güvercin"
-        elif abs(v) < hyst * 0.6:
-            prev = "⚖️ Nötr"
+        if prev in ["⚖️ Nötr", "🦅 Şahin"] and v >= hyst: prev = "🦅 Şahin"
+        elif prev in ["⚖️ Nötr", "🕊️ Güvercin"] and v <= -hyst: prev = "🕊️ Güvercin"
+        elif abs(v) < hyst * 0.6: prev = "⚖️ Nötr"
         regime.append(prev)
-
     out["AI Rejim"] = regime
     return out
 
-
 def calculate_ai_trend_series(df_all: pd.DataFrame) -> pd.DataFrame:
-    """
-    Tüm geçmişi tarar (mrince) ve sonra postprocess ile trend endeksi üretir.
-    """
-    if df_all is None or df_all.empty:
-        return pd.DataFrame()
-
+    if df_all is None or df_all.empty: return pd.DataFrame()
     clf = load_roberta_pipeline()
-    if clf is None:
-        return pd.DataFrame()
-
+    if clf is None: return pd.DataFrame()
     df_all = df_all.copy()
     df_all["period_date"] = pd.to_datetime(df_all["period_date"], errors="coerce")
     df_all = df_all.dropna(subset=["period_date"]).sort_values("period_date")
-
     results = []
     st.toast("AI analiz başladı...", icon="⏳")
     pb = st.progress(0)
     total = len(df_all)
-
     for i, (_, row) in enumerate(df_all.iterrows()):
         pb.progress((i + 1) / total)
-
         txt = str(row.get("text_content", "") or "")
-        if len(txt) < 10:
-            continue
-
+        if len(txt) < 10: continue
         res = analyze_with_roberta(txt)
-        if not isinstance(res, dict):
-            continue
-
+        if not isinstance(res, dict): continue
         dt = row["period_date"]
         period = dt.strftime("%Y-%m")
-
         scores = res.get("scores_map", {}) or {}
         h = float(scores.get("HAWK", 0.0))
         d = float(scores.get("DOVE", 0.0))
         n = float(scores.get("NEUT", 0.0))
         diff = float(res.get("diff", h - d))
-
         results.append({
             "Dönem": period,
             "period_date": dt,
@@ -1771,331 +1101,228 @@ def calculate_ai_trend_series(df_all: pd.DataFrame) -> pd.DataFrame:
             "Duruş": str(res.get("stance", "")),
             "Güven": float(res.get("best_score", 0.0)),
         })
-
         gc.collect()
-
     pb.empty()
     st.toast("AI analiz tamamlandı!", icon="✅")
-
     out = pd.DataFrame(results)
-    if out.empty:
-        return out
-
+    if out.empty: return out
     out = out.sort_values("period_date").reset_index(drop=True)
     out = postprocess_ai_series(out, diff_col="Diff (H-D)", span=7, z_scale=2.0, hyst=25.0)
     return out
 
-
 def create_ai_trend_chart(df_res: pd.DataFrame):
     import plotly.graph_objects as go
-    if df_res is None or df_res.empty:
-        return None
-
+    if df_res is None or df_res.empty: return None
     df = df_res.copy()
     y_col = "AI Score (EMA)" if "AI Score (EMA)" in df.columns else "Diff (H-D)"
     y = df[y_col].astype(float)
-
     hover_text = None
     if "AI Rejim" in df.columns and "Duruş" in df.columns:
         hover_text = (df["AI Rejim"].astype(str) + " | " + df["Duruş"].astype(str))
-    elif "AI Rejim" in df.columns:
-        hover_text = df["AI Rejim"].astype(str)
-    elif "Duruş" in df.columns:
-        hover_text = df["Duruş"].astype(str)
-
+    elif "AI Rejim" in df.columns: hover_text = df["AI Rejim"].astype(str)
+    elif "Duruş" in df.columns: hover_text = df["Duruş"].astype(str)
     fig = go.Figure()
-
     fig.add_trace(go.Scatter(
-        x=df["Dönem"], y=y,
-        mode="lines", name="AI Trend",
-        line=dict(width=2)
+        x=df["Dönem"], y=y, mode="lines", name="AI Trend", line=dict(width=2)
     ))
-
     fig.add_trace(go.Scatter(
-        x=df["Dönem"], y=y,
-        mode="markers", name="Aylık",
-        marker=dict(
-            size=11,
-            color=y,
-            colorscale="RdBu_r",
-            cmin=-100, cmax=100,
-            showscale=True,
-            colorbar=dict(title=y_col)
-        ),
-        text=hover_text,
-        hovertemplate="<b>%{x}</b><br>Skor: %{y:.1f}<br>%{text}<extra></extra>"
+        x=df["Dönem"], y=y, mode="markers", name="Aylık",
+        marker=dict(size=11, color=y, colorscale="RdBu_r", cmin=-100, cmax=100, showscale=True, colorbar=dict(title=y_col)),
+        text=hover_text, hovertemplate="<b>%{x}</b><br>Skor: %{y:.1f}<br>%{text}<extra></extra>"
     ))
-
     fig.add_hline(y=0, line_color="black", opacity=0.25)
-
-    fig.update_layout(
-        title="mrince RoBERTa — AI Duruş Trendi (Calib + EMA + Hysteresis)",
-        yaxis=dict(title=y_col, range=[-110, 110]),
-        height=450,
-        margin=dict(l=20, r=20, t=40, b=20)
-    )
+    fig.update_layout(title="mrince RoBERTa — AI Duruş Trendi (Calib + EMA + Hysteresis)", yaxis=dict(title=y_col, range=[-110, 110]), height=450, margin=dict(l=20, r=20, t=40, b=20))
     return fig
 
-
-import re
-import gc
-import pandas as pd
-import numpy as np
-
-def _fallback_sentence_split(text: str) -> list[str]:
-    # Basit ama sağlam: . ! ? ; : ve satır sonlarından böl
-    t = re.sub(r"\s+", " ", str(text)).strip()
-    if not t:
-        return []
-    parts = re.split(r"(?<=[\.\!\?\;\:])\s+", t)
-    # Çok kısa parçaları temizle
-    return [p.strip() for p in parts if p and len(p.strip()) >= 10]
-
-import re
-import gc
-import pandas as pd
-import numpy as np
-
-def _fallback_sentence_split(text: str) -> list[str]:
-    t = re.sub(r"\s+", " ", str(text)).strip()
-    if not t:
-        return []
-    parts = re.split(r"(?<=[\.\!\?\;\:])\s+", t)
-    return [p.strip() for p in parts if p and len(p.strip()) >= 10]
-
 def analyze_sentences_with_roberta(text: str) -> pd.DataFrame:
-    """
-    Streamlit Cloud için güvenli:
-    - split_sentences_nlp boşsa fallback
-    - çok cümlede batch çalışır
-    - model call patlarsa UI'da görebil diye ERROR satırı döndürür
-    """
-    if not text:
-        return pd.DataFrame()
-
+    if not text: return pd.DataFrame()
     clf = load_roberta_pipeline()
-    if clf is None:
-        return pd.DataFrame([{"ERROR": "Pipeline not loaded (HAS_TRANSFORMERS false or model load failed)"}])
-
+    if clf is None: return pd.DataFrame([{"ERROR": "Pipeline not loaded"}])
     t = str(text).strip()
-    if len(t) < 30:
-        return pd.DataFrame()
-
-    # 1) Sentence split
-    try:
-        sentences = split_sentences_nlp(t)
-        sentences = [s.strip() for s in (sentences or [])]
-    except Exception as e:
-        sentences = []
-
-    if not sentences:
-        sentences = _fallback_sentence_split(t)
-
-    # yumuşak filtre
+    if len(t) < 30: return pd.DataFrame()
+    
+    sentences = split_sentences_nlp(t)
+    if not sentences: sentences = _fallback_sentence_split(t)
     sentences = [s for s in sentences if s and len(s.split()) >= 3]
-    if not sentences:
-        return pd.DataFrame()
-
-    # cümleleri kısalt (transformers truncation’a ek olarak)
+    if not sentences: return pd.DataFrame()
     sentences = [s[:500] for s in sentences]
-
-    # çok uzarsa limitle
     max_sent = 120
-    if len(sentences) > max_sent:
-        sentences = sentences[:max_sent]
+    if len(sentences) > max_sent: sentences = sentences[:max_sent]
 
-    # 2) Predict in batches (Cloud RAM)
     try:
         rows = []
         batch_size = 16
-
         for i in range(0, len(sentences), batch_size):
             batch = sentences[i:i+batch_size]
-
-            # truncation/padding burada kritik
             preds = clf(batch, truncation=True)
-
             for sent, pred in zip(batch, preds):
-                # normalize => list-of-dicts
-                if isinstance(pred, list) and pred and isinstance(pred[0], list):
-                    pred = pred[0]
-                if isinstance(pred, dict):
-                    pred = [pred]
-
+                if isinstance(pred, list) and pred and isinstance(pred[0], list): pred = pred[0]
+                if isinstance(pred, dict): pred = [pred]
                 scores_map = {"HAWK": 0.0, "DOVE": 0.0, "NEUT": 0.0}
                 for r in (pred or []):
                     lbl = _normalize_label_mrince(r.get("label", ""))
                     sc = float(r.get("score", 0.0))
                     scores_map[lbl] = sc
-
-                h = float(scores_map["HAWK"])
-                d = float(scores_map["DOVE"])
-                n = float(scores_map["NEUT"])
+                h = float(scores_map["HAWK"]); d = float(scores_map["DOVE"]); n = float(scores_map["NEUT"])
                 diff = h - d
-
                 rows.append({
-                    "Cümle": sent,
-                    "Duruş": stance_3class_from_diff(diff),
-                    "Diff (H-D)": float(diff),
-                    "HAWK": h,
-                    "DOVE": d,
-                    "NEUT": n,
+                    "Cümle": sent, "Duruş": stance_3class_from_diff(diff), "Diff (H-D)": float(diff),
+                    "HAWK": h, "DOVE": d, "NEUT": n,
                 })
-
         df = pd.DataFrame(rows)
-        if not df.empty:
-            df = df.sort_values("Diff (H-D)", ascending=False).reset_index(drop=True)
+        if not df.empty: df = df.sort_values("Diff (H-D)", ascending=False).reset_index(drop=True)
         return df
-
     except Exception as e:
-        # UI'ya taşıyalım ki "neden boş" kaybolmasın
-        return pd.DataFrame([{
-            "ERROR": repr(e),
-            "sent_count": len(sentences),
-            "sample_sent": sentences[0][:200] if sentences else ""
-        }])
-    finally:
-        gc.collect()
-
-
-
-
+        return pd.DataFrame([{"ERROR": repr(e)}])
+    finally: gc.collect()
 
 # =============================================================================
-# 7D. TEXT-AS-DATA HYBRID + CPI (ENGLISH TEXT) — delta_bp prediction
-#   X = TFIDF(word+char)(text) + lags(policy/delta) + CPI features (lagged)
+# 9. TEXT-AS-DATA HYBRID + CPI (Modern Ridge)
 # =============================================================================
 
-def _safe_slope(series: pd.Series) -> float:
-    s = pd.to_numeric(series, errors="coerce").dropna()
-    if len(s) < 3:
-        return 0.0
-    x = np.arange(len(s), dtype=float)
-    y = s.values.astype(float)
-    try:
-        return float(np.polyfit(x, y, 1)[0])
-    except Exception:
-        return 0.0
-
-
-def textasdata_prepare_df_hybrid_cpi(
-    df_logs: pd.DataFrame,
-    df_market: pd.DataFrame,
-    text_col: str = "text_content",
-    date_col: str = "period_date",
-    y_col: str = "delta_bp",
-    rate_col: str = "policy_rate",
-) -> pd.DataFrame:
-    """
-    HYBRID + CPI dataset builder.
-    - English texts -> we'll use stop_words='english' in model.
-    - CPI columns expected in df_market: 'Yıllık TÜFE' (and optionally 'Aylık TÜFE')
-    - IMPORTANT: CPI is lagged (t-1) to avoid leakage.
-    """
-    if df_logs is None or df_logs.empty:
-        return pd.DataFrame()
-
+def textasdata_prepare_df_hybrid_cpi(df_logs: pd.DataFrame, df_market: pd.DataFrame, text_col: str = "text_content", date_col: str = "period_date", y_col: str = "delta_bp", rate_col: str = "policy_rate") -> pd.DataFrame:
+    if df_logs is None or df_logs.empty: return pd.DataFrame()
     df = df_logs.copy()
     df[date_col] = pd.to_datetime(df[date_col], errors="coerce")
     df = df.dropna(subset=[date_col]).sort_values(date_col).reset_index(drop=True)
-
-    # month key
     df["Donem"] = df[date_col].dt.strftime("%Y-%m")
-
-    # text
-    df["text"] = (
-        df.get(text_col, "")
-        .fillna("")
-        .astype(str)
-        .str.replace(r"\s+", " ", regex=True)
-        .str.strip()
-    )
-
-    # core numeric
+    df["text"] = df.get(text_col, "").fillna("").astype(str).str.replace(r"\s+", " ", regex=True).str.strip()
     df["policy_rate"] = pd.to_numeric(df.get(rate_col), errors="coerce")
     df["delta_bp"] = pd.to_numeric(df.get(y_col), errors="coerce")
-
-    # --- merge CPI / market ---
+    
     m = df_market.copy() if isinstance(df_market, pd.DataFrame) else pd.DataFrame()
-
     if not m.empty:
         if "Donem" not in m.columns and "SortDate" in m.columns:
             m["Donem"] = pd.to_datetime(m["SortDate"], errors="coerce").dt.strftime("%Y-%m")
-
-        # normalize numeric
-        if "Yıllık TÜFE" in m.columns:
-            m["cpi_yoy"] = pd.to_numeric(m["Yıllık TÜFE"], errors="coerce")
-        else:
-            m["cpi_yoy"] = np.nan
-
-        if "Aylık TÜFE" in m.columns:
-            m["cpi_mom"] = pd.to_numeric(m["Aylık TÜFE"], errors="coerce")
-        else:
-            # fallback: aylık yoksa yoy farkını momentum gibi kullan
-            m["cpi_mom"] = m["cpi_yoy"].diff()
-
+        if "Yıllık TÜFE" in m.columns: m["cpi_yoy"] = pd.to_numeric(m["Yıllık TÜFE"], errors="coerce")
+        else: m["cpi_yoy"] = np.nan
+        if "Aylık TÜFE" in m.columns: m["cpi_mom"] = pd.to_numeric(m["Aylık TÜFE"], errors="coerce")
+        else: m["cpi_mom"] = m["cpi_yoy"].diff()
         m = m[["Donem", "cpi_yoy", "cpi_mom"]].drop_duplicates(subset=["Donem"])
         df = pd.merge(df, m, on="Donem", how="left")
     else:
-        df["cpi_yoy"] = np.nan
-        df["cpi_mom"] = np.nan
+        df["cpi_yoy"] = np.nan; df["cpi_mom"] = np.nan
 
-    # --- CPI features (LAGGED to avoid leakage) ---
     df = df.sort_values(date_col).reset_index(drop=True)
     df["cpi_yoy_lag1"] = df["cpi_yoy"].shift(1)
     df["cpi_mom_lag1"] = df["cpi_mom"].shift(1)
     df["cpi_trend3_lag1"] = df["cpi_yoy"].rolling(3).apply(lambda x: _safe_slope(pd.Series(x)), raw=False).shift(1)
-
-    # --- rate/delta dynamics (lagged) ---
     df["policy_rate_lag1"] = df["policy_rate"].shift(1)
     df["delta_bp_lag1"] = df["delta_bp"].shift(1)
     df["delta_bp_lag3"] = df["delta_bp"].rolling(3).mean().shift(1)
     df["policy_rate_trend"] = df["policy_rate"].rolling(3).apply(lambda x: _safe_slope(pd.Series(x)), raw=False).shift(1)
-
-    # hold streak (how many consecutive holds before this meeting)
-    streak = []
-    cur = 0
+    
+    streak, cur = [], 0
     prev_changes = df["delta_bp"].shift(1).fillna(0.0).values
     for v in prev_changes:
-        if float(v) == 0.0:
-            cur += 1
-        else:
-            cur = 0
+        if float(v) == 0.0: cur += 1
+        else: cur = 0
         streak.append(cur)
     df["hold_streak"] = np.array(streak, dtype=int)
-
+    
     df["prev_sign"] = np.sign(df["delta_bp_lag1"].fillna(0.0)).astype(int)
-    df["mean_abs_last3"] = (
-        df["delta_bp"].shift(1).abs().rolling(3).mean()
-    )
-
-    # days since prev meeting
+    df["mean_abs_last3"] = df["delta_bp"].shift(1).abs().rolling(3).mean()
     med = float(df[date_col].diff().dt.days.dropna().median()) if len(df) > 2 else 30.0
     df["days_since_prev"] = df[date_col].diff().dt.days.fillna(med).clip(lower=0).astype(float)
-
-    out = df.rename(columns={date_col: "period_date"})[
-        [
-            "period_date",
-            "text",
-            "delta_bp",
-            "policy_rate",
-
-            # lags
-            "policy_rate_lag1", "delta_bp_lag1", "delta_bp_lag3", "policy_rate_trend",
-            "hold_streak", "prev_sign", "mean_abs_last3", "days_since_prev",
-
-            # CPI (lagged)
-            "cpi_yoy_lag1", "cpi_mom_lag1", "cpi_trend3_lag1",
-        ]
-    ].copy()
-
-    # drop rows where core features are missing (avoid breaking model)
-    need = [
+    
+    out = df.rename(columns={date_col: "period_date"})[[
+        "period_date", "text", "delta_bp", "policy_rate",
         "policy_rate_lag1", "delta_bp_lag1", "delta_bp_lag3", "policy_rate_trend",
         "hold_streak", "prev_sign", "mean_abs_last3", "days_since_prev",
-        "cpi_yoy_lag1", "cpi_mom_lag1", "cpi_trend3_lag1",
-    ]
+        "cpi_yoy_lag1", "cpi_mom_lag1", "cpi_trend3_lag1"
+    ]].copy()
+    
+    need = ["policy_rate_lag1", "delta_bp_lag1", "delta_bp_lag3", "policy_rate_trend",
+            "hold_streak", "prev_sign", "mean_abs_last3", "days_since_prev",
+            "cpi_yoy_lag1", "cpi_mom_lag1", "cpi_trend3_lag1"]
     out = out.dropna(subset=need).reset_index(drop=True)
     return out
 
+def train_textasdata_hybrid_cpi_ridge(df_td: pd.DataFrame, min_df: int = 2, alpha: float = 10.0, n_splits: int = 6, word_ngram=(1, 2), char_ngram=(3, 5), max_features_word: int = 12000, max_features_char: int = 20000) -> dict:
+    if not HAS_ML_DEPS or df_td is None or df_td.empty: return {}
+    df = df_td.copy().dropna(subset=["period_date"]).sort_values("period_date").reset_index(drop=True)
+    df_train = df.dropna(subset=["delta_bp"]).copy()
+    if df_train["delta_bp"].notna().sum() < 10: return {}
+    
+    num_cols = ["policy_rate_lag1", "delta_bp_lag1", "delta_bp_lag3", "policy_rate_trend",
+                "hold_streak", "prev_sign", "mean_abs_last3", "days_since_prev",
+                "cpi_yoy_lag1", "cpi_mom_lag1", "cpi_trend3_lag1"]
+    
+    X = df_train[["text"] + num_cols].copy()
+    y = df_train["delta_bp"].astype(float).values
+    
+    preprocess = ColumnTransformer(
+        transformers=[
+            ("w_tfidf", TfidfVectorizer(stop_words="english", ngram_range=word_ngram, min_df=max(1, int(min_df)), max_df=0.95, max_features=int(max_features_word), sublinear_tf=True), "text"),
+            ("c_tfidf", TfidfVectorizer(analyzer="char_wb", ngram_range=char_ngram, min_df=max(1, int(min_df)), max_df=0.95, max_features=int(max_features_char), sublinear_tf=True), "text"),
+            ("num", Pipeline([("imp", SimpleImputer(strategy="median")), ("scaler", StandardScaler(with_mean=False))]), num_cols),
+        ],
+        remainder="drop", sparse_threshold=0.3
+    )
+    
+    pipe = Pipeline([
+        ("prep", preprocess),
+        ("finite", SparseFiniteFixer()),
+        ("ridge", Ridge(alpha=float(alpha), random_state=42)),
+    ])
+    
+    tscv = TimeSeriesSplit(n_splits=min(int(n_splits), max(2, len(df_train) // 3)))
+    pred = np.full(len(df_train), np.nan, dtype=float)
+    for tr, te in tscv.split(X):
+        pipe.fit(X.iloc[tr], y[tr])
+        pred[te] = pipe.predict(X.iloc[te])
+        
+    mask = np.isfinite(pred)
+    metrics = {"n": int(mask.sum())}
+    if mask.sum() >= 3:
+        metrics["mae"] = float(mean_absolute_error(y[mask], pred[mask]))
+        metrics["rmse"] = float(np.sqrt(mean_squared_error(y[mask], pred[mask])))
+        metrics["r2"] = float(r2_score(y[mask], pred[mask]))
+    else: metrics.update({"mae": np.nan, "rmse": np.nan, "r2": np.nan})
+    
+    pred_df = df_train[["period_date", "delta_bp", "policy_rate"]].copy()
+    pred_df["pred_delta_bp"] = pred
+    
+    pipe.fit(X, y)
+    
+    coef_df = pd.DataFrame()
+    try:
+        wvec = pipe.named_steps["prep"].named_transformers_["w_tfidf"]
+        feats = wvec.get_feature_names_out()
+        coefs = pipe.named_steps["ridge"].coef_.ravel()
+        w_dim = len(feats)
+        coef_df = pd.DataFrame({"feature": feats, "coef": coefs[:w_dim]})
+        coef_df["abs"] = coef_df["coef"].abs()
+    except Exception: coef_df = pd.DataFrame()
+    
+    return {"model": pipe, "pred_df": pred_df, "metrics": metrics, "coef_df": coef_df, "num_cols": num_cols}
 
+def predict_textasdata_hybrid_cpi(model_pack: dict, df_hist: pd.DataFrame, text: str) -> dict:
+    if not model_pack or "model" not in model_pack or df_hist is None or df_hist.empty: return {}
+    pipe = model_pack["model"]
+    txt = (text or "").strip()
+    if len(txt) < 30: return {}
+    
+    df_hist = df_hist.sort_values("period_date").reset_index(drop=True)
+    last = df_hist.iloc[-1]
+    
+    row = pd.DataFrame([{
+        "text": txt,
+        "policy_rate_lag1": _sf(last.get("policy_rate", np.nan)),
+        "delta_bp_lag1": _sf(last.get("delta_bp", np.nan)),
+        "delta_bp_lag3": _sf(df_hist["delta_bp"].tail(3).mean()),
+        "policy_rate_trend": _sf(_safe_slope(df_hist["policy_rate"].tail(3))),
+        "hold_streak": _sf(last.get("hold_streak", 0.0)),
+        "prev_sign": float(np.sign(_sf(last.get("delta_bp", 0.0)))),
+        "mean_abs_last3": _sf(df_hist["delta_bp"].tail(3).abs().mean()),
+        "days_since_prev": _sf(last.get("days_since_prev", 30.0), default=30.0),
+        "cpi_yoy_lag1": _sf(last.get("cpi_yoy", np.nan)),
+        "cpi_mom_lag1": _sf(last.get("cpi_mom", np.nan)),
+        "cpi_trend3_lag1": _sf(_safe_slope(df_hist["cpi_yoy"].tail(3))),
+    }])
+    row = row.replace([np.inf, -np.inf], np.nan).fillna(0.0)
+    for c in row.columns:
+        if c != "text": row[c] = pd.to_numeric(row[c], errors="coerce")
+    row = row.fillna(0.0)
+    pred_bp = float(pipe.predict(row)[0])
+    return {"pred_delta_bp": pred_bp}

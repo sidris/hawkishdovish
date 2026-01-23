@@ -1258,6 +1258,9 @@ def _render_tab_roberta():
             n = float(scores.get("NEUT", 0.0))
             diff = float(roberta_res.get("diff", h - d))
             stance = str(roberta_res.get("stance", ""))
+            stance_sent = roberta_res.get("stance_sentence")
+            doc_diff_mean = roberta_res.get("doc_diff_mean")
+            net_push = roberta_res.get("net_push")
 
             # Eğer trend serisinde EMA skor varsa, bu dönemin EMA skorunu da yakalayalım
             ema_score = None
@@ -1268,7 +1271,9 @@ def _render_tab_roberta():
                     ema_score = float(hit.iloc[0]["AI Score (EMA)"])
 
             c1, c2, c3 = st.columns(3)
-            c1.metric("Duruş", stance)
+            # Öncelik: cümle-özet duruşu (varsa) — full-text tek parça tahmin bazen şişebiliyor
+            primary_stance = str(stance_sent or stance)
+            c1.metric("Duruş", primary_stance)
             c2.metric("Diff (H-D)", f"{diff:.3f}")
             if ema_score is not None:
                 c3.metric("AI Score (EMA)", f"{ema_score:.1f}")
@@ -1277,6 +1282,12 @@ def _render_tab_roberta():
 
             st.write("Sınıf Skorları:")
             st.json({"HAWK": h, "DOVE": d, "NEUT": n})
+
+            if stance_sent is not None:
+                st.caption(
+                    f"Cümle-özet: {stance_sent} | diff_mean={doc_diff_mean:+.3f} | net_push={net_push:+.2f} — "
+                    f"Full-text ham: {roberta_res.get('stance_full_raw', stance)}"
+                )
 
             # Debug
             with st.expander("DEBUG (ham çıktı)", expanded=False):

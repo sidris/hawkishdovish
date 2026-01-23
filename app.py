@@ -1064,6 +1064,16 @@ with tab_textdata:
     _render_tab_text_as_data()
 with tab6:
     st.header("☁️ Kelime Bulutu (WordCloud)")
+    # WordCloud sekmesi, TF-IDF modeline bağlı olmamalı; burada veriyi yeniden çekip normalize ediyoruz.
+    df_all = utils.fetch_all_data()
+    if df_all is None:
+        df_all = pd.DataFrame()
+    if not df_all.empty:
+        df_all = df_all.copy()
+        df_all["period_date"] = pd.to_datetime(df_all.get("period_date", None), errors="coerce")
+        df_all = df_all.dropna(subset=["period_date"]).sort_values("period_date", ascending=False).reset_index(drop=True)
+        df_all["Donem"] = df_all["period_date"].dt.strftime("%Y-%m")
+
     if not df_all.empty:
         st.text_input("🚫 Buluttan Çıkarılacak Kelimeler (Enter)", key="cloud_stop_in", on_change=add_cloud_stop)
         if st.session_state['stop_words_cloud']:

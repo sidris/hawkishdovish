@@ -1210,7 +1210,7 @@ def _render_tab_roberta():
     3) Serinin kendi dağılımına göre **robust kalibrasyon** yapılır (median + MAD → robust z-score)  
     4) `tanh` ile skor **−100..+100** bandına sıkıştırılır  
     5) **EMA (span=7)** ile yumuşatılır  
-    6) Rejim etiketinde hızlı flip olmasın diye **histerezis** uygulanır (±25 eşikleri)
+    6) Rejim etiketinde hızlı flip olmasın diye **histerezis** uygulanır (±25 giriş eşiği + ±15 nötr bant + işaret değişiminde hızlı nötre dönüş)
 
     Bu yüzden, model 3 sınıf üretse bile grafikteki çizgi “süreklilik” gösterir: bu bir **türetilmiş duruş endeksi**dir.
         """)

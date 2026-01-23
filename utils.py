@@ -1863,84 +1863,100 @@ def _fallback_sentence_split(text: str) -> list[str]:
     parts = re.split(r"(?<=[\.\!\?\;\:])\s+", t)
     return [p.strip() for p in parts if p and len(p.strip()) >= 10]
 
+import re
+import numpy as np
+import pandas as pd
+
+def _safe_split_sentences(text: str) -> list[str]:
+    """
+    Prod'da NLP splitter bozulursa diye sağlam fallback.
+    TR/EN karışık metinlerde de çalışır.
+    """
+    if not text or not isinstance(text, str):
+        return []
+    t = " ".join(text.replace("\n", " ").split()).strip()
+    if not t:
+        return []
+
+    # Nokta/ünlem/soru/iki nokta/; sonrası split
+    parts = re.split(r"(?<=[\.\!\?\;:])\s+", t)
+    parts = [p.strip() for p in parts if p and p.strip()]
+
+    # Çok kısa / “Madde 1” gibi şeyleri ele (çok agresif olmasın)
+    out = []
+    for p in parts:
+        if len(p) < 25:
+            continue
+        if len(p.split()) < 3:
+            continue
+        out.append(p)
+    return out
+
+
 def analyze_sentences_with_roberta(text: str) -> pd.DataFrame:
     """
-    Streamlit Cloud için güvenli:
-    - split_sentences_nlp boşsa fallback
-    - çok cümlede batch çalışır
-    - model call patlarsa UI'da görebil diye ERROR satırı döndürür
+    Önce mevcut splitter'ı dener (varsa), yoksa fallback.
+    Sonra mrince pipeline ile sentence bazında skorları çıkarır.
     """
     if not text:
         return pd.DataFrame()
 
     clf = load_roberta_pipeline()
     if clf is None:
-        return pd.DataFrame([{"ERROR": "Pipeline not loaded (HAS_TRANSFORMERS false or model load failed)"}])
-
-    t = str(text).strip()
-    if len(t) < 30:
         return pd.DataFrame()
 
-    # 1) Sentence split
+    # 1) sentence split: önce eski fonksiyon varsa dene
+    sentences = []
     try:
-        sentences = split_sentences_nlp(t)
-        sentences = [s.strip() for s in (sentences or [])]
-    except Exception as e:
+        if "split_sentences_nlp" in globals():
+            sentences = split_sentences_nlp(str(text))
+    except Exception:
         sentences = []
 
+    # 2) fallback
     if not sentences:
-        sentences = _fallback_sentence_split(t)
+        sentences = _safe_split_sentences(str(text))
 
-    # yumuşak filtre
-    sentences = [s for s in sentences if s and len(s.split()) >= 3]
+    # 3) temizlik
+    sentences = [s.strip() for s in sentences if s and s.strip()]
     if not sentences:
         return pd.DataFrame()
 
-    # cümleleri kısalt (transformers truncation’a ek olarak)
-    sentences = [s[:500] for s in sentences]
-
-    # çok uzarsa limitle
-    max_sent = 120
-    if len(sentences) > max_sent:
-        sentences = sentences[:max_sent]
-
-    # 2) Predict in batches (Cloud RAM)
+    # 4) model inference (batch)
     try:
+        preds = clf(sentences[:160])  # güvenlik limiti
         rows = []
-        batch_size = 16
 
-        for i in range(0, len(sentences), batch_size):
-            batch = sentences[i:i+batch_size]
+        for sent, pred in zip(sentences[:160], preds):
+            # pipeline bazen [[...]] döndürür
+            if isinstance(pred, list) and pred and isinstance(pred[0], list):
+                pred = pred[0]
 
-            # truncation/padding burada kritik
-            preds = clf(batch, truncation=True)
+            scores_map = {"HAWK": 0.0, "DOVE": 0.0, "NEUT": 0.0}
 
-            for sent, pred in zip(batch, preds):
-                # normalize => list-of-dicts
-                if isinstance(pred, list) and pred and isinstance(pred[0], list):
-                    pred = pred[0]
-                if isinstance(pred, dict):
-                    pred = [pred]
-
-                scores_map = {"HAWK": 0.0, "DOVE": 0.0, "NEUT": 0.0}
-                for r in (pred or []):
+            if isinstance(pred, list):
+                for r in pred:
                     lbl = _normalize_label_mrince(r.get("label", ""))
                     sc = float(r.get("score", 0.0))
                     scores_map[lbl] = sc
+            elif isinstance(pred, dict):
+                lbl = _normalize_label_mrince(pred.get("label", ""))
+                sc = float(pred.get("score", 0.0))
+                scores_map[lbl] = sc
 
-                h = float(scores_map["HAWK"])
-                d = float(scores_map["DOVE"])
-                n = float(scores_map["NEUT"])
-                diff = h - d
+            h = float(scores_map["HAWK"])
+            d = float(scores_map["DOVE"])
+            n = float(scores_map["NEUT"])
+            diff = h - d
 
-                rows.append({
-                    "Cümle": sent,
-                    "Duruş": stance_3class_from_diff(diff),
-                    "Diff (H-D)": float(diff),
-                    "HAWK": h,
-                    "DOVE": d,
-                    "NEUT": n,
-                })
+            rows.append({
+                "Cümle": sent,
+                "Duruş": stance_3class_from_diff(diff),
+                "Diff (H-D)": float(diff),
+                "HAWK": h,
+                "DOVE": d,
+                "NEUT": n
+            })
 
         df = pd.DataFrame(rows)
         if not df.empty:
@@ -1948,15 +1964,8 @@ def analyze_sentences_with_roberta(text: str) -> pd.DataFrame:
         return df
 
     except Exception as e:
-        # UI'ya taşıyalım ki "neden boş" kaybolmasın
-        return pd.DataFrame([{
-            "ERROR": repr(e),
-            "sent_count": len(sentences),
-            "sample_sent": sentences[0][:200] if sentences else ""
-        }])
-    finally:
-        gc.collect()
-
+        print(f"[RoBERTa] Cümle analizi hatası: {repr(e)}")
+        return pd.DataFrame()
 
 # ==========================
 # HYBRID TEXT-AS-DATA HELPERS

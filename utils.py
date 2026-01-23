@@ -1975,31 +1975,77 @@ _RATE_HOLD_KWS = [
 
 
 def detect_policy_action(text: str) -> str:
-    """Metinde kaba bir aksiyon etiketi döndürür: CUT / HIKE / HOLD / UNKNOWN"""
-    t = (text or "").lower()
+    """Metinden kaba bir aksiyon etiketi döndürür: CUT / HIKE / HOLD / UNKNOWN.
 
-    # öncelik: açıkça cut/hike
-    if any(k in t for k in _RATE_CUT_KWS):
-        return "CUT"
-    if any(k in t for k in _RATE_HIKE_KWS):
-        return "HIKE"
-    if any(k in t for k in _RATE_HOLD_KWS):
+    Öncelik sırası:
+    1) 'from X percent to Y percent' gibi ifadeleri policy rate bağlamında sayısal kıyasla çöz.
+    2) Aynı cümlede 'policy rate / interest rate / repo auction rate' + (increase/raise vs lower/reduce) bağlamı.
+    3) Daha zayıf anahtar kelime fallback.
+    """
+    raw = text or ""
+    t = raw.lower()
+
+    # 1) Sayısal "from ... to ..." kalıbı (İngilizce metinlerde net)
+    #    Sadece faiz bağlamında yakalamaya çalışıyoruz.
+    #    ör: "increase the policy rate ... from 8.5 percent to 15 percent"
+    from_to = re.search(
+        r"(policy rate|interest rate|repo auction rate|one-week repo).*?from\s+(\d+(?:\.\d+)?)\s*percent\s+to\s+(\d+(?:\.\d+)?)\s*percent",
+        t,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    if from_to:
+        a = float(from_to.group(2))
+        b = float(from_to.group(3))
+        if b > a:
+            return "HIKE"
+        if b < a:
+            return "CUT"
         return "HOLD"
+
+    # 2) Cümle bazlı bağlam taraması
+    sents = split_sentences_tr(raw)
+
+    def _has_context(sent: str, action_words: list[str]) -> bool:
+        s = sent.lower()
+        if not re.search(r"\b(policy rate|interest rate|repo auction rate|one-week repo)\b", s):
+            return False
+        # action kelimelerini kelime sınırında ara (auction gibi false positive'leri önlemek için)
+        return any(re.search(rf"\b{re.escape(w)}\b", s) for w in action_words)
+
+    # yükseliş
+    if any(_has_context(s, ["increase", "increased", "raise", "raised", "hike", "tightening"]) for s in sents):
+        return "HIKE"
+
+    # düşüş
+    if any(_has_context(s, ["decrease", "decreased", "lower", "lowered", "cut", "reduce", "reduced", "easing"]) for s in sents):
+        return "CUT"
+
+    # 3) Fallback: (daha zayıf) ama word-boundary kullan
+    if any(re.search(rf"\b{re.escape(k)}\b", t) for k in ["unchanged", "maintained", "kept", "hold", "pause"]):
+        return "HOLD"
+    if any(re.search(rf"\b{re.escape(k)}\b", t) for k in ["increase", "increased", "raised", "hike"]):
+        return "HIKE"
+    if any(re.search(rf"\b{re.escape(k)}\b", t) for k in ["decrease", "decreased", "lowered", "cut"]):
+        return "CUT"
+
     return "UNKNOWN"
 
 
-def summarize_sentence_roberta(df_sent: pd.DataFrame) -> dict:
+
+def summarize_sentence_roberta(df_sent: pd.DataFrame, full_text: str | None = None) -> dict:
     """
     analyze_sentences_with_roberta çıktısından özet:
     - sınıf sayıları
     - diff ortalama / pos sum / neg sum
-    - rate cut: puan (diff proxy) + ağırlık + cümle
+    - aksiyon cümlesi (rate hike / rate cut): puan + ağırlık + cümle
+
+    Not:
+    - 'reduce inflation' gibi ifadeler FAİZ İNDİRİMİ demek değildir. Bu yüzden aksiyon tespiti 'policy rate' bağlamı arar.
     """
     if df_sent is None or df_sent.empty or "Diff (H-D)" not in df_sent.columns:
         return {"n": 0}
 
     d = df_sent.copy()
-    # sadece gerçek skor satırları
     d = d[pd.to_numeric(d["Diff (H-D)"], errors="coerce").notna()].copy()
     if d.empty:
         return {"n": 0}
@@ -2016,25 +2062,73 @@ def summarize_sentence_roberta(df_sent: pd.DataFrame) -> dict:
     pos_sum = float(np.sum(diffs[diffs > 0]))
     neg_sum = float(np.sum(diffs[diffs < 0]))  # negatif değer (dove itişi)
 
-    # rate cut cümlelerini yakala
-    txt_lc = d["Cümle"].astype(str).str.lower()
-    mask_cut = False
-    for kw in _RATE_CUT_KWS:
-        mask_cut = mask_cut | txt_lc.str.contains(re.escape(kw), regex=True, na=False)
-    cut_rows = d[mask_cut].copy()
+    action = detect_policy_action(full_text or "")
 
-    rate_cut_points = 0.0
-    rate_cut_weight = 0.0
-    rate_cut_sentence = "—"
+    # --- Aksiyon cümlesi: policy rate bağlamında "increase/raise" vs "lower/cut" ---
+    def is_hike_sentence(s: str) -> bool:
+        s = (s or "").lower()
+        if not re.search(r"\b(policy rate|interest rate|repo auction rate|one-week repo)\b", s):
+            return False
+        return any(re.search(rf"\b{re.escape(w)}\b", s) for w in ["increase", "increased", "raise", "raised", "hike", "tightening"])
 
-    if not cut_rows.empty:
-        # rate cut genelde dovish => en negatif diff'i seç
+    def is_cut_sentence(s: str) -> bool:
+        s = (s or "").lower()
+        if not re.search(r"\b(policy rate|interest rate|repo auction rate|one-week repo)\b", s):
+            return False
+        return any(re.search(rf"\b{re.escape(w)}\b", s) for w in ["decrease", "decreased", "lower", "lowered", "cut", "reduce", "reduced", "easing"])
+
+    s_lc = d["Cümle"].astype(str)
+
+    hike_rows = d[s_lc.apply(is_hike_sentence)].copy()
+    cut_rows = d[s_lc.apply(is_cut_sentence)].copy()
+
+    action_points = 0.0
+    action_weight = 0.0
+    action_sentence = "—"
+    action_label = "—"
+
+    # HIKE => en pozitif diff'li aksiyon cümlesini seç
+    if action == "HIKE" and not hike_rows.empty:
+        hike_rows["Diff (H-D)"] = pd.to_numeric(hike_rows["Diff (H-D)"], errors="coerce")
+        best = hike_rows.sort_values("Diff (H-D)", ascending=False).iloc[0]
+        best_diff = float(best["Diff (H-D)"])
+        action_points = float(max(0.0, best_diff) * 100.0)
+        action_weight = float(abs(best_diff) / abs_sum)
+        action_sentence = str(best["Cümle"])
+        action_label = "HIKE"
+
+    # CUT => en negatif diff'li aksiyon cümlesini seç
+    elif action == "CUT" and not cut_rows.empty:
         cut_rows["Diff (H-D)"] = pd.to_numeric(cut_rows["Diff (H-D)"], errors="coerce")
         best = cut_rows.sort_values("Diff (H-D)", ascending=True).iloc[0]
         best_diff = float(best["Diff (H-D)"])
-        rate_cut_points = float(max(0.0, -best_diff) * 100.0)  # pozitif puan olarak göster
-        rate_cut_weight = float(abs(best_diff) / abs_sum)
-        rate_cut_sentence = str(best["Cümle"])
+        action_points = float(max(0.0, -best_diff) * 100.0)  # pozitif puan göster
+        action_weight = float(abs(best_diff) / abs_sum)
+        action_sentence = str(best["Cümle"])
+        action_label = "CUT"
+
+    # Eğer aksiyon UNKNOWN ama aksiyon cümlesi yakalanabiliyorsa heuristik:
+    else:
+        # iki taraftan en "güçlü" cümleyi seç
+        cand = []
+        if not hike_rows.empty:
+            hike_rows["Diff (H-D)"] = pd.to_numeric(hike_rows["Diff (H-D)"], errors="coerce")
+            r = hike_rows.sort_values("Diff (H-D)", ascending=False).iloc[0]
+            cand.append(("HIKE", float(r["Diff (H-D)"]), str(r["Cümle"])))
+        if not cut_rows.empty:
+            cut_rows["Diff (H-D)"] = pd.to_numeric(cut_rows["Diff (H-D)"], errors="coerce")
+            r = cut_rows.sort_values("Diff (H-D)", ascending=True).iloc[0]
+            cand.append(("CUT", float(r["Diff (H-D)"]), str(r["Cümle"])))
+        if cand:
+            # mutlak diff en büyük olanı al
+            label, diffv, sent = sorted(cand, key=lambda x: abs(x[1]), reverse=True)[0]
+            action_label = label
+            if label == "HIKE":
+                action_points = float(max(0.0, diffv) * 100.0)
+            else:
+                action_points = float(max(0.0, -diffv) * 100.0)
+            action_weight = float(abs(diffv) / abs_sum)
+            action_sentence = sent
 
     return {
         "n": int(len(d)),
@@ -2044,7 +2138,10 @@ def summarize_sentence_roberta(df_sent: pd.DataFrame) -> dict:
         "diff_mean": diff_mean,
         "pos_sum": pos_sum,
         "neg_sum": neg_sum,
-        "rate_cut_points": rate_cut_points,
-        "rate_cut_weight": rate_cut_weight,
-        "rate_cut_sentence": rate_cut_sentence,
+        "policy_action": action,  # üst seviye aksiyon etiketi
+        "action_label": action_label,  # hangi cümle seçildi
+        "action_points": action_points,
+        "action_weight": action_weight,
+        "action_sentence": action_sentence,
     }
+

@@ -1291,12 +1291,25 @@ def _render_tab_roberta():
             
                 # ✅ Action etiketi (CUT/HIKE/HOLD)
                 action = utils.detect_policy_action(txt_input) if hasattr(utils, "detect_policy_action") else "UNKNOWN"
+
+                # 📐 Gerçek delta bp (metinden) -> varsa aksiyonu override et (en güvenilir kaynak)
+                real_delta_bp = utils.extract_delta_bp_from_text(txt_input) if hasattr(utils, "extract_delta_bp_from_text") else None
+                if real_delta_bp is not None:
+                    if real_delta_bp > 0:
+                        action = "HIKE"
+                    elif real_delta_bp < 0:
+                        action = "CUT"
+                    else:
+                        action = "HOLD"
             
                 # ✅ Sayım + ağırlıklı özet
-                summary = utils.summarize_sentence_roberta(df_sent) if hasattr(utils, "summarize_sentence_roberta") else {}
+                summary = utils.summarize_sentence_roberta(df_sent, full_text=txt_input) if hasattr(utils, "summarize_sentence_roberta") else {}
             
                 cA, cB, cC, cD = st.columns(4)
-                cA.metric("Policy Action", summary.get("policy_action", action))
+                pa = summary.get("policy_action", action)
+                if (pa or "").upper() == "UNKNOWN" and action != "UNKNOWN":
+                    pa = action
+                cA.metric("Policy Action", pa)
                 cB.metric("🦅 Şahin cümle", summary.get("hawk_n", 0))
                 cC.metric("🕊️ Güvercin cümle", summary.get("dove_n", 0))
                 cD.metric("⚖️ Nötr cümle", summary.get("neut_n", 0))
@@ -1316,23 +1329,27 @@ def _render_tab_roberta():
                 # 🔥 Aksiyon sinyali (RoBERTa) — bu bir bp değildir, modelin dil/şiddet skorudur
                 ap = float(summary.get("action_points", 0.0) or 0.0)
                 aw = float(summary.get("action_weight", 0.0) or 0.0)
+                aw_local = float(summary.get("action_weight_local", 0.0) or 0.0)
                 al = str(summary.get("action_label", "—") or "—")
                 a_sent = summary.get("action_sentence", "—")
 
                 r1, r2 = st.columns(2)
                 if al == "HIKE":
                     r1.metric("📈 Rate hike puanı", f"{ap:.1f}")
-                    r2.metric("⚖️ Rate hike ağırlığı", f"{aw:.2%}")
+                    r2.metric("⚖️ Rate hike ağırlığı (lokal)", f"{aw_local:.2%}")
+                    st.caption(f"Global ağırlık: {aw:.2%}")
                     if a_sent and a_sent != "—":
                         st.caption(f"Rate hike cümlesi: {a_sent}")
                 elif al == "CUT":
                     r1.metric("✂️ Rate cut puanı", f"{ap:.1f}")
-                    r2.metric("⚖️ Rate cut ağırlığı", f"{aw:.2%}")
+                    r2.metric("⚖️ Rate cut ağırlığı (lokal)", f"{aw_local:.2%}")
+                    st.caption(f"Global ağırlık: {aw:.2%}")
                     if a_sent and a_sent != "—":
                         st.caption(f"Rate cut cümlesi: {a_sent}")
                 else:
                     r1.metric("Aksiyon puanı", f"{ap:.1f}")
-                    r2.metric("Aksiyon ağırlığı", f"{aw:.2%}")
+                    r2.metric("Aksiyon ağırlığı (lokal)", f"{aw_local:.2%}")
+                    st.caption(f"Global ağırlık: {aw:.2%}")
                     if a_sent and a_sent != "—":
                         st.caption(f"Aksiyon cümlesi: {a_sent}")
 

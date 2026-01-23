@@ -1159,37 +1159,68 @@ Bu grafik, modelin verdiği **3 sınıf olasılığından** (Şahin / Güvercin 
         st.markdown("---")
         st.subheader("🧩 Cümle Bazlı Ayrıştırma (RoBERTa)")
 
-        # ✅ 1) önce utils fonksiyonunu dene
-        df_sent = pd.DataFrame()
-        if hasattr(utils, "analyze_sentences_with_roberta"):
-            try:
-                df_sent = utils.analyze_sentences_with_roberta(txt_input)
-            except Exception as e:
-                df_sent = pd.DataFrame()
-                st.warning("utils.analyze_sentences_with_roberta hata verdi, fallback çalıştırıyorum.")
-                st.exception(e)
 
-        # ✅ 2) boşsa fallback çalıştır (ASIL FIX)
-        if df_sent is None or df_sent.empty:
-            df_sent = fallback_sentence_roberta(txt_input)
 
-        action = utils.detect_policy_action(txt_input) if hasattr(utils, "detect_policy_action") else "UNKNOWN"
-        summary = utils.summarize_sentence_roberta(df_sent) if hasattr(utils, "summarize_sentence_roberta") else {}
-
+        # 1) Policy Action (metin üstünden)
+        act = utils.detect_policy_action(txt_input) if hasattr(utils, "detect_policy_action") else {"action":"UNKNOWN","bp":None,"weight_0_1":None}
+        act_label = str(act.get("action", "UNKNOWN"))
+        act_bp = act.get("bp", None)
+        act_w = act.get("weight_0_1", None)
+        
+        # UI: Action + ağırlık
         cA, cB, cC, cD = st.columns(4)
-        cA.metric("Policy Action", action)
-        cB.metric("🦅 Şahin cümle", summary.get("hawk_n", 0))
-        cC.metric("🕊️ Güvercin cümle", summary.get("dove_n", 0))
-        cD.metric("⚖️ Nötr cümle", summary.get("neut_n", 0))
-
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Diff ortalama", f"{summary.get('diff_mean', np.nan):.3f}" if summary.get("n", 0) else "—")
-        c2.metric("Pozitif toplam (hawk itişi)", f"{summary.get('pos_sum', np.nan):.2f}" if summary.get("n", 0) else "—")
-        c3.metric("Negatif toplam (dove itişi)", f"{summary.get('neg_sum', np.nan):.2f}" if summary.get("n", 0) else "—")
-
-        st.caption("Not: Net duruş, cümle sayısından değil **Diff (H−D) ağırlıklarından** geliyor.")
-
-        if df_sent is None or df_sent.empty:
-            st.info("Metinden ayrıştırılabilir cümle bulunamadı. (Fallback bile üretemedi)")
+        
+        if act_bp is None:
+            cA.metric("Policy Action", act_label)
         else:
-            st.dataframe(df_sent, use_container_width=True)
+            cA.metric("Policy Action", f"{act_label} ({act_bp:+d} bp)")
+        
+        # 500bp = 1.00 ölçeği (sunum için)
+        if act_w is None:
+            cB.metric("Action Weight (0-1)", "—")
+        else:
+            cB.metric("Action Weight (0-1)", f"{act_w:.2f}")
+        
+        # 2) Cümle bazlı RoBERTa
+        if hasattr(utils, "analyze_sentences_with_roberta"):
+            df_sent = utils.analyze_sentences_with_roberta(txt_input)
+        
+            # Eğer df_sent boşsa bunu saklama: kullanıcıya hata nedenini göster
+            if df_sent is None or df_sent.empty:
+                cC.metric("🦅 Şahin cümle", 0)
+                cD.metric("🕊️ Güvercin cümle", 0)
+                st.warning("Cümle bazlı analiz boş döndü. (split_sentences_nlp cümle üretemiyor olabilir veya model yüklenemiyor olabilir.)")
+                st.caption("İpucu: utils.split_sentences_nlp fonksiyonunun gerçekten cümle listesi döndürdüğünü kontrol et.")
+            else:
+                # Özet
+                summary = utils.summarize_sentence_roberta(df_sent) if hasattr(utils, "summarize_sentence_roberta") else {}
+                cC.metric("🦅 Şahin cümle", int(summary.get("hawk_n", 0)))
+                cD.metric("🕊️ Güvercin cümle", int(summary.get("dove_n", 0)))
+        
+                c1, c2, c3 = st.columns(3)
+                n = int(summary.get("n", 0))
+                c1.metric("Diff ortalama", f"{float(summary.get('diff_mean', np.nan)):.3f}" if n else "—")
+                c2.metric("Pozitif toplam (hawk itişi)", f"{float(summary.get('pos_sum', np.nan)):.2f}" if n else "—")
+                c3.metric("Negatif toplam (dove itişi)", f"{float(summary.get('neg_sum', np.nan)):.2f}" if n else "—")
+        
+                # Sunum için: Action büyüklüğünü "etki" diye de yaz
+                st.caption(
+                    "Not: Net duruş **cümle sayısından değil Diff (H−D) ağırlıklarından** gelir. "
+                    "Ayrıca Action Weight, karar büyüklüğünü 0..1 ölçeğine indirger (500bp=1.0)."
+                )
+        
+                # En güçlü 5 cümleyi ayrıca göster (sunumda çok iş görüyor)
+                with st.expander("🎯 En güçlü cümleler (Top 5 hawk / Top 5 dove)", expanded=False):
+                    top_h = df_sent.sort_values("Diff (H-D)", ascending=False).head(5)
+                    top_d = df_sent.sort_values("Diff (H-D)", ascending=True).head(5)
+                    st.markdown("**🦅 Hawk-leaning (Top 5)**")
+                    st.dataframe(top_h[["Cümle", "Duruş", "Diff (H-D)", "HAWK", "DOVE", "NEUT"]], use_container_width=True, hide_index=True)
+                    st.markdown("**🕊️ Dove-leaning (Top 5)**")
+                    st.dataframe(top_d[["Cümle", "Duruş", "Diff (H-D)", "HAWK", "DOVE", "NEUT"]], use_container_width=True, hide_index=True)
+        
+                st.dataframe(df_sent, use_container_width=True)
+        
+        else:
+            st.error("utils.analyze_sentences_with_roberta bulunamadı.")
+        
+        

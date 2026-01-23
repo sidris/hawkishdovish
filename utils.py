@@ -2021,6 +2021,19 @@ def detect_policy_action(text: str) -> str:
             return "CUT"
         return "HOLD"
 
+    # 1b) Daha genel 'from X percent to Y percent' -> delta_bp (ama sadece metinde policy bağlamı varsa)
+    try:
+        if re.search(r"\b(policy rate|interest rate|repo auction rate|one-week repo)\b", t):
+            dbp = extract_delta_bp_from_text(raw)
+            if dbp is not None:
+                if dbp > 0:
+                    return "HIKE"
+                if dbp < 0:
+                    return "CUT"
+                return "HOLD"
+    except Exception:
+        pass
+
     # 2) Cümle bazlı bağlam taraması
     sents = split_sentences_tr(raw)
 
@@ -2134,8 +2147,17 @@ def summarize_sentence_roberta(df_sent: pd.DataFrame, full_text: str | None = No
     hike_rows = d[s_lc.apply(is_hike_sentence)].copy()
     cut_rows = d[s_lc.apply(is_cut_sentence)].copy()
 
+    # Aksiyon cümleleri içindeki toplam |diff| (lokal ağırlık için)
+    try:
+        _cand_rows = pd.concat([hike_rows, cut_rows], ignore_index=True) if (not hike_rows.empty or not cut_rows.empty) else pd.DataFrame()
+        _cand_diffs = pd.to_numeric(_cand_rows.get("Diff (H-D)", pd.Series(dtype=float)), errors="coerce")
+        abs_sum_action = float(np.nansum(np.abs(_cand_diffs))) + 1e-12
+    except Exception:
+        abs_sum_action = 1e-12
+
     action_points = 0.0
     action_weight = 0.0
+    action_weight_local = 0.0
     action_sentence = "—"
     action_label = "—"
 
@@ -2146,6 +2168,8 @@ def summarize_sentence_roberta(df_sent: pd.DataFrame, full_text: str | None = No
         best_diff = float(best["Diff (H-D)"])
         action_points = float(max(0.0, best_diff) * 100.0)
         action_weight = float(abs(best_diff) / abs_sum)
+        action_weight_local = float(abs(best_diff) / abs_sum_action)
+        action_weight_local = float(abs(best_diff) / abs_sum_action)
         action_sentence = str(best["Cümle"])
         action_label = "HIKE"
 
@@ -2156,6 +2180,7 @@ def summarize_sentence_roberta(df_sent: pd.DataFrame, full_text: str | None = No
         best_diff = float(best["Diff (H-D)"])
         action_points = float(max(0.0, -best_diff) * 100.0)  # pozitif puan göster
         action_weight = float(abs(best_diff) / abs_sum)
+        action_weight_local = float(abs(best_diff) / abs_sum_action)
         action_sentence = str(best["Cümle"])
         action_label = "CUT"
 
@@ -2180,6 +2205,7 @@ def summarize_sentence_roberta(df_sent: pd.DataFrame, full_text: str | None = No
             else:
                 action_points = float(max(0.0, -diffv) * 100.0)
             action_weight = float(abs(diffv) / abs_sum)
+            action_weight_local = float(abs(diffv) / abs_sum_action)
             action_sentence = sent
 
     return {
@@ -2194,6 +2220,7 @@ def summarize_sentence_roberta(df_sent: pd.DataFrame, full_text: str | None = No
         "action_label": action_label,  # hangi cümle seçildi
         "action_points": action_points,
         "action_weight": action_weight,
+        "action_weight_local": action_weight_local,
         "action_sentence": action_sentence,
     }
 

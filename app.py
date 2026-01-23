@@ -73,11 +73,19 @@ with c_head1: st.title("🦅 Şahin/Güvercin Paneli")
 with c_head2: 
     if st.button("Çıkış"): st.session_state['logged_in'] = False; st.rerun()
 
-# SEKME YAPILANDIRMASI (TEMİZLENMİŞ HALİ)
-tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab_roberta, tab_imp = st.tabs([
-    "📈 Dashboard", "📝 Veri Girişi", "📊 Veriler", "🔍 Frekans", "🤖 Faiz Tahmini", "☁️ WordCloud", "📜 ABF (2019)", 
-    "🧠 CB-RoBERTa", "📅 Haberler"
+tab1, tab2, tab3, tab4, tab_textdata, tab6, tab7, tab_roberta, tab_imp = st.tabs([
+    "📈 Dashboard",
+    "📝 Veri Girişi",
+    "📊 Veriler",
+    "🔍 Frekans",
+    "📚 Text as Data (TF-IDF)",
+    "☁️ WordCloud",
+    "📜 ABF (2019)",
+    "🧠 CB-RoBERTa",
+    "📅 Haberler"
 ])
+
+
 
 
 # --- SESSION & STATE --- bloğunun içine ekleyin:
@@ -398,6 +406,94 @@ with tab2:
                     st.session_state['form_data'] = {'id': int(orig['id']), 'date': pd.to_datetime(orig['period_date']).date(), 'source': orig['source'], 'text': orig['text_content']}
                     st.rerun()
 
+with tab_imp:
+    st.header("📅 Haberler (Event Logs)")
+    st.caption("Seçtiğin tarihe haber linkleri ekle. Dashboard grafiğinde mor çizgiler olarak görünür.")
+
+    try:
+        # --- 1) Yeni event ekleme ---
+        c1, c2 = st.columns([1, 3])
+        with c1:
+            ev_date = st.date_input("Tarih", value=datetime.date.today(), key="ev_date_in")
+        with c2:
+            ev_links = st.text_area(
+                "Haber linkleri (her satıra 1 link)",
+                height=140,
+                placeholder="https://...\nhttps://...\n...",
+                key="ev_links_in"
+            )
+
+        col_add, col_refresh = st.columns([1, 1])
+        with col_add:
+            if st.button("➕ Kaydet", type="primary", key="btn_add_event"):
+                links_clean = "\n".join([l.strip() for l in (ev_links or "").splitlines() if l.strip()])
+                if not links_clean:
+                    st.warning("En az 1 link gir.")
+                else:
+                    utils.add_event(ev_date, links_clean)
+                    st.success("Eklendi!")
+                    st.rerun()
+
+        with col_refresh:
+            if st.button("🔄 Yenile", key="btn_refresh_events"):
+                st.rerun()
+
+        st.divider()
+
+        # --- 2) Event listesi ---
+        df_events = utils.fetch_events()
+
+        if df_events is None or df_events.empty:
+            st.info("Henüz kayıtlı haber yok.")
+        else:
+            df_events = df_events.copy()
+
+            # kolon güvenliği
+            if "event_date" in df_events.columns:
+                df_events["event_date"] = pd.to_datetime(df_events["event_date"], errors="coerce")
+                df_events = df_events.dropna(subset=["event_date"]).sort_values("event_date", ascending=False)
+
+            st.subheader("📌 Kayıtlı Haberler")
+
+            # Görsel liste (kart gibi)
+            for _, row in df_events.iterrows():
+                rid = row.get("id", None)
+                d = row.get("event_date", None)
+                d_str = pd.to_datetime(d).strftime("%Y-%m-%d") if pd.notna(d) else "—"
+
+                links_raw = row.get("links", "") or ""
+                links_list = [l.strip() for l in links_raw.splitlines() if l.strip()]
+
+                with st.container(border=True):
+                    top1, top2 = st.columns([5, 1])
+                    with top1:
+                        st.markdown(f"### {d_str}")
+                        if links_list:
+                            for l in links_list:
+                                st.markdown(f"- {l}")
+                        else:
+                            st.caption("Link yok")
+
+                    with top2:
+                        if rid is not None:
+                            if st.button("🗑️ Sil", key=f"del_event_{rid}"):
+                                utils.delete_event(int(rid))
+                                st.success("Silindi!")
+                                st.rerun()
+
+            # Ham tablo da isteyen için
+            with st.expander("📋 Ham Tablo", expanded=False):
+                st.dataframe(df_events, use_container_width=True, hide_index=True)
+
+    except Exception as e:
+        st.error("Haberler sekmesi hata aldı.")
+        st.exception(e)
+
+
+
+
+
+
 with tab3:
     st.header("Piyasa Verileri")
     d1 = st.date_input("Başlangıç", datetime.date(2023, 1, 1))
@@ -413,176 +509,552 @@ with tab3:
             st.dataframe(df, use_container_width=True)
         else: st.error(f"Hata: {err}")
 
+
 with tab4:
-    st.header("🔍 Frekans ve Diff Analizi")
+    st.header("🔍 Frekans (İzlenen Terimler)")
+
+    # -----------------------------
+    # 0) Varsayılan izlenecek terimler
+    # -----------------------------
+    DEFAULT_WATCH_TERMS = [
+        "inflation", "disinflation", "stability", "growth", "gdp",
+        "interest rate", "policy rate", "lowered", "macroprudential",
+        "target", "monetary policy", "tightened", "risks", "exchange rate",
+        "prudently", "global", "recession", "food"
+    ]
+
+    if "watch_terms" not in st.session_state:
+        st.session_state["watch_terms"] = DEFAULT_WATCH_TERMS.copy()
+
+    # -----------------------------
+    # 1) Helper fonksiyonlar (TAB içinde güvenli)
+    # -----------------------------
+    def add_watch_term():
+        t = (st.session_state.get("watch_term_in", "") or "").strip().lower()
+        if not t:
+            return
+        if t not in st.session_state["watch_terms"]:
+            st.session_state["watch_terms"].append(t)
+        # widget key'ine dokunma (StreamlitAPIException önlemi)
+
+    def reset_watch_terms():
+        st.session_state["watch_terms"] = DEFAULT_WATCH_TERMS.copy()
+
+    def _fallback_build_watch_terms_timeseries(df_in: pd.DataFrame, terms: list) -> pd.DataFrame:
+        """utils'te fonksiyon yoksa diye basit fallback: substring count"""
+        rows = []
+        for _, r in df_in.iterrows():
+            txt = str(r.get("text_content", "") or "").lower()
+            rec = {"period_date": r["period_date"], "Donem": r["Donem"]}
+            for term in terms:
+                rec[term] = txt.count(term.lower())
+            rows.append(rec)
+        return pd.DataFrame(rows).sort_values("period_date").reset_index(drop=True)
+
+    # -----------------------------
+    # 2) Veri çek / temizle
+    # -----------------------------
     df_all = utils.fetch_all_data()
-    if not df_all.empty:
-        df_all['period_date'] = pd.to_datetime(df_all['period_date'])
-        df_all['Donem'] = df_all['period_date'].dt.strftime('%Y-%m')
-        df_all = df_all.sort_values('period_date', ascending=False)
-        st.subheader("📊 En Çok Tekrar Eden Ekonomi Terimleri")
-        st.text_input("🚫 Grafikten Çıkarılacak Kelimeler (Enter)", key="deep_stop_in", on_change=add_deep_stop)
-        if st.session_state['stop_words_deep']:
-            st.write("Filtreler:")
-            cols = st.columns(8)
-            for i, word in enumerate(st.session_state['stop_words_deep']):
-                if cols[i % 8].button(f"{word} ✖", key=f"del_deep_{word}"):
-                    st.session_state['stop_words_deep'].remove(word)
-                    st.rerun()
-        st.divider()
-        freq_df, top_terms = utils.get_top_terms_series(df_all, 7, st.session_state['stop_words_deep'])
-        if not freq_df.empty:
-            fig_freq = go.Figure()
-            for term in top_terms:
-                fig_freq.add_trace(go.Scatter(x=freq_df['period_date'], y=freq_df[term], name=term, mode='lines+markers'))
-            fig_freq.update_layout(title="Kelime Kullanım Sıklığı Trendi", hovermode="x unified", height=400)
-            st.plotly_chart(fig_freq, use_container_width=True)
-        st.divider()
-        st.subheader("🔄 Metin Farkı (Diff) Analizi")
-        c_diff1, c_diff2 = st.columns(2)
-        with c_diff1: sel_date1 = st.selectbox("Eski Metin:", df_all['Donem'].tolist(), index=min(1, len(df_all)-1))
-        with c_diff2: sel_date2 = st.selectbox("Yeni Metin:", df_all['Donem'].tolist(), index=0)
-        if st.button("Farkları Göster", type="primary"):
-            if sel_date1 and sel_date2:
-                t1 = df_all[df_all['Donem'] == sel_date1].iloc[0]['text_content']
-                t2 = df_all[df_all['Donem'] == sel_date2].iloc[0]['text_content']
-                diff_html = utils.generate_diff_html(t1, t2)
-                st.markdown(f"**Kırmızı:** {sel_date1}'den silinenler | **Yeşil:** {sel_date2}'ye eklenenler")
-                with st.container(border=True, height=400): st.markdown(diff_html, unsafe_allow_html=True)
-    else: st.info("Yeterli veri yok.")
+    if df_all is None or df_all.empty:
+        st.info("Yeterli veri yok.")
+        st.stop()
 
-with tab5:
-    st.header("🤖 Gelişmiş PPK Faiz Tahmin Modeli")
-    st.info("Bu model, veritabanındaki tüm veriyi eğitir ancak aşağıda seçtiğiniz metin üzerinden 'sonraki' adımı tahmin eder.")
-    
-    with st.expander("ℹ️ Model Detayları", expanded=False):
-        st.markdown("""
-        * **Algoritma:** Ridge Regresyon (Sürekli Tahmin) + Logistic Regresyon (Yön Tahmini)
-        * **Özellikler:** TF-IDF (Metin), Anahtar Kelimeler (Enflasyon, Büyüme vb.), Geçmiş Faiz Değişimleri, Volatilite.
-        * **Validasyon:** Walk-Forward Validation (Zaman serisine duyarlı doğrulama).
-        * **Güven Aralığı:** Model hatalarına dayalı dinamik bant genişliği.
-        """)
+    df_all = df_all.copy()
+    df_all["period_date"] = pd.to_datetime(df_all.get("period_date", None), errors="coerce")
+    df_all = df_all.dropna(subset=["period_date"]).sort_values("period_date", ascending=False).reset_index(drop=True)
+    df_all["Donem"] = df_all["period_date"].dt.strftime("%Y-%m")
 
-    # 1. Veri Hazırlığı
-    df_logs = utils.fetch_all_data()
-    
-    min_d = datetime.date(2020, 1, 1)
-    if not df_logs.empty:
-        df_logs['period_date'] = pd.to_datetime(df_logs['period_date'], errors='coerce')
-        df_logs = df_logs.dropna(subset=['period_date'])
-        
-        if not df_logs.empty:
-            # Tarih aralığı seçicisi için min/max
-            min_avail_date = df_logs['period_date'].min().date()
-            max_avail_date = df_logs['period_date'].max().date()
-            
-            # Min_d, market verisi çekmek için
-            min_val = df_logs['period_date'].min()
-            if isinstance(min_val, pd.Timestamp): min_d = min_val.date()
-            elif isinstance(min_val, str): min_d = pd.to_datetime(min_val).date()
-            elif isinstance(min_val, datetime.date): min_d = min_val
+    # -----------------------------
+    # 3) UI: kelime ekleme / reset / silme
+    # -----------------------------
+    st.caption(
+        "Bu bölüm sadece izlediğin kelimeleri gösterir. "
+        "Yeni kelime eklersen ve metinlerde geçiyorsa otomatik seriye girer."
+    )
 
-    # Market Verisi
-    df_market, err = utils.fetch_market_data_adapter(min_d, datetime.date.today())
-    ml_df = utils.prepare_ml_dataset(df_logs, df_market)
+    c1, c2 = st.columns([3, 1])
+    with c1:
+        st.text_input(
+            "➕ Kelime veya phrase ekle (Enter)",
+            key="watch_term_in",
+            on_change=add_watch_term,
+            placeholder="ör: liquidity, demand, wage, credit growth"
+        )
+    with c2:
+        if st.button("↩️ Reset", type="secondary"):
+            reset_watch_terms()
+            st.rerun()
 
-    if not ml_df.empty and len(ml_df) > 10:
-        # 2. Modeli Eğit
-        predictor = utils.AdvancedMLPredictor()
-        status = predictor.train(ml_df)
-        
-        if status == "OK":
-            # 3. KULLANICI SEÇİMİ
-            st.markdown("### 📅 Analiz İçin Dönem Seçimi")
-            c_d1, c_d2 = st.columns(2)
-            start_date_sel = c_d1.date_input("Başlangıç", value=min_avail_date, min_value=min_avail_date, max_value=max_avail_date)
-            end_date_sel = c_d2.date_input("Bitiş", value=max_avail_date, min_value=min_avail_date, max_value=max_avail_date)
-            
-            filtered_logs = df_logs[(df_logs['period_date'].dt.date >= start_date_sel) & (df_logs['period_date'].dt.date <= end_date_sel)].copy()
-            filtered_logs = filtered_logs.sort_values("period_date", ascending=False)
-            filtered_logs['Dönem'] = filtered_logs['period_date'].dt.strftime('%Y-%m')
-            
-            period_options = filtered_logs['Dönem'].tolist()
-            
-            if period_options:
-                selected_period = st.selectbox("Analiz Edilecek Toplantıyı Seçin:", period_options, index=0)
-                
-                target_row = filtered_logs[filtered_logs['Dönem'] == selected_period].iloc[0]
-                target_text = target_row['text_content']
-                target_source = f"Seçilen Kayıt: {target_row['Dönem']}"
-                selected_date_for_chart = target_row['period_date']
-                
-                st.divider()
-                st.subheader(f"Analiz Edilen Metin: {target_source}")
-                
-                # 4. Tahmin Yap
-                prediction = predictor.predict(target_text)
-                
-                if prediction:
-                    c1, c2, c3 = st.columns(3)
-                    direction = prediction['pred_direction']
-                    color = "green" if direction == "ARTIRIM" else "red" if direction == "İNDİRİM" else "gray"
-                    with c1:
-                        st.markdown(f"### Yön: :{color}[{direction}]")
-                        st.caption(f"Güven Skoru: %{prediction['direction_confidence']*100:.1f}")
-                    bps = prediction['pred_change_bps']
-                    with c2: st.metric("Tahmini Değişim", f"{bps:.0f} bps")
-                    lo = prediction['pred_interval_lo']
-                    hi = prediction['pred_interval_hi']
-                    with c3: st.metric("Tahmin Aralığı", f"{lo:.0f} / {hi:.0f} bps")
-                    
-                    st.divider()
-                    
-                    # 5. Grafik
-                    st.subheader("📊 Model Performansı (Geçmiş)")
-                    
-                    if predictor.df_hist is not None:
-                        hist = predictor.df_hist.copy()
-                        hist['date'] = pd.to_datetime(hist['date'])
-                        
-                        chart_start = pd.to_datetime(start_date_sel) - pd.Timedelta(days=90)
-                        chart_end = pd.to_datetime(end_date_sel) + pd.Timedelta(days=90)
-                        
-                        hist_view = hist[(hist['date'] >= chart_start) & (hist['date'] <= chart_end)]
-                        
-                        if not hist_view.empty:
-                            fig = go.Figure()
-                            # Gerçekleşen
-                            fig.add_trace(go.Bar(
-                                x=hist_view['date'], y=hist_view['y_bps'],
-                                name="Gerçekleşen Değişim", marker_color='gray', opacity=0.5
-                            ))
-                            # Geçmiş Tahminler
-                            if 'predicted_bps' in hist_view.columns:
-                                hist_pred = hist_view.dropna(subset=['predicted_bps'])
-                                fig.add_trace(go.Scatter(
-                                    x=hist_pred['date'], y=hist_pred['predicted_bps'],
-                                    name="Model Geçmiş Tahminleri", 
-                                    line=dict(color='blue', width=2, dash='dot')
-                                ))
-                            
-                            # Şu anki tahmin noktası
-                            if chart_start <= selected_date_for_chart <= chart_end:
-                                fig.add_trace(go.Scatter(
-                                    x=[selected_date_for_chart], 
-                                    y=[bps],
-                                    mode='markers',
-                                    marker=dict(color=color, size=15, symbol='star'),
-                                    name=f"Seçilen ({target_source}) Tahmini"
-                                ))
-                            
-                            fig.update_layout(hovermode="x unified", title="Faiz Değişimleri ve Tahminler")
-                            st.plotly_chart(fig, use_container_width=True)
-                        else:
-                            st.warning("Seçilen tarih aralığında görüntülenecek grafik verisi yok.")
-                else:
-                    st.error("Tahmin üretilemedi.")
-            else:
-                st.info("Bu tarih aralığında kayıt bulunamadı.")
-        else:
-            st.warning(f"Model eğitilemedi: {status}")
+    terms = st.session_state.get("watch_terms", [])
+    if not terms:
+        st.warning("İzlenen kelime yok. Yukarıdan ekleyebilirsin.")
+        st.stop()
+
+    st.write("Aktif izlenen terimler:")
+    cols = st.columns(6)
+    for i, term in enumerate(list(terms)):
+        if cols[i % 6].button(f"{term} ✖", key=f"watch_del_{term}"):
+            st.session_state["watch_terms"].remove(term)
+            st.rerun()
+
+    st.divider()
+
+    # -----------------------------
+    # 4) Zaman serisi üret
+    # -----------------------------
+    if hasattr(utils, "build_watch_terms_timeseries"):
+        freq_df = utils.build_watch_terms_timeseries(df_all, terms)
     else:
-        st.warning("Model eğitimi için yeterli veri yok (En az 10 toplantı kaydı ve piyasa verisi gerekli).")
+        freq_df = _fallback_build_watch_terms_timeseries(df_all, terms)
+
+    if freq_df is None or freq_df.empty:
+        st.info("Zaman serisi üretilemedi.")
+    else:
+        usable_terms = [t for t in terms if t in freq_df.columns and pd.to_numeric(freq_df[t], errors="coerce").fillna(0).sum() > 0]
+
+        if not usable_terms:
+            st.info("Bu kelimeler metinlerde hiç geçmiyor.")
+        else:
+            fig = go.Figure()
+            for t in usable_terms:
+                fig.add_trace(go.Scatter(
+                    x=freq_df["period_date"],
+                    y=freq_df[t],
+                    name=t,
+                    mode="lines+markers"
+                ))
+
+            fig.update_layout(
+                title="İzlenen Ekonomi Terimleri — Zaman Serisi",
+                hovermode="x unified",
+                height=420,
+                legend=dict(
+                    orientation="h",
+                    yanchor="top",
+                    y=-0.25,
+                    xanchor="center",
+                    x=0.5
+                )
+            )
+            st.plotly_chart(fig, use_container_width=True)
+
+            with st.expander("📋 Ham tablo", expanded=False):
+                show_cols = ["Donem"] + usable_terms
+                st.dataframe(freq_df[show_cols], use_container_width=True, hide_index=True)
+
+    # -----------------------------
+    # 5) Diff analizi
+    # -----------------------------
+    st.markdown("---")
+    st.subheader("🔄 Metin Farkı (Diff) Analizi")
+
+    c_diff1, c_diff2 = st.columns(2)
+    with c_diff1:
+        sel_date1 = st.selectbox("Eski Metin:", df_all["Donem"].tolist(), index=min(1, len(df_all) - 1), key="diff_old")
+    with c_diff2:
+        sel_date2 = st.selectbox("Yeni Metin:", df_all["Donem"].tolist(), index=0, key="diff_new")
+
+    if st.button("Farkları Göster", type="primary", key="btn_diff"):
+        t1 = str(df_all[df_all["Donem"] == sel_date1].iloc[0].get("text_content", "") or "")
+        t2 = str(df_all[df_all["Donem"] == sel_date2].iloc[0].get("text_content", "") or "")
+        diff_html = utils.generate_diff_html(t1, t2)
+
+        st.markdown(f"**Kırmızı:** {sel_date1}'den silinenler | **Yeşil:** {sel_date2}'ye eklenenler")
+        with st.container(border=True, height=400):
+            st.markdown(diff_html, unsafe_allow_html=True)
+
+
+
+
+# ==============================================================================
+# TAB: TEXT AS DATA (TF-IDF) — HYBRID + CPI delta_bp tahmini
+# ==============================================================================
+with tab_textdata:
+    st.header("📚 Text as Data (TF-IDF) — HYBRID + CPI PPK Kararı (delta_bp) Tahmini")
+
+
+
+    if not utils.HAS_ML_DEPS:
+        st.error("ML kütüphaneleri eksik (sklearn).")
+        st.stop()
+
+    df_logs = utils.fetch_all_data()
+    if df_logs is None or df_logs.empty:
+        st.info("Veri yok.")
+        st.stop()
+
+    df_logs = df_logs.copy()
+    df_logs["period_date"] = pd.to_datetime(df_logs["period_date"], errors="coerce")
+    df_logs = df_logs.dropna(subset=["period_date"]).sort_values("period_date")
+
+    # numeric kolonları sayısala çevir
+    for c in ["policy_rate", "delta_bp"]:
+        if c in df_logs.columns:
+            df_logs[c] = pd.to_numeric(df_logs[c], errors="coerce")
+
+    # CPI / market data çek
+    min_d = df_logs["period_date"].min().date()
+    max_d = datetime.date.today()
+    df_market, err = utils.fetch_market_data_adapter(min_d, max_d)
+    if err:
+        st.warning(f"Market veri uyarısı: {err}")
+
+    # HYBRID + CPI prepare
+    df_td = utils.textasdata_prepare_df_hybrid_cpi(
+        df_logs,
+        df_market,
+        text_col="text_content",
+        date_col="period_date",
+        y_col="delta_bp",
+        rate_col="policy_rate"
+    )
+
+    if df_td.empty or df_td["delta_bp"].notna().sum() < 10:
+        st.warning("HYBRID+CPI eğitim için yeterli gözlem yok. (En az ~10 kayıt önerilir)")
+        st.stop()
+
+    # -------------------------
+    # 1) Model ayarları
+    # -------------------------
+    c1, c2, c3 = st.columns([2, 1, 1])
+    with c1:
+        st.info(
+            "Bu sekme **English TF-IDF (word+char)** + **faiz geçmişi** + **TÜFE (lagged)** ile "
+            "**delta_bp (bps)** tahmin eder. Walk-forward backtest gösterir."
+        )
+    with c2:
+        min_df = st.number_input("min_df", min_value=1, max_value=10, value=2, step=1)
+    with c3:
+        alpha = st.number_input("Ridge alpha", min_value=0.1, max_value=80.0, value=10.0, step=1.0)
+
+    if "textasdata_model" not in st.session_state:
+        st.session_state["textasdata_model"] = None
+
+    if st.button("🚀 Modeli Eğit / Yenile (HYBRID + CPI)", type="primary"):
+        with st.spinner("Eğitiliyor + walk-forward backtest..."):
+            out = utils.train_textasdata_hybrid_cpi_ridge(
+                df_td,
+                min_df=int(min_df),
+                alpha=float(alpha),
+                n_splits=6,
+                word_ngram=(1, 2),
+                char_ngram=(3, 5),
+                max_features_word=12000,
+                max_features_char=20000
+            )
+            st.session_state["textasdata_model"] = out
+        st.success("Hazır!")
+
+    model_pack = st.session_state.get("textasdata_model")
+    if not model_pack:
+        st.info("Başlamak için yukarıdaki butona bas.")
+        st.stop()
+
+    # -------------------------
+    # 2) Backtest Özeti
+    # -------------------------
+    metrics = model_pack.get("metrics", {}) or {}
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("MAE (bps)", f"{metrics.get('mae', np.nan):.1f}")
+    c2.metric("RMSE (bps)", f"{metrics.get('rmse', np.nan):.1f}")
+    c3.metric("R²", f"{metrics.get('r2', np.nan):.2f}")
+    c4.metric("Gözlem", f"{metrics.get('n', 0)}")
+
+    df_pred = model_pack.get("pred_df")
+    if df_pred is not None and not df_pred.empty:
+        fig = go.Figure()
+        fig.add_trace(go.Bar(
+            x=df_pred["period_date"], y=df_pred["delta_bp"],
+            name="Gerçek delta_bp", opacity=0.45
+        ))
+        fig.add_trace(go.Scatter(
+            x=df_pred["period_date"], y=df_pred["pred_delta_bp"],
+            name="Walk-forward Tahmin", mode="lines+markers"
+        ))
+        fig.add_hline(y=0, line_color="black", opacity=0.25)
+        fig.update_layout(
+            title="Text-as-Data HYBRID + CPI Backtest — delta_bp (bps)",
+            hovermode="x unified",
+            height=420,
+            legend=dict(orientation="h", yanchor="top", y=-0.2, xanchor="center", x=0.5)
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+    # -------------------------
+    # 3) Kelime Etkileri (word TF-IDF)
+    # -------------------------
+    coef_df = model_pack.get("coef_df")
+    if coef_df is not None and not coef_df.empty:
+        st.subheader("🧠 Which words push hike/cut? (word TF-IDF coefficients)")
+        k = st.slider("Show top K", 10, 60, 25, step=5)
+
+        cpos, cneg = st.columns(2)
+        with cpos:
+            st.markdown("### 🔺 Hike-leaning (positive)")
+            st.dataframe(coef_df.sort_values("coef", ascending=False).head(int(k)),
+                         use_container_width=True, hide_index=True)
+        with cneg:
+            st.markdown("### 🔻 Cut-leaning (negative)")
+            st.dataframe(coef_df.sort_values("coef", ascending=True).head(int(k)),
+                         use_container_width=True, hide_index=True)
+
+    # -------------------------
+    # 4) Tek Metin Tahmini
+    # -------------------------
+    st.divider()
+    st.subheader("🔮 Single-text Prediction (HYBRID + CPI)")
+
+    last_rate = float(df_td["policy_rate"].dropna().iloc[-1]) if df_td["policy_rate"].notna().any() else np.nan
+    st.caption(f"Last known policy_rate: {last_rate if np.isfinite(last_rate) else '—'}")
+
+    txt = st.text_area("Paste the statement text", height=220, placeholder="Paste PPK statement...")
+
+    if st.button("🧾 Predict (HYBRID + CPI)", type="secondary"):
+        if not txt or len(txt.strip()) < 30:
+            st.warning("Text too short.")
+        else:
+            pred = utils.predict_textasdata_hybrid_cpi(model_pack, df_td, txt)
+            pred_bp = float(pred.get("pred_delta_bp", 0.0))
+            implied = (last_rate + pred_bp / 100.0) if np.isfinite(last_rate) else np.nan
+
+            c1, c2 = st.columns(2)
+            c1.metric("Predicted delta_bp", f"{pred_bp:.0f} bps")
+            c2.metric("Implied policy_rate", f"{implied:.2f}" if np.isfinite(implied) else "—")
+
+def textasdata_prepare_df_hybrid_cpi(
+    df_logs: pd.DataFrame,
+    df_market: pd.DataFrame,
+    text_col: str = "text_content",
+    date_col: str = "period_date",
+    y_col: str = "delta_bp",
+    rate_col: str = "policy_rate",
+) -> pd.DataFrame:
+    """
+    Amaç: delta_bp (bps) tahmini için text+numeric+TÜFE özellikli dataset hazırlamak.
+
+    Çıktı kolonları:
+      - period_date (datetime)
+      - text (clean)
+      - delta_bp (float)  [target]
+      - policy_rate (float)
+      - cpi_yoy, cpi_mom (float)  [market'ten]
+      - cpi_yoy_l1, cpi_mom_l1 (lag)
+      - prev_delta_bp (lag)
+      - prev_policy_rate (lag)
+    """
+    if df_logs is None or df_logs.empty:
+        return pd.DataFrame()
+
+    df = df_logs.copy()
+    df[date_col] = pd.to_datetime(df[date_col], errors="coerce")
+    df = df.dropna(subset=[date_col]).sort_values(date_col)
+
+    # Sayısal kolonlar
+    if y_col in df.columns:
+        df[y_col] = pd.to_numeric(df[y_col], errors="coerce")
+    else:
+        df[y_col] = np.nan
+
+    if rate_col in df.columns:
+        df[rate_col] = pd.to_numeric(df[rate_col], errors="coerce")
+    else:
+        df[rate_col] = np.nan
+
+    # Donem anahtarı
+    df["Donem"] = df[date_col].dt.strftime("%Y-%m")
+
+    # Market merge (TÜFE)
+    if df_market is not None and not df_market.empty and "Donem" in df_market.columns:
+        mk = df_market.copy()
+        # beklenen kolonlar: "Yıllık TÜFE", "Aylık TÜFE" (senin adapter bunları döndürüyor)
+        if "Yıllık TÜFE" in mk.columns:
+            mk["Yıllık TÜFE"] = pd.to_numeric(mk["Yıllık TÜFE"], errors="coerce")
+        if "Aylık TÜFE" in mk.columns:
+            mk["Aylık TÜFE"] = pd.to_numeric(mk["Aylık TÜFE"], errors="coerce")
+
+        df = pd.merge(df, mk[["Donem"] + [c for c in ["Yıllık TÜFE", "Aylık TÜFE"] if c in mk.columns]],
+                      on="Donem", how="left")
+
+    # Text clean
+    df["text"] = df[text_col].fillna("").astype(str).apply(normalize_tr_text)
+
+    # CPI feature names
+    df["cpi_yoy"] = pd.to_numeric(df.get("Yıllık TÜFE", np.nan), errors="coerce")
+    df["cpi_mom"] = pd.to_numeric(df.get("Aylık TÜFE", np.nan), errors="coerce")
+
+    # Lagged CPI
+    df["cpi_yoy_l1"] = df["cpi_yoy"].shift(1)
+    df["cpi_mom_l1"] = df["cpi_mom"].shift(1)
+
+    # Lagged policy vars
+    df["prev_delta_bp"] = pd.to_numeric(df[y_col].shift(1), errors="coerce")
+    df["prev_policy_rate"] = pd.to_numeric(df[rate_col].shift(1), errors="coerce")
+
+    # Son temizlik
+    out = df[[date_col, "text", y_col, rate_col, "cpi_yoy", "cpi_mom", "cpi_yoy_l1", "cpi_mom_l1", "prev_delta_bp", "prev_policy_rate"]].copy()
+    out = out.rename(columns={date_col: "period_date"})
+    return out
+
+
+def train_textasdata_hybrid_cpi_ridge(
+    df_td: pd.DataFrame,
+    min_df: int = 2,
+    alpha: float = 10.0,
+    n_splits: int = 6,
+    word_ngram=(1, 2),
+    char_ngram=(3, 5),
+    max_features_word: int = 12000,
+    max_features_char: int = 20000,
+):
+    """
+    HYBRID model:
+      - word TF-IDF
+      - char TF-IDF
+      - numeric features (policy_rate, prev_*, cpi*)
+    Target: delta_bp
+
+    Walk-forward backtest: TimeSeriesSplit
+    Returns: dict(model, metrics, pred_df, coef_df)
+    """
+    if not HAS_ML_DEPS:
+        return {}
+
+    # --- Input guard ---
+    if df_td is None or df_td.empty:
+        return {}
+
+    df = df_td.copy().sort_values("period_date").reset_index(drop=True)
+    df["delta_bp"] = pd.to_numeric(df["delta_bp"], errors="coerce")
+
+    # target boş olanları at
+    df = df.dropna(subset=["delta_bp", "text"])
+    if len(df) < max(10, n_splits + 3):
+        return {}
+
+    # numeric features
+    num_cols = ["policy_rate", "prev_delta_bp", "prev_policy_rate", "cpi_yoy", "cpi_mom", "cpi_yoy_l1", "cpi_mom_l1"]
+    for c in num_cols:
+        if c not in df.columns:
+            df[c] = np.nan
+        df[c] = pd.to_numeric(df[c], errors="coerce").fillna(method="ffill").fillna(0.0)
+
+    from sklearn.model_selection import TimeSeriesSplit
+    from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+    from sklearn.pipeline import Pipeline
+    from sklearn.compose import ColumnTransformer
+    from sklearn.feature_extraction.text import TfidfVectorizer
+    from sklearn.preprocessing import StandardScaler
+    from sklearn.linear_model import Ridge
+
+    # preprocess
+    word_vec = TfidfVectorizer(
+        analyzer="word",
+        ngram_range=word_ngram,
+        min_df=int(min_df),
+        max_features=int(max_features_word),
+        sublinear_tf=True
+    )
+    char_vec = TfidfVectorizer(
+        analyzer="char",
+        ngram_range=char_ngram,
+        min_df=int(min_df),
+        max_features=int(max_features_char),
+        sublinear_tf=True
+    )
+
+    pre = ColumnTransformer(
+        transformers=[
+            ("w", word_vec, "text"),
+            ("c", char_vec, "text"),
+            ("n", Pipeline([("sc", StandardScaler(with_mean=False))]), num_cols),
+        ],
+        remainder="drop",
+        sparse_threshold=0.3
+    )
+
+    model = Pipeline([
+        ("prep", pre),
+        ("reg", Ridge(alpha=float(alpha), random_state=42))
+    ])
+
+    X = df[["text"] + num_cols]
+    y = df["delta_bp"].values.astype(float)
+
+    # --- Walk-forward ---
+    tscv = TimeSeriesSplit(n_splits=min(int(n_splits), max(2, len(df) // 4)))
+    pred = np.full(len(df), np.nan)
+
+    for tr, te in tscv.split(X):
+        model.fit(X.iloc[tr], y[tr])
+        pred[te] = model.predict(X.iloc[te])
+
+    mask = np.isfinite(pred)
+    mae = float(mean_absolute_error(y[mask], pred[mask])) if mask.any() else np.nan
+    rmse = float(np.sqrt(mean_squared_error(y[mask], pred[mask]))) if mask.any() else np.nan
+    r2 = float(r2_score(y[mask], pred[mask])) if mask.any() else np.nan
+
+    pred_df = df[["period_date", "delta_bp"]].copy()
+    pred_df["pred_delta_bp"] = pred
+
+    # --- Fit final on all data ---
+    model.fit(X, y)
+
+    # --- Coef extraction (word tfidf only) ---
+    coef_df = pd.DataFrame()
+    try:
+        # pipeline -> prep -> 'w' vectorizer feature names
+        reg = model.named_steps["reg"]
+        prep = model.named_steps["prep"]
+        w_vec = prep.named_transformers_["w"]
+        w_names = np.array(w_vec.get_feature_names_out(), dtype=object)
+
+        # coef vector = [word_feats, char_feats, numeric_feats] birleşik.
+        # word boyutu:
+        n_w = len(w_names)
+        coefs = np.asarray(reg.coef_).ravel()
+        w_coef = coefs[:n_w]
+
+        coef_df = pd.DataFrame({"term": w_names, "coef": w_coef})
+        coef_df = coef_df.replace([np.inf, -np.inf], np.nan).dropna()
+    except Exception:
+        coef_df = pd.DataFrame()
+
+    return {
+        "model": model,
+        "metrics": {"mae": mae, "rmse": rmse, "r2": r2, "n": int(len(df))},
+        "pred_df": pred_df,
+        "coef_df": coef_df
+    }
+
+
+def predict_textasdata_hybrid_cpi(model_pack: dict, df_td: pd.DataFrame, text: str) -> dict:
+    """
+    Tek metin için delta_bp tahmin eder.
+    Numeric side: df_td'nin son satırındaki (policy_rate, cpi lag vs.) değerleri kullanır.
+    """
+    if not model_pack or "model" not in model_pack:
+        return {"pred_delta_bp": 0.0}
+
+    model = model_pack["model"]
+    if df_td is None or df_td.empty:
+        last = {}
+    else:
+        last = df_td.sort_values("period_date").iloc[-1].to_dict()
+
+    num_cols = ["policy_rate", "prev_delta_bp", "prev_policy_rate", "cpi_yoy", "cpi_mom", "cpi_yoy_l1", "cpi_mom_l1"]
+    row = {"text": normalize_tr_text(text)}
+    for c in num_cols:
+        v = last.get(c, 0.0)
+        try:
+            row[c] = float(v) if np.isfinite(float(v)) else 0.0
+        except Exception:
+            row[c] = 0.0
+
+    X_one = pd.DataFrame([row])
+    pred = float(model.predict(X_one)[0])
+    return {"pred_delta_bp": pred}
+
+
 
 with tab6:
     st.header("☁️ Kelime Bulutu (WordCloud)")
@@ -800,11 +1272,30 @@ Bu yüzden, model 3 sınıf üretse bile grafikteki çizgi “süreklilik” gö
 
             if hasattr(utils, "analyze_sentences_with_roberta"):
                 df_sent = utils.analyze_sentences_with_roberta(txt_input)
-
+            
+                # ✅ Action etiketi (CUT/HIKE/HOLD)
+                action = utils.detect_policy_action(txt_input) if hasattr(utils, "detect_policy_action") else "UNKNOWN"
+            
+                # ✅ Sayım + ağırlıklı özet
+                summary = utils.summarize_sentence_roberta(df_sent) if hasattr(utils, "summarize_sentence_roberta") else {}
+            
+                cA, cB, cC, cD = st.columns(4)
+                cA.metric("Policy Action", action)
+                cB.metric("🦅 Şahin cümle", summary.get("hawk_n", 0))
+                cC.metric("🕊️ Güvercin cümle", summary.get("dove_n", 0))
+                cD.metric("⚖️ Nötr cümle", summary.get("neut_n", 0))
+            
+                c1, c2, c3 = st.columns(3)
+                c1.metric("Diff ortalama", f"{summary.get('diff_mean', np.nan):.3f}" if summary.get("n", 0) else "—")
+                c2.metric("Pozitif toplam (hawk itişi)", f"{summary.get('pos_sum', np.nan):.2f}" if summary.get("n", 0) else "—")
+                c3.metric("Negatif toplam (dove itişi)", f"{summary.get('neg_sum', np.nan):.2f}" if summary.get("n", 0) else "—")
+            
+                st.caption("Not: Net duruş, cümle sayısından değil **Diff (H−D) ağırlıklarından** geliyor. Az sayıda ama çok güçlü ‘rate cut’ cümlesi toplamı negatife çekebilir.")
+            
                 if df_sent is None or df_sent.empty:
                     st.info("Metinden ayrıştırılabilir cümle bulunamadı.")
                 else:
                     st.dataframe(df_sent, use_container_width=True)
-
+            
             else:
                 st.error("analyze_sentences_with_roberta bulunamadı.")

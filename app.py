@@ -510,7 +510,7 @@ with tab3:
         else: st.error(f"Hata: {err}")
 
 
-with tab4:
+def _render_tab4_frequency():
     st.header("🔍 Frekans (İzlenen Terimler)")
 
     # -----------------------------
@@ -557,7 +557,7 @@ with tab4:
     df_all = utils.fetch_all_data()
     if df_all is None or df_all.empty:
         st.info("Yeterli veri yok.")
-        st.stop()
+        return
 
     df_all = df_all.copy()
     df_all["period_date"] = pd.to_datetime(df_all.get("period_date", None), errors="coerce")
@@ -588,7 +588,7 @@ with tab4:
     terms = st.session_state.get("watch_terms", [])
     if not terms:
         st.warning("İzlenen kelime yok. Yukarıdan ekleyebilirsin.")
-        st.stop()
+        return
 
     st.write("Aktif izlenen terimler:")
     cols = st.columns(6)
@@ -666,22 +666,25 @@ with tab4:
 
 
 
-# ==============================================================================
-# TAB: TEXT AS DATA (TF-IDF) — HYBRID + CPI delta_bp tahmini
-# ==============================================================================
-with tab_textdata:
+    # ==============================================================================
+    # TAB: TEXT AS DATA (TF-IDF) — HYBRID + CPI delta_bp tahmini
+    # ==============================================================================
+
+with tab4:
+    _render_tab4_frequency()
+def _render_tab_text_as_data():
     st.header("📚 Text as Data (TF-IDF) — HYBRID + CPI PPK Kararı (delta_bp) Tahmini")
 
 
 
     if not utils.HAS_ML_DEPS:
         st.error("ML kütüphaneleri eksik (sklearn).")
-        st.stop()
+        return
 
     df_logs = utils.fetch_all_data()
     if df_logs is None or df_logs.empty:
         st.info("Veri yok.")
-        st.stop()
+        return
 
     df_logs = df_logs.copy()
     df_logs["period_date"] = pd.to_datetime(df_logs["period_date"], errors="coerce")
@@ -711,7 +714,7 @@ with tab_textdata:
 
     if df_td.empty or df_td["delta_bp"].notna().sum() < 10:
         st.warning("HYBRID+CPI eğitim için yeterli gözlem yok. (En az ~10 kayıt önerilir)")
-        st.stop()
+        return
 
     # -------------------------
     # 1) Model ayarları
@@ -748,7 +751,7 @@ with tab_textdata:
     model_pack = st.session_state.get("textasdata_model")
     if not model_pack:
         st.info("Başlamak için yukarıdaki butona bas.")
-        st.stop()
+        return
 
     # -------------------------
     # 2) Backtest Özeti
@@ -831,7 +834,7 @@ with tab_textdata:
     ) -> pd.DataFrame:
         """
         Amaç: delta_bp (bps) tahmini için text+numeric+TÜFE özellikli dataset hazırlamak.
-    
+
         Çıktı kolonları:
           - period_date (datetime)
           - text (clean)
@@ -844,25 +847,25 @@ with tab_textdata:
         """
         if df_logs is None or df_logs.empty:
             return pd.DataFrame()
-    
+
         df = df_logs.copy()
         df[date_col] = pd.to_datetime(df[date_col], errors="coerce")
         df = df.dropna(subset=[date_col]).sort_values(date_col)
-    
+
         # Sayısal kolonlar
         if y_col in df.columns:
             df[y_col] = pd.to_numeric(df[y_col], errors="coerce")
         else:
             df[y_col] = np.nan
-    
+
         if rate_col in df.columns:
             df[rate_col] = pd.to_numeric(df[rate_col], errors="coerce")
         else:
             df[rate_col] = np.nan
-    
+
         # Donem anahtarı
         df["Donem"] = df[date_col].dt.strftime("%Y-%m")
-    
+
         # Market merge (TÜFE)
         if df_market is not None and not df_market.empty and "Donem" in df_market.columns:
             mk = df_market.copy()
@@ -871,31 +874,31 @@ with tab_textdata:
                 mk["Yıllık TÜFE"] = pd.to_numeric(mk["Yıllık TÜFE"], errors="coerce")
             if "Aylık TÜFE" in mk.columns:
                 mk["Aylık TÜFE"] = pd.to_numeric(mk["Aylık TÜFE"], errors="coerce")
-    
+
             df = pd.merge(df, mk[["Donem"] + [c for c in ["Yıllık TÜFE", "Aylık TÜFE"] if c in mk.columns]],
                           on="Donem", how="left")
-    
+
         # Text clean
         df["text"] = df[text_col].fillna("").astype(str).apply(normalize_tr_text)
-    
+
         # CPI feature names
         df["cpi_yoy"] = pd.to_numeric(df.get("Yıllık TÜFE", np.nan), errors="coerce")
         df["cpi_mom"] = pd.to_numeric(df.get("Aylık TÜFE", np.nan), errors="coerce")
-    
+
         # Lagged CPI
         df["cpi_yoy_l1"] = df["cpi_yoy"].shift(1)
         df["cpi_mom_l1"] = df["cpi_mom"].shift(1)
-    
+
         # Lagged policy vars
         df["prev_delta_bp"] = pd.to_numeric(df[y_col].shift(1), errors="coerce")
         df["prev_policy_rate"] = pd.to_numeric(df[rate_col].shift(1), errors="coerce")
-    
+
         # Son temizlik
         out = df[[date_col, "text", y_col, rate_col, "cpi_yoy", "cpi_mom", "cpi_yoy_l1", "cpi_mom_l1", "prev_delta_bp", "prev_policy_rate"]].copy()
         out = out.rename(columns={date_col: "period_date"})
         return out
-    
-    
+
+
     def train_textasdata_hybrid_cpi_ridge(
         df_td: pd.DataFrame,
         min_df: int = 2,
@@ -912,32 +915,32 @@ with tab_textdata:
           - char TF-IDF
           - numeric features (policy_rate, prev_*, cpi*)
         Target: delta_bp
-    
+
         Walk-forward backtest: TimeSeriesSplit
         Returns: dict(model, metrics, pred_df, coef_df)
         """
         if not HAS_ML_DEPS:
             return {}
-    
+
         # --- Input guard ---
         if df_td is None or df_td.empty:
             return {}
-    
+
         df = df_td.copy().sort_values("period_date").reset_index(drop=True)
         df["delta_bp"] = pd.to_numeric(df["delta_bp"], errors="coerce")
-    
+
         # target boş olanları at
         df = df.dropna(subset=["delta_bp", "text"])
         if len(df) < max(10, n_splits + 3):
             return {}
-    
+
         # numeric features
         num_cols = ["policy_rate", "prev_delta_bp", "prev_policy_rate", "cpi_yoy", "cpi_mom", "cpi_yoy_l1", "cpi_mom_l1"]
         for c in num_cols:
             if c not in df.columns:
                 df[c] = np.nan
             df[c] = pd.to_numeric(df[c], errors="coerce").fillna(method="ffill").fillna(0.0)
-    
+
         from sklearn.model_selection import TimeSeriesSplit
         from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
         from sklearn.pipeline import Pipeline
@@ -945,7 +948,7 @@ with tab_textdata:
         from sklearn.feature_extraction.text import TfidfVectorizer
         from sklearn.preprocessing import StandardScaler
         from sklearn.linear_model import Ridge
-    
+
         # preprocess
         word_vec = TfidfVectorizer(
             analyzer="word",
@@ -961,7 +964,7 @@ with tab_textdata:
             max_features=int(max_features_char),
             sublinear_tf=True
         )
-    
+
         pre = ColumnTransformer(
             transformers=[
                 ("w", word_vec, "text"),
@@ -971,34 +974,34 @@ with tab_textdata:
             remainder="drop",
             sparse_threshold=0.3
         )
-    
+
         model = Pipeline([
             ("prep", pre),
             ("reg", Ridge(alpha=float(alpha), random_state=42))
         ])
-    
+
         X = df[["text"] + num_cols]
         y = df["delta_bp"].values.astype(float)
-    
+
         # --- Walk-forward ---
         tscv = TimeSeriesSplit(n_splits=min(int(n_splits), max(2, len(df) // 4)))
         pred = np.full(len(df), np.nan)
-    
+
         for tr, te in tscv.split(X):
             model.fit(X.iloc[tr], y[tr])
             pred[te] = model.predict(X.iloc[te])
-    
+
         mask = np.isfinite(pred)
         mae = float(mean_absolute_error(y[mask], pred[mask])) if mask.any() else np.nan
         rmse = float(np.sqrt(mean_squared_error(y[mask], pred[mask]))) if mask.any() else np.nan
         r2 = float(r2_score(y[mask], pred[mask])) if mask.any() else np.nan
-    
+
         pred_df = df[["period_date", "delta_bp"]].copy()
         pred_df["pred_delta_bp"] = pred
-    
+
         # --- Fit final on all data ---
         model.fit(X, y)
-    
+
         # --- Coef extraction (word tfidf only) ---
         coef_df = pd.DataFrame()
         try:
@@ -1007,26 +1010,26 @@ with tab_textdata:
             prep = model.named_steps["prep"]
             w_vec = prep.named_transformers_["w"]
             w_names = np.array(w_vec.get_feature_names_out(), dtype=object)
-    
+
             # coef vector = [word_feats, char_feats, numeric_feats] birleşik.
             # word boyutu:
             n_w = len(w_names)
             coefs = np.asarray(reg.coef_).ravel()
             w_coef = coefs[:n_w]
-    
+
             coef_df = pd.DataFrame({"term": w_names, "coef": w_coef})
             coef_df = coef_df.replace([np.inf, -np.inf], np.nan).dropna()
         except Exception:
             coef_df = pd.DataFrame()
-    
+
         return {
             "model": model,
             "metrics": {"mae": mae, "rmse": rmse, "r2": r2, "n": int(len(df))},
             "pred_df": pred_df,
             "coef_df": coef_df
         }
-    
-    
+
+
     def predict_textasdata_hybrid_cpi(model_pack: dict, df_td: pd.DataFrame, text: str) -> dict:
         """
         Tek metin için delta_bp tahmin eder.
@@ -1034,13 +1037,13 @@ with tab_textdata:
         """
         if not model_pack or "model" not in model_pack:
             return {"pred_delta_bp": 0.0}
-    
+
         model = model_pack["model"]
         if df_td is None or df_td.empty:
             last = {}
         else:
             last = df_td.sort_values("period_date").iloc[-1].to_dict()
-    
+
         num_cols = ["policy_rate", "prev_delta_bp", "prev_policy_rate", "cpi_yoy", "cpi_mom", "cpi_yoy_l1", "cpi_mom_l1"]
         row = {"text": normalize_tr_text(text)}
         for c in num_cols:
@@ -1049,13 +1052,16 @@ with tab_textdata:
                 row[c] = float(v) if np.isfinite(float(v)) else 0.0
             except Exception:
                 row[c] = 0.0
-    
+
         X_one = pd.DataFrame([row])
         pred = float(model.predict(X_one)[0])
         return {"pred_delta_bp": pred}
 
 
 
+
+with tab_textdata:
+    _render_tab_text_as_data()
 with tab6:
     st.header("☁️ Kelime Bulutu (WordCloud)")
     if not df_all.empty:
@@ -1140,12 +1146,12 @@ with tab7:
 # TAB ROBERTA: CB-RoBERTa
 # ==============================================================================
 
-with tab_roberta:
+def _render_tab_roberta():
     st.header("🧠 CentralBankRoBERTa (Yapay Zeka Analizi)")
 
     if not utils.HAS_TRANSFORMERS:
         st.error("Kütüphaneler eksik. (transformers/torch)")
-        st.stop()
+        return
 
     # -------------------------
     # 1) GENEL TREND
@@ -1187,16 +1193,16 @@ with tab_roberta:
     # Açıklama kutusu
     with st.expander("ℹ️ Bu grafik nasıl hesaplanıyor?", expanded=False):
         st.markdown("""
-Bu grafik, modelin verdiği **3 sınıf olasılığından** (Şahin / Güvercin / Nötr) türetilmiş bir **endeks**tir.
+    Bu grafik, modelin verdiği **3 sınıf olasılığından** (Şahin / Güvercin / Nötr) türetilmiş bir **endeks**tir.
 
-1) Her metin için `P(HAWK)`, `P(DOVE)`, `P(NEUT)` alınır.  
-2) Ham fark: **diff = P(HAWK) − P(DOVE)**  
-3) Serinin kendi dağılımına göre **robust kalibrasyon** yapılır (median + MAD → robust z-score)  
-4) `tanh` ile skor **−100..+100** bandına sıkıştırılır  
-5) **EMA (span=7)** ile yumuşatılır  
-6) Rejim etiketinde hızlı flip olmasın diye **histerezis** uygulanır (±25 eşikleri)
+    1) Her metin için `P(HAWK)`, `P(DOVE)`, `P(NEUT)` alınır.  
+    2) Ham fark: **diff = P(HAWK) − P(DOVE)**  
+    3) Serinin kendi dağılımına göre **robust kalibrasyon** yapılır (median + MAD → robust z-score)  
+    4) `tanh` ile skor **−100..+100** bandına sıkıştırılır  
+    5) **EMA (span=7)** ile yumuşatılır  
+    6) Rejim etiketinde hızlı flip olmasın diye **histerezis** uygulanır (±25 eşikleri)
 
-Bu yüzden, model 3 sınıf üretse bile grafikteki çizgi “süreklilik” gösterir: bu bir **türetilmiş duruş endeksi**dir.
+    Bu yüzden, model 3 sınıf üretse bile grafikteki çizgi “süreklilik” gösterir: bu bir **türetilmiş duruş endeksi**dir.
         """)
 
     st.divider()
@@ -1209,7 +1215,7 @@ Bu yüzden, model 3 sınıf üretse bile grafikteki çizgi “süreklilik” gö
     df_all_rob = utils.fetch_all_data()
     if df_all_rob is None or df_all_rob.empty:
         st.info("Tekil analiz için veritabanında kayıt yok.")
-        st.stop()
+        return
 
     df_all_rob = df_all_rob.copy()
     df_all_rob["period_date"] = pd.to_datetime(df_all_rob["period_date"], errors="coerce")
@@ -1290,6 +1296,16 @@ Bu yüzden, model 3 sınıf üretse bile grafikteki çizgi “süreklilik” gö
                 c2.metric("Pozitif toplam (hawk itişi)", f"{summary.get('pos_sum', np.nan):.2f}" if summary.get("n", 0) else "—")
                 c3.metric("Negatif toplam (dove itişi)", f"{summary.get('neg_sum', np.nan):.2f}" if summary.get("n", 0) else "—")
             
+
+                # ✂️ Rate cut sinyali (cümle bazlı)
+                rc_points = float(summary.get("rate_cut_points", 0.0) or 0.0)
+                rc_weight = float(summary.get("rate_cut_weight", 0.0) or 0.0)
+                r1, r2 = st.columns(2)
+                r1.metric("✂️ Rate cut puanı", f"{rc_points:.1f}")
+                r2.metric("⚖️ Rate cut ağırlığı", f"{rc_weight:.2%}")
+                if summary.get("rate_cut_sentence") and summary.get("rate_cut_sentence") != "—":
+                    st.caption(f"Rate cut cümlesi: {summary.get('rate_cut_sentence')}")
+
                 st.caption("Not: Net duruş, cümle sayısından değil **Diff (H−D) ağırlıklarından** geliyor. Az sayıda ama çok güçlü ‘rate cut’ cümlesi toplamı negatife çekebilir.")
             
                 if df_sent is None or df_sent.empty:
@@ -1299,3 +1315,6 @@ Bu yüzden, model 3 sınıf üretse bile grafikteki çizgi “süreklilik” gö
             
             else:
                 st.error("analyze_sentences_with_roberta bulunamadı.")
+
+with tab_roberta:
+    _render_tab_roberta()

@@ -1293,7 +1293,7 @@ def _render_tab_roberta():
                 action = utils.detect_policy_action(txt_input) if hasattr(utils, "detect_policy_action") else "UNKNOWN"
             
                 # ✅ Sayım + ağırlıklı özet
-                summary = utils.summarize_sentence_roberta(df_sent) if hasattr(utils, "summarize_sentence_roberta") else {}
+                summary = utils.summarize_sentence_roberta(df_sent, txt_input) if hasattr(utils, "summarize_sentence_roberta") else {}
             
                 cA, cB, cC, cD = st.columns(4)
                 cA.metric("Policy Action", action)
@@ -1307,16 +1307,28 @@ def _render_tab_roberta():
                 c3.metric("Negatif toplam (dove itişi)", f"{summary.get('neg_sum', np.nan):.2f}" if summary.get("n", 0) else "—")
             
 
-                # ✂️ Rate cut sinyali (cümle bazlı)
-                rc_points = float(summary.get("rate_cut_points", 0.0) or 0.0)
-                rc_weight = float(summary.get("rate_cut_weight", 0.0) or 0.0)
-                r1, r2 = st.columns(2)
-                r1.metric("✂️ Rate cut puanı", f"{rc_points:.1f}")
-                r2.metric("⚖️ Rate cut ağırlığı", f"{rc_weight:.2%}")
-                if summary.get("rate_cut_sentence") and summary.get("rate_cut_sentence") != "—":
-                    st.caption(f"Rate cut cümlesi: {summary.get('rate_cut_sentence')}")
+                # 🎯 Aksiyon sinyali (cümle bazlı) — HIKE/CUT bağlamında
+                act = summary.get("policy_action", action)  # utils ile uyumlu
+                points = float(summary.get("action_points", 0.0) or 0.0)
+                weight = float(summary.get("action_weight", 0.0) or 0.0)
+                sent = summary.get("action_sentence", "—")
 
-                st.caption("Not: Net duruş, cümle sayısından değil **Diff (H−D) ağırlıklarından** geliyor. Az sayıda ama çok güçlü ‘rate cut’ cümlesi toplamı negatife çekebilir.")
+                if act == "HIKE":
+                    l1, l2, lcap = "📈 Rate hike puanı", "⚖️ Rate hike ağırlığı", "Rate hike cümlesi"
+                elif act == "CUT":
+                    l1, l2, lcap = "✂️ Rate cut puanı", "⚖️ Rate cut ağırlığı", "Rate cut cümlesi"
+                elif act == "HOLD":
+                    l1, l2, lcap = "⏸️ Hold puanı", "⚖️ Hold ağırlığı", "Hold cümlesi"
+                else:
+                    l1, l2, lcap = "🎯 Aksiyon puanı", "⚖️ Aksiyon ağırlığı", "Aksiyon cümlesi"
+
+                r1, r2 = st.columns(2)
+                r1.metric(l1, f"{points:.1f}")
+                r2.metric(l2, f"{weight:.2%}")
+                if sent and sent != "—":
+                    st.caption(f"{lcap}: {sent}")
+
+                st.caption("Not: Net duruş, cümle sayısından değil **Diff (H−D) ağırlıklarından** gelir. Az sayıda ama çok güçlü bir ‘aksiyon’ cümlesi toplamı tek başına ciddi etkileyebilir.")
             
                 if df_sent is None or df_sent.empty:
                     st.info("Metinden ayrıştırılabilir cümle bulunamadı.")

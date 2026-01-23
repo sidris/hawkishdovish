@@ -795,7 +795,7 @@ with tab_textdata:
     df_logs = utils.fetch_all_data()
     if df_logs is None or df_logs.empty:
         st.info("Veri yok.")
-        st.stop()
+
 
     df_logs = df_logs.copy()
     df_logs["period_date"] = pd.to_datetime(df_logs["period_date"], errors="coerce")
@@ -821,7 +821,7 @@ with tab_textdata:
 
     if df_td is None or df_td.empty or df_td["delta_bp"].notna().sum() < 10:
         st.warning("HYBRID+CPI eğitim için yeterli gözlem yok. (En az ~10 kayıt önerilir)")
-        st.stop()
+
 
     c1, c2, c3 = st.columns([2, 1, 1])
     with c1:
@@ -855,7 +855,7 @@ with tab_textdata:
     model_pack = st.session_state.get("textasdata_model")
     if not model_pack:
         st.info("Başlamak için yukarıdaki butona bas.")
-        st.stop()
+
 
     metrics = model_pack.get("metrics", {}) or {}
     c1, c2, c3, c4 = st.columns(4)

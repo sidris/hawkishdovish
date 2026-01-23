@@ -790,7 +790,7 @@ with tab_textdata:
 
     if not utils.HAS_ML_DEPS:
         st.error("ML kütüphaneleri eksik (sklearn).")
-        st.stop()
+
 
     df_logs = utils.fetch_all_data()
     if df_logs is None or df_logs.empty:

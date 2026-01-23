@@ -1158,9 +1158,7 @@ Bu grafik, modelin verdiği **3 sınıf olasılığından** (Şahin / Güvercin 
 
         st.markdown("---")
         st.subheader("🧩 Cümle Bazlı Ayrıştırma (RoBERTa)")
-
-
-
+        
         # 1) Policy Action (metin üstünden)
         act = utils.detect_policy_action(txt_input) if hasattr(utils, "detect_policy_action") else {"action":"UNKNOWN","bp":None,"weight_0_1":None}
         act_label = str(act.get("action", "UNKNOWN"))
@@ -1222,5 +1220,3 @@ Bu grafik, modelin verdiği **3 sınıf olasılığından** (Şahin / Güvercin 
         
         else:
             st.error("utils.analyze_sentences_with_roberta bulunamadı.")
-        
-        

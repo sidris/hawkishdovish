@@ -2051,6 +2051,39 @@ def detect_policy_action(text: str) -> str:
 
 
 
+
+def extract_delta_bp_from_text(text: str) -> float | None:
+    """
+    Metinden 'from X percent to Y percent' kalıbını yakalayıp gerçek delta_bp döndürür.
+    Örn: from 8.5 percent to 15 percent  -> +650.0
+    Bulamazsa None.
+    """
+    raw = text or ""
+    t = raw.lower()
+
+    m = re.search(
+        r"(policy rate|interest rate|repo auction rate|one-week repo).*?from\s+(\d+(?:\.\d+)?)\s*percent\s+to\s+(\d+(?:\.\d+)?)\s*percent",
+        t,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    if not m:
+        # bağlam olmadan da deneyelim (bazı metinlerde 'policy rate' ayrı satır olabilir)
+        m2 = re.search(
+            r"from\s+(\d+(?:\.\d+)?)\s*percent\s+to\s+(\d+(?:\.\d+)?)\s*percent",
+            t,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        if not m2:
+            return None
+        a = float(m2.group(1)); b = float(m2.group(2))
+        return (b - a) * 100.0
+
+    a = float(m.group(2))
+    b = float(m.group(3))
+    return (b - a) * 100.0
+
+
+
 def summarize_sentence_roberta(df_sent: pd.DataFrame, full_text: str | None = None) -> dict:
     """
     analyze_sentences_with_roberta çıktısından özet:

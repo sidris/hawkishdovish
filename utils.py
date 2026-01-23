@@ -1869,38 +1869,41 @@ def analyze_sentences_with_roberta(text: str) -> pd.DataFrame:
     - split_sentences_nlp boşsa fallback
     - çok cümlede batch çalışır
     - model call patlarsa UI'da görebil diye ERROR satırı döndürür
+    - boş dönmek yerine tanılayıcı (diagnostic) satır üretir
     """
-    if not text:
-        return pd.DataFrame()
+    # Tutarlı kolon seti
+    cols = ["Cümle", "Duruş", "Diff (H-D)", "HAWK", "DOVE", "NEUT", "Tag"]
+    if not text or not str(text).strip():
+        return pd.DataFrame([{"Cümle": "Metin boş", "Tag": "ERROR"}], columns=cols)
 
     clf = load_roberta_pipeline()
     if clf is None:
-        return pd.DataFrame([{"ERROR": "Pipeline not loaded (HAS_TRANSFORMERS false or model load failed)"}])
+        return pd.DataFrame([{"Cümle": "Pipeline yüklenemedi (transformers/torch veya model load hatası)", "Tag": "ERROR"}], columns=cols)
 
     t = str(text).strip()
     if len(t) < 30:
-        return pd.DataFrame()
+        return pd.DataFrame([{"Cümle": "Metin çok kısa (>=30 karakter önerilir)", "Tag": "WARN"}], columns=cols)
 
     # 1) Sentence split
     try:
         sentences = split_sentences_nlp(t)
         sentences = [s.strip() for s in (sentences or [])]
-    except Exception as e:
+    except Exception:
         sentences = []
 
     if not sentences:
         sentences = _fallback_sentence_split(t)
 
-    # yumuşak filtre
-    sentences = [s for s in sentences if s and len(s.split()) >= 3]
+    # daha yumuşak filtre: en az 2 kelime veya 20 karakter
+    sentences = [s for s in sentences if s and (len(s.split()) >= 2 or len(s) >= 20)]
     if not sentences:
-        return pd.DataFrame()
+        return pd.DataFrame([{"Cümle": "Cümle ayrıştırıldı ama filtre sonrası cümle kalmadı", "Tag": "WARN"}], columns=cols)
 
     # cümleleri kısalt (transformers truncation’a ek olarak)
     sentences = [s[:500] for s in sentences]
 
     # çok uzarsa limitle
-    max_sent = 120
+    max_sent = 160
     if len(sentences) > max_sent:
         sentences = sentences[:max_sent]
 
@@ -1910,7 +1913,7 @@ def analyze_sentences_with_roberta(text: str) -> pd.DataFrame:
         batch_size = 16
 
         for i in range(0, len(sentences), batch_size):
-            batch = sentences[i:i+batch_size]
+            batch = sentences[i:i + batch_size]
 
             # truncation/padding burada kritik
             preds = clf(batch, truncation=True)
@@ -1940,23 +1943,108 @@ def analyze_sentences_with_roberta(text: str) -> pd.DataFrame:
                     "HAWK": h,
                     "DOVE": d,
                     "NEUT": n,
+                    "Tag": "",
                 })
 
-        df = pd.DataFrame(rows)
+        df = pd.DataFrame(rows, columns=cols)
         if not df.empty:
             df = df.sort_values("Diff (H-D)", ascending=False).reset_index(drop=True)
+        else:
+            df = pd.DataFrame([{"Cümle": "Model çalıştı ama sonuç üretilmedi (beklenmeyen durum)", "Tag": "WARN"}], columns=cols)
+
         return df
 
     except Exception as e:
-        # UI'ya taşıyalım ki "neden boş" kaybolmasın
-        return pd.DataFrame([{
-            "ERROR": repr(e),
-            "sent_count": len(sentences),
-            "sample_sent": sentences[0][:200] if sentences else ""
-        }])
-    finally:
-        gc.collect()
+        return pd.DataFrame([{"Cümle": f"RoBERTa sentence analizi hata: {e}", "Tag": "ERROR"}], columns=cols)
 
 
+# --- Policy action (CUT/HIKE/HOLD) & Rate-cut özet yardımcıları ---
+
+_RATE_CUT_KWS = [
+    "rate cut", "cut rates", "lowered", "lowering", "reduce", "reduced", "easing",
+    "faiz indir", "faiz indirim", "indirime", "indirim",
+]
+_RATE_HIKE_KWS = [
+    "rate hike", "hike", "raised", "raising", "increase", "increased", "tightening",
+    "faiz art", "faiz artır", "artırım", "sıkılaş",
+]
+_RATE_HOLD_KWS = [
+    "kept", "maintained", "unchanged", "hold", "pause",
+    "sabit", "değişiklik", "korun", "aynı seviyede",
+]
 
 
+def detect_policy_action(text: str) -> str:
+    """Metinde kaba bir aksiyon etiketi döndürür: CUT / HIKE / HOLD / UNKNOWN"""
+    t = (text or "").lower()
+
+    # öncelik: açıkça cut/hike
+    if any(k in t for k in _RATE_CUT_KWS):
+        return "CUT"
+    if any(k in t for k in _RATE_HIKE_KWS):
+        return "HIKE"
+    if any(k in t for k in _RATE_HOLD_KWS):
+        return "HOLD"
+    return "UNKNOWN"
+
+
+def summarize_sentence_roberta(df_sent: pd.DataFrame) -> dict:
+    """
+    analyze_sentences_with_roberta çıktısından özet:
+    - sınıf sayıları
+    - diff ortalama / pos sum / neg sum
+    - rate cut: puan (diff proxy) + ağırlık + cümle
+    """
+    if df_sent is None or df_sent.empty or "Diff (H-D)" not in df_sent.columns:
+        return {"n": 0}
+
+    d = df_sent.copy()
+    # sadece gerçek skor satırları
+    d = d[pd.to_numeric(d["Diff (H-D)"], errors="coerce").notna()].copy()
+    if d.empty:
+        return {"n": 0}
+
+    diffs = pd.to_numeric(d["Diff (H-D)"], errors="coerce").astype(float).values
+    abs_sum = float(np.sum(np.abs(diffs))) + 1e-12
+
+    stance = d.get("Duruş", "").astype(str)
+    hawk_n = int((stance.str.contains("Şahin", na=False)).sum())
+    dove_n = int((stance.str.contains("Güvercin", na=False)).sum())
+    neut_n = int((stance.str.contains("Nötr", na=False)).sum())
+
+    diff_mean = float(np.mean(diffs))
+    pos_sum = float(np.sum(diffs[diffs > 0]))
+    neg_sum = float(np.sum(diffs[diffs < 0]))  # negatif değer (dove itişi)
+
+    # rate cut cümlelerini yakala
+    txt_lc = d["Cümle"].astype(str).str.lower()
+    mask_cut = False
+    for kw in _RATE_CUT_KWS:
+        mask_cut = mask_cut | txt_lc.str.contains(re.escape(kw), regex=True, na=False)
+    cut_rows = d[mask_cut].copy()
+
+    rate_cut_points = 0.0
+    rate_cut_weight = 0.0
+    rate_cut_sentence = "—"
+
+    if not cut_rows.empty:
+        # rate cut genelde dovish => en negatif diff'i seç
+        cut_rows["Diff (H-D)"] = pd.to_numeric(cut_rows["Diff (H-D)"], errors="coerce")
+        best = cut_rows.sort_values("Diff (H-D)", ascending=True).iloc[0]
+        best_diff = float(best["Diff (H-D)"])
+        rate_cut_points = float(max(0.0, -best_diff) * 100.0)  # pozitif puan olarak göster
+        rate_cut_weight = float(abs(best_diff) / abs_sum)
+        rate_cut_sentence = str(best["Cümle"])
+
+    return {
+        "n": int(len(d)),
+        "hawk_n": hawk_n,
+        "dove_n": dove_n,
+        "neut_n": neut_n,
+        "diff_mean": diff_mean,
+        "pos_sum": pos_sum,
+        "neg_sum": neg_sum,
+        "rate_cut_points": rate_cut_points,
+        "rate_cut_weight": rate_cut_weight,
+        "rate_cut_sentence": rate_cut_sentence,
+    }

@@ -1724,16 +1724,35 @@ def postprocess_ai_series(df: pd.DataFrame,
     out["AI Score (Calib)"] = np.tanh(z / float(z_scale)) * 100.0
     out["AI Score (EMA)"] = out["AI Score (Calib)"].ewm(span=span, adjust=False).mean()
 
-    regime = []
-    prev = "⚖️ Nötr"
+    # --- Rejim (Histerezis) ---
+    # Not: CB metinlerinde dil yumuşak döner; HOLD dönemlerinde işaret değişimleri
+    # sık görülür. Bu nedenle "sign-flip" olduğunda nötre hızlı dönmek gerekir.
+    regime: list[str] = []
+    prev: str = "⚖️ Nötr"
+
+    neutral_band = float(hyst) * 0.60   # ±15 (hyst=25 iken)
+    flip_band = float(hyst) * 0.50      # ±12.5 (hyst=25 iken)
+
     for v in out["AI Score (EMA)"].values:
         v = float(v)
-        if prev in ["⚖️ Nötr", "🦅 Şahin"] and v >= hyst:
+
+        # 1) Güçlü rejim girişleri
+        if v >= float(hyst):
             prev = "🦅 Şahin"
-        elif prev in ["⚖️ Nötr", "🕊️ Güvercin"] and v <= -hyst:
+        elif v <= -float(hyst):
             prev = "🕊️ Güvercin"
-        elif abs(v) < hyst * 0.6:
-            prev = "⚖️ Nötr"
+        else:
+            # 2) Nötr bant: düşük genlikte rejimi nötrle (<= önemli!)
+            if abs(v) <= neutral_band:
+                prev = "⚖️ Nötr"
+            else:
+                # 3) İşaret değişimi: önce nötrle (ve yeterince güçlü ise karşı rejime çevir)
+                if prev == "🦅 Şahin" and v < 0:
+                    prev = "🕊️ Güvercin" if v <= -flip_band else "⚖️ Nötr"
+                elif prev == "🕊️ Güvercin" and v > 0:
+                    prev = "🦅 Şahin" if v >= flip_band else "⚖️ Nötr"
+                # aksi halde prev korunur
+
         regime.append(prev)
 
     out["AI Rejim"] = regime

@@ -1622,6 +1622,108 @@ def _normalize_label_mrince(raw_label: str) -> str:
     return "NEUT"
 
 
+import re
+import numpy as np
+
+def detect_policy_action(text: str) -> dict:
+    """
+    TR+EN metinden politika aksiyonu + büyüklük (bp) çıkarır.
+
+    Return örnek:
+      {"action":"HIKE","bp":500,"weight_0_1":1.0,"method":"from_to"}
+      {"action":"HOLD","bp":0,"weight_0_1":0.0,"method":"hold_keyword"}
+      {"action":"UNKNOWN","bp":None,"weight_0_1":None,"method":"none"}
+    """
+    if not text:
+        return {"action": "UNKNOWN", "bp": None, "weight_0_1": None, "method": "none"}
+
+    t = " ".join(str(text).lower().split())
+
+    def _to_float(s: str):
+        s = s.replace(",", ".")
+        try:
+            return float(s)
+        except Exception:
+            return None
+
+    # 1) from X to Y  /  45'ten 50'ye  /  %45'ten %50'ye
+    m_en = re.search(r"\bfrom\s+(\d+(?:[\.,]\d+)?)\s*%?\s+to\s+(\d+(?:[\.,]\d+)?)\s*%?\b", t)
+    m_tr = re.search(r"\b(\d+(?:[\.,]\d+)?)\s*%?\s*(?:'ten|ten)\s+(\d+(?:[\.,]\d+)?)\s*%?\s*(?:'ye|ye)\b", t)
+
+    if m_en or m_tr:
+        m = m_en if m_en else m_tr
+        a = _to_float(m.group(1))
+        b = _to_float(m.group(2))
+        if a is not None and b is not None:
+            bp = int(round((b - a) * 100))  # 1 puan = 100 bp
+            if bp > 0:
+                action = "HIKE"
+            elif bp < 0:
+                action = "CUT"
+            else:
+                action = "HOLD"
+            w = min(abs(bp) / 500.0, 1.0)  # 500bp = 1.0
+            return {"action": action, "bp": bp, "weight_0_1": float(w), "method": "from_to"}
+
+    # 2) "500 bp" / "500 baz puan"
+    m_bp = re.search(r"\b(\d{1,4})\s*(?:bp|bps|baz\s*puan|bazpuan)\b", t)
+    if m_bp:
+        bp = int(m_bp.group(1))
+
+        if re.search(r"\b(indir|indirim|azalt|düşür|düşüş|reduce|cut|lower|decrease)\b", t):
+            action = "CUT"
+            bp = -abs(bp)
+        elif re.search(r"\b(artır|artış|yükselt|yükseliş|increase|raise|hike|tighten)\b", t):
+            action = "HIKE"
+            bp = abs(bp)
+        elif re.search(r"\b(sabit|değişmedi|değişiklik|koru|unchanged|maintain|keep)\b", t):
+            action = "HOLD"
+            bp = 0
+        else:
+            action = "UNKNOWN"
+            bp = None
+
+        w = min(abs(bp) / 500.0, 1.0) if bp is not None else None
+        return {"action": action, "bp": bp, "weight_0_1": w, "method": "bp_token"}
+
+    # 3) "5 puan" / "5 percentage points"
+    m_pp = re.search(r"\b(\d+(?:[\.,]\d+)?)\s*(?:puan|yüzdelik\s*puan|percentage\s*points?)\b", t)
+    if m_pp:
+        pp = _to_float(m_pp.group(1))
+        if pp is not None:
+            bp = int(round(pp * 100))
+            if re.search(r"\b(indir|indirim|azalt|düşür|reduce|cut|lower|decrease)\b", t):
+                action = "CUT"
+                bp = -abs(bp)
+            elif re.search(r"\b(artır|artış|yükselt|increase|raise|hike|tighten)\b", t):
+                action = "HIKE"
+                bp = abs(bp)
+            else:
+                action = "UNKNOWN"
+                bp = None
+
+            w = min(abs(bp) / 500.0, 1.0) if bp is not None else None
+            return {"action": action, "bp": bp, "weight_0_1": w, "method": "points_token"}
+
+    # 4) HOLD keyword TR+EN
+    if re.search(r"\b(sabit|değişmedi|değişiklik\s*yapılmadı|korunmasına|koru|unchanged|maintain|keep)\b", t) and \
+       re.search(r"\b(faiz|politika\s*faizi|bir\s*hafta\s*repo|policy\s*rate|interest\s*rate)\b", t):
+        return {"action": "HOLD", "bp": 0, "weight_0_1": 0.0, "method": "hold_keyword"}
+
+    # 5) Yön var ama büyüklük yok
+    if re.search(r"\b(artır|artış|yükselt|increase|raise|hike|tighten)\b", t) and \
+       re.search(r"\b(faiz|politika\s*faizi|bir\s*hafta\s*repo|policy\s*rate|interest\s*rate)\b", t):
+        return {"action": "HIKE", "bp": None, "weight_0_1": None, "method": "hike_keyword"}
+
+    if re.search(r"\b(indir|indirim|azalt|düşür|reduce|cut|lower|decrease)\b", t) and \
+       re.search(r"\b(faiz|politika\s*faizi|bir\s*hafta\s*repo|policy\s*rate|interest\s*rate)\b", t):
+        return {"action": "CUT", "bp": None, "weight_0_1": None, "method": "cut_keyword"}
+
+    return {"action": "UNKNOWN", "bp": None, "weight_0_1": None, "method": "none"}
+
+
+
+
 def stance_3class_from_diff(diff: float, deadband: float = 0.15) -> str:
     """
     diff = P(HAWK) - P(DOVE)
@@ -1837,21 +1939,9 @@ def create_ai_trend_chart(df_res: pd.DataFrame):
     return fig
 
 
-import re
-import gc
-import pandas as pd
-import numpy as np
 
-def _fallback_sentence_split(text: str) -> list[str]:
-    # Basit ama sağlam: . ! ? ; : ve satır sonlarından böl
-    t = re.sub(r"\s+", " ", str(text)).strip()
-    if not t:
-        return []
-    parts = re.split(r"(?<=[\.\!\?\;\:])\s+", t)
-    # Çok kısa parçaları temizle
-    return [p.strip() for p in parts if p and len(p.strip()) >= 10]
 
-import re
+
 import gc
 import pandas as pd
 import numpy as np
@@ -1863,9 +1953,7 @@ def _fallback_sentence_split(text: str) -> list[str]:
     parts = re.split(r"(?<=[\.\!\?\;\:])\s+", t)
     return [p.strip() for p in parts if p and len(p.strip()) >= 10]
 
-import re
-import numpy as np
-import pandas as pd
+
 
 def _safe_split_sentences(text: str) -> list[str]:
     """

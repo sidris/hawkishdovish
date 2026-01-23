@@ -465,6 +465,25 @@ def split_sentences_nlp(text: str):
     sents = re.split(r"(?<=[\.\!\?\;])\s+", text)
     return [s.strip() for s in sents if s.strip()]
 
+
+
+def split_sentences_tr(text: str):
+    """Basit ve güvenli cümle bölücü (TR/EN karışık metinler için).
+    - Yeni satırları nokta gibi ele alır.
+    - . ! ? ; sonrası bölmeye çalışır.
+    """
+    if text is None:
+        return []
+    t = str(text).strip()
+    if not t:
+        return []
+    t = re.sub(r"\n+", ". ", t)
+    sents = re.split(r"(?<=[\.!\?\;])\s+", t)
+    # Fallback: yine de tek parça geldiyse, newline bazlı dene
+    if len(sents) <= 1:
+        sents = [s.strip() for s in str(text).splitlines() if s.strip()]
+    return [s.strip() for s in sents if s.strip()]
+
 def tokenize(sent: str):
     return re.findall(r"[a-z]+", sent)
 

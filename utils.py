@@ -1686,11 +1686,42 @@ def analyze_with_roberta(text: str):
         n = float(scores_map.get("NEUT", 0.0))
         diff = h - d
 
+        # --- Doküman duruşu için daha güvenilir özet ---
+        # Bazı metinlerde tek-parça (full text) sınıflandırma, birkaç "şahin" kalıbı yüzünden
+        # şişebiliyor. Bu yüzden cümle bazlı net itişi de hesaplayıp raporluyoruz.
+        stance_full = stance_3class_from_diff(diff)
+        stance_sent = None
+        doc_diff_mean = None
+        net_push = None
+
+        try:
+            df_sent = analyze_sentences_with_roberta(truncated_text)
+            summ = summarize_sentence_roberta(df_sent, full_text=truncated_text) if df_sent is not None else {"n": 0}
+            if summ and summ.get("n", 0) > 0:
+                doc_diff_mean = float(summ.get("diff_mean", 0.0) or 0.0)
+                # pos_sum + neg_sum (neg zaten negatif)
+                net_push = float((summ.get("pos_sum", 0.0) or 0.0) + (summ.get("neg_sum", 0.0) or 0.0))
+                # cümle ortalamasında deadband'i biraz daha dar tut (doküman bias için)
+                stance_sent = stance_3class_from_diff(doc_diff_mean, deadband=0.05)
+
+                # HOLD/UNKNOWN aksiyonunda, net itiş güvercin ise "şahin" etiketi bastırılmasın
+                action = detect_policy_action(truncated_text)
+                if action in ("HOLD", "UNKNOWN") and stance_full == "🦅 Şahin" and net_push is not None and net_push < 0:
+                    stance_full = stance_sent or "⚖️ Nötr"
+        except Exception:
+            pass
+
         return {
             "scores_map": scores_map,
             "best_score": float(best_score),
             "diff": float(diff),
-            "stance": stance_3class_from_diff(diff),
+            # Varsayılan metrik: full-text (ama gerektiğinde cümle özetine göre bastırılabilir)
+            "stance": stance_full,
+            # Debug / UI için ek alanlar
+            "stance_full_raw": stance_3class_from_diff(diff),
+            "stance_sentence": stance_sent,
+            "doc_diff_mean": doc_diff_mean,
+            "net_push": net_push,
             "label_map": _mrince_label_map(),  # debug için (istersen UI'da göster)
             "h": h, "d": d, "n": n
         }

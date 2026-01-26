@@ -80,7 +80,7 @@ tab1, tab2, tab3, tab4, tab_textdata, tab6, tab7, tab_roberta, tab_imp = st.tabs
     "🔍 Frekans",
     "📚 Text as Data (TF-IDF)",
     "☁️ WordCloud",
-    "📜 ABF (2019)",
+    "📜 ABG (2019)",
     "🧠 CB-RoBERTa",
     "📅 Haberler"
 ])

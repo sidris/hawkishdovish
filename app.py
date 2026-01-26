@@ -187,7 +187,7 @@ with tab1:
         if merged["AI_EMA"].notna().any():
             fig.add_trace(go.Scatter(
                 x=merged["period_date"], y=merged["AI_EMA"],
-                name="AI Score (mrince, EMA)",
+                name="CB-RoBERTa (EMA)",
                 line=dict(color="green", width=3),
                 yaxis="y"
             ))
@@ -195,7 +195,7 @@ with tab1:
         if merged["AI_CALIB"].notna().any():
             fig.add_trace(go.Scatter(
                 x=merged["period_date"], y=merged["AI_CALIB"],
-                name="AI Score (mrince, Calib)",
+                name="CB-RoBERTa (Calib)",
                 line=dict(color="green", width=2, dash="dot"),
                 yaxis="y"
             ))

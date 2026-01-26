@@ -90,6 +90,7 @@ tab1, tab2, tab3, tab4, tab_textdata, tab6, tab7, tab_roberta, tab_imp = st.tabs
 
 # --- SESSION & STATE --- bloğunun içine ekleyin:
 if 'ai_trend_df' not in st.session_state: st.session_state['ai_trend_df'] = None
+if 'ai_step' not in st.session_state: st.session_state['ai_step'] = 3
 
 # ==============================================================================
 # TAB 1: DASHBOARD
@@ -263,7 +264,7 @@ with tab1:
         # Session state dolu mu diye bakıyoruz
         if st.session_state.get('ai_trend_df') is not None and not st.session_state['ai_trend_df'].empty:
             # Grafiği oluşturmaya çalışıyoruz
-            fig_ai = utils.create_ai_trend_chart(st.session_state['ai_trend_df'])
+            fig_ai = utils.create_ai_trend_chart_step(st.session_state['ai_trend_df'], step=st.session_state.get('ai_step', 3)) if hasattr(utils, 'create_ai_trend_chart_step') else utils.create_ai_trend_chart(st.session_state['ai_trend_df'])
             
             # KONTROL: Grafik oluştu mu? (None değilse çiz)
             if fig_ai:
@@ -1168,13 +1169,27 @@ def _render_tab_roberta():
     # -------------------------
     st.subheader("📈 Tarihsel Trend (Calib + EMA + Hysteresis)")
 
+    st.radio(
+        "Grafik adımı (tıkla, özellik ekle):",
+        options=[
+            "0) Ham sinyal (Diff)",
+            "1) + Kalibrasyon (robust z + tanh)",
+            "2) + EMA (yumuşatma)",
+            "3) + Histerezis (rejim etiketi)"
+        ],
+        index=int(st.session_state.get("ai_step", 3)),
+        key="ai_step_radio",
+        on_change=lambda: st.session_state.update({"ai_step": int(str(st.session_state.get("ai_step_radio")).split(")")[0])})
+    )
+
+
     # Trend hesapla / göster
     if st.session_state.get("ai_trend_df") is not None and not st.session_state["ai_trend_df"].empty:
         df_tr = st.session_state["ai_trend_df"]
 
         fig_trend = None
         if hasattr(utils, "create_ai_trend_chart"):
-            fig_trend = utils.create_ai_trend_chart(df_tr)
+            fig_trend = utils.create_ai_trend_chart_step(df_tr, step=st.session_state.get('ai_step', 3)) if hasattr(utils, 'create_ai_trend_chart_step') else utils.create_ai_trend_chart(df_tr)
 
         if fig_trend:
             st.plotly_chart(fig_trend, use_container_width=True, key="ai_chart_roberta")

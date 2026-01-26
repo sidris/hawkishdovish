@@ -1898,7 +1898,7 @@ def create_ai_trend_chart(df_res: pd.DataFrame):
     fig.add_hline(y=0, line_color="black", opacity=0.25)
 
     fig.update_layout(
-        title="CB-RoBERTa — AI Duruş Trendi (Calib + EMA + Hysteresis)",
+        title="CB-RoBERTa — Duruş Trendi (Calib + EMA + Hysteresis)",
         yaxis=dict(title=y_col, range=[-110, 110]),
         height=450,
         margin=dict(l=20, r=20, t=40, b=20)

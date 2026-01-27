@@ -541,6 +541,10 @@ def _render_tab4_frequency():
     def reset_watch_terms():
         st.session_state["watch_terms"] = DEFAULT_WATCH_TERMS.copy()
 
+    # ✅ YENİ: grafikteki tüm kelimeleri sıfırla (listeyi boşalt)
+    def clear_watch_terms():
+        st.session_state["watch_terms"] = []
+
     def _fallback_build_watch_terms_timeseries(df_in: pd.DataFrame, terms: list) -> pd.DataFrame:
         """utils'te fonksiyon yoksa diye basit fallback: substring count"""
         rows = []
@@ -573,7 +577,8 @@ def _render_tab4_frequency():
         "Yeni kelime eklersen ve metinlerde geçiyorsa otomatik seriye girer."
     )
 
-    c1, c2 = st.columns([3, 1])
+    # ✅ YENİ: 3 kolon (Varsayılan reset + kelimeleri sıfırla)
+    c1, c2, c3 = st.columns([3, 1, 1])
     with c1:
         st.text_input(
             "➕ Kelime veya phrase ekle (Enter)",
@@ -582,8 +587,12 @@ def _render_tab4_frequency():
             placeholder="ör: liquidity, demand, wage, credit growth"
         )
     with c2:
-        if st.button("↩️ Reset", type="secondary"):
+        if st.button("↩️ Reset (Varsayılan)", type="secondary"):
             reset_watch_terms()
+            st.rerun()
+    with c3:
+        if st.button("🧹 Sıfırla (Tüm Kelimeler)", type="secondary"):
+            clear_watch_terms()
             st.rerun()
 
     terms = st.session_state.get("watch_terms", [])
@@ -601,47 +610,49 @@ def _render_tab4_frequency():
     st.divider()
 
     # -----------------------------
-    # 4) Zaman serisi üret
+    # 4) Grafik: x eksenine dönemleri yaz
     # -----------------------------
+    # (utils'te varsa onu kullan, yoksa fallback)
     if hasattr(utils, "build_watch_terms_timeseries"):
-        freq_df = utils.build_watch_terms_timeseries(df_all, terms)
+        ts_df = utils.build_watch_terms_timeseries(df_all, terms)
     else:
-        freq_df = _fallback_build_watch_terms_timeseries(df_all, terms)
+        ts_df = _fallback_build_watch_terms_timeseries(df_all, terms)
 
-    if freq_df is None or freq_df.empty:
-        st.info("Zaman serisi üretilemedi.")
-    else:
-        usable_terms = [t for t in terms if t in freq_df.columns and pd.to_numeric(freq_df[t], errors="coerce").fillna(0).sum() > 0]
+    if ts_df is None or ts_df.empty:
+        st.info("Grafik için yeterli veri yok.")
+        return
 
-        if not usable_terms:
-            st.info("Bu kelimeler metinlerde hiç geçmiyor.")
-        else:
-            fig = go.Figure()
-            for t in usable_terms:
-                fig.add_trace(go.Scatter(
-                    x=freq_df["period_date"],
-                    y=freq_df[t],
-                    name=t,
-                    mode="lines+markers"
-                ))
+    # sıralama garanti
+    ts_df = ts_df.sort_values("period_date").reset_index(drop=True)
 
-            fig.update_layout(
-                title="İzlenen Ekonomi Terimleri — Zaman Serisi",
-                hovermode="x unified",
-                height=420,
-                legend=dict(
-                    orientation="h",
-                    yanchor="top",
-                    y=-0.25,
-                    xanchor="center",
-                    x=0.5
-                )
-            )
-            st.plotly_chart(fig, use_container_width=True)
+    # wide -> long (plotly için)
+    plot_df = ts_df.melt(
+        id_vars=["period_date", "Donem"],
+        value_vars=terms,
+        var_name="term",
+        value_name="count"
+    )
 
-            with st.expander("📋 Ham tablo", expanded=False):
-                show_cols = ["Donem"] + usable_terms
-                st.dataframe(freq_df[show_cols], use_container_width=True, hide_index=True)
+    import plotly.express as px
+    fig = px.line(
+        plot_df,
+        x="Donem",          # ✅ x ekseni dönem
+        y="count",
+        color="term",
+        markers=True
+    )
+
+    # ✅ x ekseninde tüm dönem etiketlerini zorla göster
+    x_ticks = ts_df["Donem"].tolist()
+    fig.update_xaxes(
+        tickmode="array",
+        tickvals=x_ticks,
+        ticktext=x_ticks,
+        tickangle=-45
+    )
+
+    st.plotly_chart(fig, use_container_width=True)
+
 
     # -----------------------------
     # 5) Diff analizi

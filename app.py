@@ -609,11 +609,34 @@ def _render_tab4_frequency():
 
     st.divider()
 
+       # -----------------------------
+    # 4) Grafik: dönemlere snap hover + üstte tooltip + x ekseninde dönemler
+    # -----------------------------
+    # ts_df üretimini GARANTİ ET
+    if hasattr(utils, "build_watch_terms_timeseries"):
+        ts_df = utils.build_watch_terms_timeseries(df_all, terms)
+    else:
+        ts_df = _fallback_build_watch_terms_timeseries(df_all, terms)
+
+    if ts_df is None or ts_df.empty:
+        st.info("Grafik için yeterli veri yok.")
+        return
+
+    # bazı durumlarda term kolonu oluşmayabilir (güvenlik)
+    missing = [t for t in terms if t not in ts_df.columns]
+    if missing:
+        st.warning(f"Bu terimler seride bulunamadı: {', '.join(missing)}")
+        terms = [t for t in terms if t in ts_df.columns]
+        if not terms:
+            return
+
+    ts_df = ts_df.sort_values("period_date").reset_index(drop=True)
+
     import plotly.graph_objects as go
 
     fig = go.Figure()
-    
-    # 1) Asıl çizgiler (hover kapalı)
+
+    # çizgiler (hover kapalı)
     for term in terms:
         fig.add_trace(
             go.Scatter(
@@ -624,24 +647,23 @@ def _render_tab4_frequency():
                 hoverinfo="skip"
             )
         )
-    
-    # 2) Hover metni (yan yana)
+
+    # hover metni (yan yana sütun)
     def _build_hover_rows(row, terms_list, ncols=3):
         items = [f"{t}: {int(row[t])}" for t in terms_list]
         cols = [items[i::ncols] for i in range(ncols)]
-        maxlen = max(len(c) for c in cols)
-    
+        maxlen = max(len(c) for c in cols) if cols else 0
         lines = []
         for i in range(maxlen):
             parts = [c[i] for c in cols if i < len(c)]
             lines.append(" | ".join(parts))
         return "<br>".join(lines)
-    
+
     hover_text = [_build_hover_rows(r, terms, ncols=3) for _, r in ts_df.iterrows()]
-    
-    # 3) Hover taşıyıcı (YUKARIDA durur)
-    y_top = ts_df[terms].max().max() * 1.15
-    
+
+    # tooltip üstte dursun diye taşıyıcı trace'i yukarı koy
+    y_top = float(ts_df[terms].max().max()) * 1.15 if len(terms) else 1.0
+
     fig.add_trace(
         go.Scatter(
             x=ts_df["Donem"],
@@ -653,8 +675,8 @@ def _render_tab4_frequency():
             hovertemplate="<b>%{x}</b><br>%{customdata}<extra></extra>"
         )
     )
-    
-    # 4) X ekseni: dönemlere yapış + spike
+
+    # x ekseni: dönemleri yaz + dönemlere snap + spike
     x_ticks = ts_df["Donem"].tolist()
     fig.update_xaxes(
         tickmode="array",
@@ -663,20 +685,18 @@ def _render_tab4_frequency():
         tickangle=-45,
         showspikes=True,
         spikemode="across",
-        spikesnap="data",   # ✅ DÖNEMLERE YAPIŞIR
+        spikesnap="data",
         spikethickness=1
     )
-    
+
     fig.update_layout(
-        hovermode="x",       # unified hissi
-        hoverlabel=dict(
-            font_size=11,
-            align="left"
-        ),
+        hovermode="x",
+        hoverlabel=dict(font_size=11, align="left"),
         margin=dict(t=40, l=10, r=10, b=10)
     )
-    
+
     st.plotly_chart(fig, use_container_width=True)
+
 
 
 

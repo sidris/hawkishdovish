@@ -610,50 +610,86 @@ def _render_tab4_frequency():
     st.divider()
 
     # -----------------------------
-    # 4) Grafik: x eksenine dönemleri yaz
+    # 4) Grafik: x eksenine dönemleri yaz + hover'da tüm değerleri yanyana göster
     # -----------------------------
-    # (utils'te varsa onu kullan, yoksa fallback)
     if hasattr(utils, "build_watch_terms_timeseries"):
         ts_df = utils.build_watch_terms_timeseries(df_all, terms)
     else:
         ts_df = _fallback_build_watch_terms_timeseries(df_all, terms)
-
+    
     if ts_df is None or ts_df.empty:
         st.info("Grafik için yeterli veri yok.")
         return
-
-    # sıralama garanti
+    
     ts_df = ts_df.sort_values("period_date").reset_index(drop=True)
-
-    # wide -> long (plotly için)
-    plot_df = ts_df.melt(
-        id_vars=["period_date", "Donem"],
-        value_vars=terms,
-        var_name="term",
-        value_name="count"
-    )
-
-    import plotly.express as px
-    fig = px.line(
-        plot_df,
-        x="Donem",
-        y="count",
-        color="term",
-        markers=True
+    
+    import plotly.graph_objects as go
+    fig = go.Figure()
+    
+    # 1) Asıl çizgiler (hover'ı kapatıyoruz, tooltip'i tek bir yerden yöneteceğiz)
+    for term in terms:
+        fig.add_trace(
+            go.Scatter(
+                x=ts_df["Donem"],
+                y=ts_df[term],
+                mode="lines+markers",
+                name=term,
+                hoverinfo="skip"   # ✅ her çizgi kendi tooltip'ini üretmesin
+            )
+        )
+    
+    # 2) Hover tooltip metnini "yan yana" (sütunlu) üret
+    def _build_hover_rows(row, terms_list, ncols=3):
+        items = [f"{t}: {int(row[t])}" for t in terms_list]
+        # sütunlara böl
+        cols = [items[i::ncols] for i in range(ncols)]
+        maxlen = max(len(c) for c in cols) if cols else 0
+    
+        lines = []
+        for i in range(maxlen):
+            parts = []
+            for c in cols:
+                if i < len(c):
+                    parts.append(c[i])
+            # ✅ yanyana: " | " ile
+            lines.append(" | ".join(parts))
+        return "<br>".join(lines)
+    
+    hover_text = []
+    for _, r in ts_df.iterrows():
+        hover_text.append(_build_hover_rows(r, terms, ncols=3))
+    
+    # 3) Görünmez bir "hover taşıyıcı" trace: tek tooltip buradan gelsin
+    fig.add_trace(
+        go.Scatter(
+            x=ts_df["Donem"],
+            y=[0] * len(ts_df),          # ekseni bozmaz (sayım zaten >=0)
+            mode="markers",
+            marker=dict(opacity=0),
+            showlegend=False,
+            customdata=hover_text,
+            hovertemplate="%{x}<br>%{customdata}<extra></extra>"  # ✅ term= yok, extra yok
+        )
     )
     
-    # ✅ hover line: aynı dönemdeki tüm serileri birlikte göster
-    fig.update_layout(
-        hovermode="x unified"
-    )
-    
-    # ✅ x ekseninde tüm dönem etiketleri görünsün
+    # 4) X ekseninde tüm dönemleri yaz
     x_ticks = ts_df["Donem"].tolist()
     fig.update_xaxes(
         tickmode="array",
         tickvals=x_ticks,
         ticktext=x_ticks,
-        tickangle=-45
+        tickangle=-45,
+        showspikes=True,        # ✅ hover line (spike)
+        spikemode="across",
+        spikesnap="cursor",
+        spikethickness=1
+    )
+    
+    # hover kutusu daha "sığar" olsun
+    fig.update_layout(
+        hovermode="x",          # ✅ spike + tek tooltip yaklaşımı
+        hoverlabel=dict(font_size=11),
+        margin=dict(l=10, r=10, t=10, b=10)
     )
     
     st.plotly_chart(fig, use_container_width=True)

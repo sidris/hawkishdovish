@@ -636,13 +636,18 @@ def _render_tab4_frequency():
     import plotly.express as px
     fig = px.line(
         plot_df,
-        x="Donem",          # ✅ x ekseni dönem
+        x="Donem",
         y="count",
         color="term",
         markers=True
     )
-
-    # ✅ x ekseninde tüm dönem etiketlerini zorla göster
+    
+    # ✅ hover line: aynı dönemdeki tüm serileri birlikte göster
+    fig.update_layout(
+        hovermode="x unified"
+    )
+    
+    # ✅ x ekseninde tüm dönem etiketleri görünsün
     x_ticks = ts_df["Donem"].tolist()
     fig.update_xaxes(
         tickmode="array",
@@ -650,7 +655,7 @@ def _render_tab4_frequency():
         ticktext=x_ticks,
         tickangle=-45
     )
-
+    
     st.plotly_chart(fig, use_container_width=True)
 
 

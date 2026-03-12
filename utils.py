@@ -7,11 +7,9 @@ import datetime
 import re
 import difflib
 from collections import Counter
-from evds import evdsAPI
 import numpy as np
 from dataclasses import dataclass
 from typing import List, Dict, Tuple, Any, Optional
-
 
 # --- 1. KÜTÜPHANE KONTROLLERİ VE GLOBAL FLAGLER ---
 HAS_ML_DEPS = False
@@ -171,48 +169,23 @@ def fetch_market_data_adapter(start_date, end_date):
         }), "API Key Yok"
 
     df_inf = pd.DataFrame()
-    
-df_inf = pd.DataFrame()
+    try:
+        s = start_date.strftime("%d-%m-%Y"); e = end_date.strftime("%d-%m-%Y")
+        for form, col in [(1, "Aylık TÜFE"), (3, "Yıllık TÜFE")]:
+            url = f"{EVDS_BASE}/series={EVDS_TUFE_SERIES}&startDate={s}&endDate={e}&type=json&formulas={form}"
+            r = requests.get(url, headers={"key": EVDS_API_KEY}, timeout=20)
+            if r.status_code == 200 and r.json().get("items"):
+                temp = pd.DataFrame(r.json()["items"])
+                temp["dt"] = pd.to_datetime(temp["Tarih"], dayfirst=True, errors="coerce")
+                if temp["dt"].isnull().all(): temp["dt"] = pd.to_datetime(temp["Tarih"], format="%Y-%m", errors="coerce")
+                temp = temp.dropna(subset=["dt"])
+                temp["Donem"] = temp["dt"].dt.strftime("%Y-%m")
+                val_c = [c for c in temp.columns if "TP" in c][0]
+                temp = temp.rename(columns={val_c: col})[["Donem", col]]
+                if df_inf.empty: df_inf = temp
+                else: df_inf = pd.merge(df_inf, temp, on="Donem", how="outer")
+    except Exception: pass
 
-try:
-    from evds import evdsAPI
-    evds = evdsAPI(EVDS_API_KEY)
-
-    s = start_date.strftime("%d-%m-%Y")
-    e = end_date.strftime("%d-%m-%Y")
-
-    # aylık ve yıllık TÜFE
-    for form, col in [(1, "Aylık TÜFE"), (3, "Yıllık TÜFE")]:
-
-        temp = evds.get_data(
-            [EVDS_TUFE_SERIES],
-            startdate=s,
-            enddate=e,
-            formulas=[form]
-        )
-
-        if temp is None or temp.empty:
-            continue
-
-        temp["dt"] = pd.to_datetime(temp["Tarih"], errors="coerce")
-        temp = temp.dropna(subset=["dt"])
-
-        temp["Donem"] = temp["dt"].dt.strftime("%Y-%m")
-
-        val_col = [c for c in temp.columns if "TP" in c][0]
-
-        temp = temp.rename(columns={val_col: col})[["Donem", col]]
-
-        if df_inf.empty:
-            df_inf = temp
-        else:
-            df_inf = pd.merge(df_inf, temp, on="Donem", how="outer")
-
-except Exception as e:
-    print("EVDS error:", e)
-
-
-    
     df_pol = pd.DataFrame()
     try:
         s_bis = start_date.strftime("%Y-%m-%d"); e_bis = end_date.strftime("%Y-%m-%d")

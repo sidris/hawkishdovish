@@ -8,6 +8,7 @@ import re
 import difflib
 from collections import Counter
 import numpy as np
+from evds import evdsAPI
 from dataclasses import dataclass
 from typing import List, Dict, Tuple, Any, Optional
 
@@ -171,19 +172,26 @@ def fetch_market_data_adapter(start_date, end_date):
     df_inf = pd.DataFrame()
     try:
         s = start_date.strftime("%d-%m-%Y"); e = end_date.strftime("%d-%m-%Y")
-        for form, col in [(1, "Aylık TÜFE"), (3, "Yıllık TÜFE")]:
-            url = f"{EVDS_BASE}/series={EVDS_TUFE_SERIES}&startDate={s}&endDate={e}&type=json&formulas={form}"
-            r = requests.get(url, headers={"key": EVDS_API_KEY}, timeout=20)
-            if r.status_code == 200 and r.json().get("items"):
-                temp = pd.DataFrame(r.json()["items"])
-                temp["dt"] = pd.to_datetime(temp["Tarih"], dayfirst=True, errors="coerce")
-                if temp["dt"].isnull().all(): temp["dt"] = pd.to_datetime(temp["Tarih"], format="%Y-%m", errors="coerce")
-                temp = temp.dropna(subset=["dt"])
-                temp["Donem"] = temp["dt"].dt.strftime("%Y-%m")
-                val_c = [c for c in temp.columns if "TP" in c][0]
-                temp = temp.rename(columns={val_c: col})[["Donem", col]]
-                if df_inf.empty: df_inf = temp
-                else: df_inf = pd.merge(df_inf, temp, on="Donem", how="outer")
+        
+        evds = evdsAPI(EVDS_API_KEY)
+
+        data = evds.get_data([EVDS_TUFE_SERIES], startdate=s, enddate=e)
+
+        if data is not None and not data.empty:
+            data["dt"] = pd.to_datetime(data["Tarih"], errors="coerce")
+            data = data.dropna(subset=["dt"])
+            data["Donem"] = data["dt"].dt.strftime("%Y-%m")
+
+            data["Aylık TÜFE"] = pd.to_numeric(data["TP_FG_J0"], errors="coerce").pct_change()*100
+            data["Yıllık TÜFE"] = pd.to_numeric(data["TP_FG_J0"], errors="coerce").pct_change(12)*100
+
+            temp = data[["Donem","Aylık TÜFE","Yıllık TÜFE"]]
+
+            if df_inf.empty:
+                df_inf = temp
+            else:
+                df_inf = pd.merge(df_inf, temp, on="Donem", how="outer")
+
     except Exception: pass
 
     df_pol = pd.DataFrame()
@@ -1363,6 +1371,7 @@ def train_textasdata_hybrid_cpi_ridge(
         return {}
 
     import numpy as np
+from evds import evdsAPI
     import pandas as pd
     from sklearn.model_selection import TimeSeriesSplit
     from sklearn.pipeline import Pipeline
@@ -1552,6 +1561,7 @@ def predict_textasdata_hybrid_cpi(model_pack: dict, df_hist: pd.DataFrame, text:
 
 import gc
 import numpy as np
+from evds import evdsAPI
 import pandas as pd
 import streamlit as st
 
@@ -2057,6 +2067,7 @@ import re
 import gc
 import pandas as pd
 import numpy as np
+from evds import evdsAPI
 
 def _fallback_sentence_split(text: str) -> list[str]:
     # Basit ama sağlam: . ! ? ; : ve satır sonlarından böl
@@ -2071,6 +2082,7 @@ import re
 import gc
 import pandas as pd
 import numpy as np
+from evds import evdsAPI
 
 def _fallback_sentence_split(text: str) -> list[str]:
     t = re.sub(r"\s+", " ", str(text)).strip()

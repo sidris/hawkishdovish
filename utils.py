@@ -59,7 +59,7 @@ try:
 except Exception:
     supabase = None
 
-EVDS_BASE = "https://evds2.tcmb.gov.tr/service/evds"
+EVDS_BASE = "https://evds3.tcmb.gov.tr/api"
 EVDS_TUFE_SERIES = "TP.FG.J0"
 
 # =============================================================================

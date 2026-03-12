@@ -186,7 +186,7 @@ def fetch_market_data_adapter(start_date, end_date):
             
                 r = requests.get(
                     url,
-                    headers={"key": EVDS_API_KEY},
+                    headers={"apikey": EVDS_API_KEY},
                     params=params,
                     timeout=20
                 )

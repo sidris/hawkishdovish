@@ -15,7 +15,7 @@ from typing import List, Dict, Tuple, Any, Optional
 # --- 1. KÜTÜPHANE KONTROLLERİ VE GLOBAL FLAGLER ---
 HAS_ML_DEPS = False
 HAS_TRANSFORMERS = False
-
+a
 # ML Kütüphaneleri
 try:
     import sklearn
@@ -172,7 +172,6 @@ def fetch_market_data_adapter(start_date, end_date):
     df_inf = pd.DataFrame()
     try:
         s = start_date.strftime("%d-%m-%Y"); e = end_date.strftime("%d-%m-%Y")
-        
         evds = evdsAPI(EVDS_API_KEY)
 
         data = evds.get_data(
@@ -183,10 +182,8 @@ def fetch_market_data_adapter(start_date, end_date):
         )
 
         if data is not None and not data.empty:
-
             data["dt"] = pd.to_datetime(data["Tarih"], errors="coerce")
             data = data.dropna(subset=["dt"])
-
             data["Donem"] = data["dt"].dt.strftime("%Y-%m")
 
             data = data.rename(columns={
@@ -200,7 +197,6 @@ def fetch_market_data_adapter(start_date, end_date):
                 df_inf = temp
             else:
                 df_inf = pd.merge(df_inf, temp, on="Donem", how="outer")
-
     except Exception: pass
 
     df_pol = pd.DataFrame()

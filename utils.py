@@ -8,7 +8,6 @@ import re
 import difflib
 from collections import Counter
 import numpy as np
-from evds import evdsAPI
 from dataclasses import dataclass
 from typing import List, Dict, Tuple, Any, Optional
 
@@ -156,99 +155,62 @@ def fetch_ppk_text_rate_data(source_filter: str = "TCMB PPK Kararı") -> pd.Data
 
 # --- MARKET DATA ---
 @st.cache_data(ttl=600)
-@st.cache_data(ttl=600)
 def fetch_market_data_adapter(start_date, end_date):
-
-    empty_df = pd.DataFrame(columns=["Donem","Aylık TÜFE","Yıllık TÜFE","PPK Faizi","SortDate"])
-
-    if not EVDS_API_KEY:
-        return empty_df, "EVDS API KEY yok"
+    empty_df = pd.DataFrame(columns=["Donem", "Yıllık TÜFE", "PPK Faizi", "SortDate"])
+    
+    if not EVDS_API_KEY: 
+        dates = pd.date_range(start=start_date, end=end_date, freq='M')
+        if len(dates) == 0: return empty_df, "Tarih Yok"
+        return pd.DataFrame({
+            'Donem': dates.strftime('%Y-%m'),
+            'Yıllık TÜFE': [0]*len(dates),
+            'PPK Faizi': [0]*len(dates),
+            'SortDate': dates
+        }), "API Key Yok"
 
     df_inf = pd.DataFrame()
-
     try:
-
-        s = start_date.strftime("%d-%m-%Y")
-        e = end_date.strftime("%d-%m-%Y")
-
-        evds = evdsAPI(EVDS_API_KEY)
-
-        data = evds.get_data(
-            ["TP.FG.J0","TP.FG.J0"],
-            startdate=s,
-            enddate=e,
-            formulas=[1,3]
-        )
-
-        if data is not None and not data.empty:
-
-            data["dt"] = pd.to_datetime(data["Tarih"], errors="coerce")
-            data = data.dropna(subset=["dt"])
-
-            data["Donem"] = data["dt"].dt.strftime("%Y-%m")
-
-            data = data.rename(columns={
-                "TP_FG_J0_1": "Aylık TÜFE",
-                "TP_FG_J0_3": "Yıllık TÜFE"
-            })
-
-            df_inf = data[["Donem","Aylık TÜFE","Yıllık TÜFE"]]
-
-    except Exception:
-        pass
+        s = start_date.strftime("%d-%m-%Y"); e = end_date.strftime("%d-%m-%Y")
+        for form, col in [(1, "Aylık TÜFE"), (3, "Yıllık TÜFE")]:
+            url = f"{EVDS_BASE}/series={EVDS_TUFE_SERIES}&startDate={s}&endDate={e}&type=json&formulas={form}"
+            r = requests.get(url, headers={"key": EVDS_API_KEY}, timeout=20)
+            if r.status_code == 200 and r.json().get("items"):
+                temp = pd.DataFrame(r.json()["items"])
+                temp["dt"] = pd.to_datetime(temp["Tarih"], dayfirst=True, errors="coerce")
+                if temp["dt"].isnull().all(): temp["dt"] = pd.to_datetime(temp["Tarih"], format="%Y-%m", errors="coerce")
+                temp = temp.dropna(subset=["dt"])
+                temp["Donem"] = temp["dt"].dt.strftime("%Y-%m")
+                val_c = [c for c in temp.columns if "TP" in c][0]
+                temp = temp.rename(columns={val_c: col})[["Donem", col]]
+                if df_inf.empty: df_inf = temp
+                else: df_inf = pd.merge(df_inf, temp, on="Donem", how="outer")
+    except Exception: pass
 
     df_pol = pd.DataFrame()
-
     try:
-
-        s_bis = start_date.strftime("%Y-%m-%d")
-        e_bis = end_date.strftime("%Y-%m-%d")
-
+        s_bis = start_date.strftime("%Y-%m-%d"); e_bis = end_date.strftime("%Y-%m-%d")
         url_bis = f"https://stats.bis.org/api/v1/data/WS_CBPOL/D.TR?format=csv&startPeriod={s_bis}&endPeriod={e_bis}"
-
         r_bis = requests.get(url_bis, timeout=20)
-
         if r_bis.status_code == 200:
-
-            temp_bis = pd.read_csv(io.StringIO(r_bis.content.decode("utf-8")))
-
+            temp_bis = pd.read_csv(io.StringIO(r_bis.content.decode("utf-8")), usecols=["TIME_PERIOD", "OBS_VALUE"])
             temp_bis["dt"] = pd.to_datetime(temp_bis["TIME_PERIOD"])
             temp_bis["Donem"] = temp_bis["dt"].dt.strftime("%Y-%m")
-
             temp_bis["PPK Faizi"] = pd.to_numeric(temp_bis["OBS_VALUE"], errors="coerce")
+            df_pol = temp_bis.sort_values("dt").groupby("Donem").last().reset_index()[["Donem", "PPK Faizi"]]
+    except Exception: pass
 
-            df_pol = (
-                temp_bis.sort_values("dt")
-                .groupby("Donem")
-                .last()
-                .reset_index()[["Donem","PPK Faizi"]]
-            )
+    master_df = pd.DataFrame()
+    if not df_inf.empty and not df_pol.empty: master_df = pd.merge(df_inf, df_pol, on="Donem", how="outer")
+    elif not df_inf.empty: master_df = df_inf
+    elif not df_pol.empty: master_df = df_pol
 
-    except Exception:
-        pass
-
-    master_df = pd.merge(df_inf, df_pol, on="Donem", how="outer")
-
+    if master_df.empty: return empty_df, "Veri Bulunamadı"
+    
+    for c in ["Yıllık TÜFE", "PPK Faizi"]:
+        if c not in master_df.columns: master_df[c] = 0.0
+        
     master_df["SortDate"] = pd.to_datetime(master_df["Donem"] + "-01")
-
     return master_df.sort_values("SortDate"), None
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 # =============================================================================
 # 4. OKUNABİLİRLİK VE FREKANS ANALİZİ
@@ -1401,7 +1363,6 @@ def train_textasdata_hybrid_cpi_ridge(
         return {}
 
     import numpy as np
-from evds import evdsAPI
     import pandas as pd
     from sklearn.model_selection import TimeSeriesSplit
     from sklearn.pipeline import Pipeline
@@ -1591,7 +1552,6 @@ def predict_textasdata_hybrid_cpi(model_pack: dict, df_hist: pd.DataFrame, text:
 
 import gc
 import numpy as np
-from evds import evdsAPI
 import pandas as pd
 import streamlit as st
 
@@ -1830,6 +1790,153 @@ def postprocess_ai_series(df: pd.DataFrame,
     return out
 
 
+
+
+# =============================================================================
+# 8.1 CB-RoBERTa TREND: ADIM ADIM (RAW -> CALIB -> EMA -> HYSTERESIS)
+# =============================================================================
+
+def postprocess_ai_series_steps(df: pd.DataFrame,
+                               diff_col: str = "Diff (H-D)",
+                               span: int = 7,
+                               z_scale: float = 2.0,
+                               hyst: float = 25.0) -> pd.DataFrame:
+    """
+    postprocess_ai_series ile aynı mantık, ama ara kolonları da açıkça üretir.
+
+    Üretilen kolonlar:
+      - AI Diff (Raw): ham fark (P(HAWK)-P(DOVE))
+      - AI z (robust): median+MAD ile robust z-score
+      - AI Score (Calib): tanh ile -100..+100 bandına sıkıştırılmış skor
+      - AI Score (EMA): EMA ile yumuşatılmış skor
+      - AI Rejim: hysteresis ile etiket (🦅/🕊️/⚖️)
+
+    Not: 'postprocess_ai_series' geriye dönük uyumluluk için duruyor.
+    """
+    if df is None or df.empty or diff_col not in df.columns:
+        return df
+
+    out = df.copy()
+    x = out[diff_col].astype(float)
+    out["AI Diff (Raw)"] = x
+
+    # Robust z-score (median + MAD)
+    med = float(x.median())
+    mad = float((x - med).abs().median()) + 1e-6
+    z = (x - med) / (1.4826 * mad)
+    out["AI z (robust)"] = z
+
+    # Calibrasyon: tanh ile band sınırlama (-100..+100)
+    out["AI Score (Calib)"] = np.tanh(z / float(z_scale)) * 100.0
+
+    # EMA smoothing
+    out["AI Score (EMA)"] = out["AI Score (Calib)"].ewm(span=span, adjust=False).mean()
+
+    # Hysteresis rejim etiketi (postprocess_ai_series ile aynı)
+    regime: list[str] = []
+    prev: str = "⚖️ Nötr"
+
+    neutral_band = float(hyst) * 0.60
+    flip_band = float(hyst) * 0.50
+
+    for v in out["AI Score (EMA)"].values:
+        v = float(v)
+
+        if v >= float(hyst):
+            prev = "🦅 Şahin"
+        elif v <= -float(hyst):
+            prev = "🕊️ Güvercin"
+        else:
+            if abs(v) <= neutral_band:
+                prev = "⚖️ Nötr"
+            else:
+                if prev == "🦅 Şahin" and v < 0:
+                    prev = "🕊️ Güvercin" if v <= -flip_band else "⚖️ Nötr"
+                elif prev == "🕊️ Güvercin" and v > 0:
+                    prev = "🦅 Şahin" if v >= flip_band else "⚖️ Nötr"
+
+        regime.append(prev)
+
+    out["AI Rejim"] = regime
+    return out
+
+
+def create_ai_trend_chart_step(df_res: pd.DataFrame, step: int = 3):
+    """
+    step:
+      0 -> Raw (Diff)
+      1 -> + Calib (robust z + tanh)
+      2 -> + EMA
+      3 -> + Hysteresis (hover'da rejim)
+    """
+    import plotly.graph_objects as go
+    if df_res is None or df_res.empty:
+        return None
+
+    df = df_res.copy()
+
+    # Kolon güvenliği: eski df'ler için gerekirse üret
+    if "AI Score (EMA)" not in df.columns or "AI Score (Calib)" not in df.columns or "AI Diff (Raw)" not in df.columns:
+        df = postprocess_ai_series_steps(df, diff_col="Diff (H-D)", span=7, z_scale=2.0, hyst=25.0)
+
+    step = int(step or 0)
+    if step <= 0:
+        y_col = "AI Diff (Raw)"
+        title = "CB-RoBERTa — Ham Sinyal (P(HAWK) − P(DOVE))"
+        yrange = None
+    elif step == 1:
+        y_col = "AI Score (Calib)"
+        title = "CB-RoBERTa — Kalibre Skor (robust z + tanh)"
+        yrange = [-110, 110]
+    else:
+        y_col = "AI Score (EMA)"
+        title = "CB-RoBERTa — EMA ile Yumuşatılmış Skor" if step == 2 else "CB-RoBERTa — Duruş Trendi (Calib + EMA + Hysteresis)"
+        yrange = [-110, 110]
+
+    y = pd.to_numeric(df.get(y_col), errors="coerce")
+
+    hover_text = None
+    if step >= 3 and "AI Rejim" in df.columns and "Duruş" in df.columns:
+        hover_text = (df["AI Rejim"].astype(str) + " | " + df["Duruş"].astype(str))
+    elif step >= 3 and "AI Rejim" in df.columns:
+        hover_text = df["AI Rejim"].astype(str)
+    elif "Duruş" in df.columns:
+        hover_text = df["Duruş"].astype(str)
+
+    fig = go.Figure()
+
+    fig.add_trace(go.Scatter(
+        x=df["Dönem"], y=y,
+        mode="lines", name=y_col,
+        line=dict(width=2)
+    ))
+
+    fig.add_trace(go.Scatter(
+        x=df["Dönem"], y=y,
+        mode="markers", name="Aylık",
+        marker=dict(
+            size=11,
+            color=y,
+            colorscale="RdBu_r",
+            cmin=-100 if yrange else None,
+            cmax=100 if yrange else None,
+            showscale=True,
+            colorbar=dict(title=y_col)
+        ),
+        text=hover_text,
+        hovertemplate="<b>%{x}</b><br>Değer: %{y:.2f}<br>%{text}<extra></extra>" if hover_text is not None else "<b>%{x}</b><br>Değer: %{y:.2f}<extra></extra>"
+    ))
+
+    fig.add_hline(y=0, line_color="black", opacity=0.25)
+
+    fig.update_layout(
+        title=title,
+        yaxis=dict(title=y_col, range=yrange),
+        height=450,
+        margin=dict(l=20, r=20, t=40, b=20)
+    )
+    return fig
+
 def calculate_ai_trend_series(df_all: pd.DataFrame) -> pd.DataFrame:
     """
     Tüm geçmişi tarar (mrince) ve sonra postprocess ile trend endeksi üretir.
@@ -1891,7 +1998,7 @@ def calculate_ai_trend_series(df_all: pd.DataFrame) -> pd.DataFrame:
         return out
 
     out = out.sort_values("period_date").reset_index(drop=True)
-    out = postprocess_ai_series(out, diff_col="Diff (H-D)", span=7, z_scale=2.0, hyst=25.0)
+    out = postprocess_ai_series_steps(out, diff_col="Diff (H-D)", span=7, z_scale=2.0, hyst=25.0)
     return out
 
 
@@ -1950,7 +2057,6 @@ import re
 import gc
 import pandas as pd
 import numpy as np
-from evds import evdsAPI
 
 def _fallback_sentence_split(text: str) -> list[str]:
     # Basit ama sağlam: . ! ? ; : ve satır sonlarından böl
@@ -1965,7 +2071,6 @@ import re
 import gc
 import pandas as pd
 import numpy as np
-from evds import evdsAPI
 
 def _fallback_sentence_split(text: str) -> list[str]:
     t = re.sub(r"\s+", " ", str(text)).strip()

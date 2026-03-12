@@ -15,7 +15,7 @@ from typing import List, Dict, Tuple, Any, Optional
 # --- 1. KÜTÜPHANE KONTROLLERİ VE GLOBAL FLAGLER ---
 HAS_ML_DEPS = False
 HAS_TRANSFORMERS = False
-a
+
 # ML Kütüphaneleri
 try:
     import sklearn
@@ -172,7 +172,7 @@ def fetch_market_data_adapter(start_date, end_date):
     df_inf = pd.DataFrame()
     try:
         s = start_date.strftime("%d-%m-%Y"); e = end_date.strftime("%d-%m-%Y")
-        evds = evdsAPI(EVDS_API_KEY)
+                evds = evdsAPI(EVDS_API_KEY)
 
         data = evds.get_data(
             [EVDS_TUFE_SERIES, EVDS_TUFE_SERIES],
@@ -182,8 +182,10 @@ def fetch_market_data_adapter(start_date, end_date):
         )
 
         if data is not None and not data.empty:
+
             data["dt"] = pd.to_datetime(data["Tarih"], errors="coerce")
             data = data.dropna(subset=["dt"])
+
             data["Donem"] = data["dt"].dt.strftime("%Y-%m")
 
             data = data.rename(columns={
@@ -1805,153 +1807,6 @@ def postprocess_ai_series(df: pd.DataFrame,
     return out
 
 
-
-
-# =============================================================================
-# 8.1 CB-RoBERTa TREND: ADIM ADIM (RAW -> CALIB -> EMA -> HYSTERESIS)
-# =============================================================================
-
-def postprocess_ai_series_steps(df: pd.DataFrame,
-                               diff_col: str = "Diff (H-D)",
-                               span: int = 7,
-                               z_scale: float = 2.0,
-                               hyst: float = 25.0) -> pd.DataFrame:
-    """
-    postprocess_ai_series ile aynı mantık, ama ara kolonları da açıkça üretir.
-
-    Üretilen kolonlar:
-      - AI Diff (Raw): ham fark (P(HAWK)-P(DOVE))
-      - AI z (robust): median+MAD ile robust z-score
-      - AI Score (Calib): tanh ile -100..+100 bandına sıkıştırılmış skor
-      - AI Score (EMA): EMA ile yumuşatılmış skor
-      - AI Rejim: hysteresis ile etiket (🦅/🕊️/⚖️)
-
-    Not: 'postprocess_ai_series' geriye dönük uyumluluk için duruyor.
-    """
-    if df is None or df.empty or diff_col not in df.columns:
-        return df
-
-    out = df.copy()
-    x = out[diff_col].astype(float)
-    out["AI Diff (Raw)"] = x
-
-    # Robust z-score (median + MAD)
-    med = float(x.median())
-    mad = float((x - med).abs().median()) + 1e-6
-    z = (x - med) / (1.4826 * mad)
-    out["AI z (robust)"] = z
-
-    # Calibrasyon: tanh ile band sınırlama (-100..+100)
-    out["AI Score (Calib)"] = np.tanh(z / float(z_scale)) * 100.0
-
-    # EMA smoothing
-    out["AI Score (EMA)"] = out["AI Score (Calib)"].ewm(span=span, adjust=False).mean()
-
-    # Hysteresis rejim etiketi (postprocess_ai_series ile aynı)
-    regime: list[str] = []
-    prev: str = "⚖️ Nötr"
-
-    neutral_band = float(hyst) * 0.60
-    flip_band = float(hyst) * 0.50
-
-    for v in out["AI Score (EMA)"].values:
-        v = float(v)
-
-        if v >= float(hyst):
-            prev = "🦅 Şahin"
-        elif v <= -float(hyst):
-            prev = "🕊️ Güvercin"
-        else:
-            if abs(v) <= neutral_band:
-                prev = "⚖️ Nötr"
-            else:
-                if prev == "🦅 Şahin" and v < 0:
-                    prev = "🕊️ Güvercin" if v <= -flip_band else "⚖️ Nötr"
-                elif prev == "🕊️ Güvercin" and v > 0:
-                    prev = "🦅 Şahin" if v >= flip_band else "⚖️ Nötr"
-
-        regime.append(prev)
-
-    out["AI Rejim"] = regime
-    return out
-
-
-def create_ai_trend_chart_step(df_res: pd.DataFrame, step: int = 3):
-    """
-    step:
-      0 -> Raw (Diff)
-      1 -> + Calib (robust z + tanh)
-      2 -> + EMA
-      3 -> + Hysteresis (hover'da rejim)
-    """
-    import plotly.graph_objects as go
-    if df_res is None or df_res.empty:
-        return None
-
-    df = df_res.copy()
-
-    # Kolon güvenliği: eski df'ler için gerekirse üret
-    if "AI Score (EMA)" not in df.columns or "AI Score (Calib)" not in df.columns or "AI Diff (Raw)" not in df.columns:
-        df = postprocess_ai_series_steps(df, diff_col="Diff (H-D)", span=7, z_scale=2.0, hyst=25.0)
-
-    step = int(step or 0)
-    if step <= 0:
-        y_col = "AI Diff (Raw)"
-        title = "CB-RoBERTa — Ham Sinyal (P(HAWK) − P(DOVE))"
-        yrange = None
-    elif step == 1:
-        y_col = "AI Score (Calib)"
-        title = "CB-RoBERTa — Kalibre Skor (robust z + tanh)"
-        yrange = [-110, 110]
-    else:
-        y_col = "AI Score (EMA)"
-        title = "CB-RoBERTa — EMA ile Yumuşatılmış Skor" if step == 2 else "CB-RoBERTa — Duruş Trendi (Calib + EMA + Hysteresis)"
-        yrange = [-110, 110]
-
-    y = pd.to_numeric(df.get(y_col), errors="coerce")
-
-    hover_text = None
-    if step >= 3 and "AI Rejim" in df.columns and "Duruş" in df.columns:
-        hover_text = (df["AI Rejim"].astype(str) + " | " + df["Duruş"].astype(str))
-    elif step >= 3 and "AI Rejim" in df.columns:
-        hover_text = df["AI Rejim"].astype(str)
-    elif "Duruş" in df.columns:
-        hover_text = df["Duruş"].astype(str)
-
-    fig = go.Figure()
-
-    fig.add_trace(go.Scatter(
-        x=df["Dönem"], y=y,
-        mode="lines", name=y_col,
-        line=dict(width=2)
-    ))
-
-    fig.add_trace(go.Scatter(
-        x=df["Dönem"], y=y,
-        mode="markers", name="Aylık",
-        marker=dict(
-            size=11,
-            color=y,
-            colorscale="RdBu_r",
-            cmin=-100 if yrange else None,
-            cmax=100 if yrange else None,
-            showscale=True,
-            colorbar=dict(title=y_col)
-        ),
-        text=hover_text,
-        hovertemplate="<b>%{x}</b><br>Değer: %{y:.2f}<br>%{text}<extra></extra>" if hover_text is not None else "<b>%{x}</b><br>Değer: %{y:.2f}<extra></extra>"
-    ))
-
-    fig.add_hline(y=0, line_color="black", opacity=0.25)
-
-    fig.update_layout(
-        title=title,
-        yaxis=dict(title=y_col, range=yrange),
-        height=450,
-        margin=dict(l=20, r=20, t=40, b=20)
-    )
-    return fig
-
 def calculate_ai_trend_series(df_all: pd.DataFrame) -> pd.DataFrame:
     """
     Tüm geçmişi tarar (mrince) ve sonra postprocess ile trend endeksi üretir.
@@ -2013,7 +1868,7 @@ def calculate_ai_trend_series(df_all: pd.DataFrame) -> pd.DataFrame:
         return out
 
     out = out.sort_values("period_date").reset_index(drop=True)
-    out = postprocess_ai_series_steps(out, diff_col="Diff (H-D)", span=7, z_scale=2.0, hyst=25.0)
+    out = postprocess_ai_series(out, diff_col="Diff (H-D)", span=7, z_scale=2.0, hyst=25.0)
     return out
 
 

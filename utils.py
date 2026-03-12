@@ -171,11 +171,42 @@ def fetch_market_data_adapter(start_date, end_date):
     df_inf = pd.DataFrame()
     try:
         s = start_date.strftime("%d-%m-%Y"); e = end_date.strftime("%d-%m-%Y")
+        
+        
         for form, col in [(1, "Aylık TÜFE"), (3, "Yıllık TÜFE")]:
-            url = f"{EVDS_BASE}/series={EVDS_TUFE_SERIES}?startDate={s}&endDate={e}&type=json&formulas={form}"
-            r = requests.get(url, headers={"key": EVDS_API_KEY}, timeout=20)
-            if r.status_code == 200 and r.json().get("items"):
-                temp = pd.DataFrame(r.json()["items"])
+
+                url = f"{EVDS_BASE}/series={EVDS_TUFE_SERIES}"
+            
+                params = {
+                    "startDate": s,
+                    "endDate": e,
+                    "type": "json",
+                    "formulas": form
+                }
+            
+                r = requests.get(
+                    url,
+                    headers={"key": EVDS_API_KEY},
+                    params=params,
+                    timeout=20
+                )
+            
+                if r.status_code != 200:
+                    continue
+            
+                js = r.json()
+            
+                items = js.get("items") or js.get("data") or js.get("series")
+            
+                if not items:
+                    continue
+            
+                temp = pd.DataFrame(items)
+
+
+
+
+                
                 temp["dt"] = pd.to_datetime(temp["Tarih"], dayfirst=True, errors="coerce")
                 if temp["dt"].isnull().all(): temp["dt"] = pd.to_datetime(temp["Tarih"], format="%Y-%m", errors="coerce")
                 temp = temp.dropna(subset=["dt"])

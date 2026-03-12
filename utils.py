@@ -172,7 +172,7 @@ def fetch_market_data_adapter(start_date, end_date):
     try:
         s = start_date.strftime("%d-%m-%Y"); e = end_date.strftime("%d-%m-%Y")
         for form, col in [(1, "Aylık TÜFE"), (3, "Yıllık TÜFE")]:
-            url = f"{EVDS_BASE}/series={EVDS_TUFE_SERIES}&startDate={s}&endDate={e}&type=json&formulas={form}"
+            url = f"{EVDS_BASE}/series={EVDS_TUFE_SERIES}?startDate={s}&endDate={e}&type=json&formulas={form}"
             r = requests.get(url, headers={"key": EVDS_API_KEY}, timeout=20)
             if r.status_code == 200 and r.json().get("items"):
                 temp = pd.DataFrame(r.json()["items"])

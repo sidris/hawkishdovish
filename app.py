@@ -24,7 +24,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # --- GÜVENLİK ---
-APP_PWD = "SahinGuvercin34"      
+APP_PWD = "SahinGuvercin35"      
 ADMIN_PWD = "SahinGuvercin06"    
 
 if 'logged_in' not in st.session_state:

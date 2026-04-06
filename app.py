@@ -173,6 +173,7 @@ with tab1:
 
         
         if 'Yıllık TÜFE' in merged.columns: merged['Yıllık TÜFE'] = pd.to_numeric(merged['Yıllık TÜFE'], errors='coerce')
+        if 'Aylık TÜFE' in merged.columns: merged['Aylık TÜFE'] = pd.to_numeric(merged['Aylık TÜFE'], errors='coerce')
         if 'PPK Faizi' in merged.columns: merged['PPK Faizi'] = pd.to_numeric(merged['PPK Faizi'], errors='coerce')
         
         fig = make_subplots(specs=[[{"secondary_y": True}]])
@@ -205,6 +206,7 @@ with tab1:
 
         
         if 'Yıllık TÜFE' in merged.columns: fig.add_trace(go.Scatter(x=merged['period_date'], y=merged['Yıllık TÜFE'], name="Yıllık TÜFE (%)", line=dict(color='red', dash='dot'), yaxis="y"))
+        if 'Aylık TÜFE' in merged.columns: fig.add_trace(go.Scatter(x=merged['period_date'], y=merged['Aylık TÜFE'], name="Aylık TÜFE (%)", line=dict(color='crimson', dash='dash', width=1), yaxis="y"))
         if 'PPK Faizi' in merged.columns: fig.add_trace(go.Scatter(x=merged['period_date'], y=merged['PPK Faizi'], name="Faiz (%)", line=dict(color='orange', dash='dot'), yaxis="y"))
         fig.add_trace(go.Scatter(x=merged['period_date'], y=merged['flesch_score'], name="Okunabilirlik (Flesch)", mode='markers', marker=dict(color='teal', size=8, opacity=0.8), yaxis="y"))
 

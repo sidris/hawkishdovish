@@ -502,7 +502,14 @@ with tab3:
     d1 = st.date_input("Başlangıç", datetime.date(2023, 1, 1))
     d2 = st.date_input("Bitiş", datetime.date.today())
     if st.button("Getir", key="get_market"):
+        utils.fetch_market_data_adapter.clear()
         df, err = utils.fetch_market_data_adapter(d1, d2)
+        # Debug bilgisi
+        debug_info = st.session_state.get("_tufe_debug", [])
+        if debug_info:
+            with st.expander("🔧 Debug (TÜFE fetch)", expanded=True):
+                for line in debug_info:
+                    st.text(line)
         if not df.empty:
             fig_m = go.Figure()
             if 'Yıllık TÜFE' in df.columns: fig_m.add_trace(go.Scatter(x=df['Donem'], y=df['Yıllık TÜFE'], name="Yıllık TÜFE", line=dict(color='red')))

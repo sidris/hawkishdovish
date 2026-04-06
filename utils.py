@@ -187,20 +187,20 @@ def fetch_market_data_adapter(start_date, end_date):
         _tufe_debug.append(f"raw.columns={list(raw.columns) if raw is not None else 'None'}")
         _tufe_debug.append(f"raw.index[:3]={list(raw.index[:3]) if raw is not None and not raw.empty else 'empty'}")
         if raw is not None and not raw.empty:
-            tp_cols = [c for c in raw.columns if "TP" in c.upper() or "FE" in c.upper()]
-            tufe_col = tp_cols[0] if tp_cols else raw.select_dtypes(include='number').columns[0]
+            # Tarih bilgisi "Tarih" kolonunda geliyor (RangeIndex, index değil)
+            raw["dt"] = pd.to_datetime(raw["Tarih"], format="%Y-%m", errors="coerce")
+            raw = raw.dropna(subset=["dt"]).sort_values("dt").reset_index(drop=True)
+            # Endeks sütununu bul (Tarih ve dt hariç)
+            tp_cols = [c for c in raw.columns if c not in ("Tarih", "dt") and ("TP" in c.upper() or "FE" in c.upper())]
+            tufe_col = tp_cols[0] if tp_cols else [c for c in raw.columns if c not in ("Tarih", "dt")][0]
             _tufe_debug.append(f"tufe_col={tufe_col}, sample={list(raw[tufe_col].head(3))}")
-            raw = raw[[tufe_col]].copy()
             raw[tufe_col] = pd.to_numeric(raw[tufe_col], errors="coerce")
-            raw = raw.dropna()
-            _tufe_debug.append(f"after dropna rows={len(raw)}, index type={type(raw.index)}")
-            if not isinstance(raw.index, pd.DatetimeIndex):
-                raw.index = pd.to_datetime(raw.index, dayfirst=True, errors="coerce")
-            _tufe_debug.append(f"index after to_datetime[:3]={list(raw.index[:3])}")
-            raw = raw.sort_index()
+            raw = raw.dropna(subset=[tufe_col])
+            _tufe_debug.append(f"after dropna rows={len(raw)}, dt[:3]={list(raw['dt'].head(3))}")
+            # Değişim oranlarını hesapla
             raw["Aylık TÜFE"] = raw[tufe_col].pct_change(1) * 100
             raw["Yıllık TÜFE"] = raw[tufe_col].pct_change(12) * 100
-            raw["Donem"] = raw.index.strftime("%Y-%m")
+            raw["Donem"] = raw["dt"].dt.strftime("%Y-%m")
             cutoff = pd.Timestamp(start_date).strftime("%Y-%m")
             df_inf = raw[raw["Donem"] >= cutoff][["Donem", "Aylık TÜFE", "Yıllık TÜFE"]].reset_index(drop=True)
             df_inf["Aylık TÜFE"] = pd.to_numeric(df_inf["Aylık TÜFE"], errors="coerce").round(2)

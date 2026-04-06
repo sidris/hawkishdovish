@@ -174,8 +174,9 @@ def fetch_market_data_adapter(start_date, end_date):
     try:
         from evds import evdsAPI
         evds_client = evdsAPI(EVDS_API_KEY)
-        fetch_start = (pd.Timestamp(start_date) - pd.DateOffset(months=13)).strftime("%d-%m-%Y")
-        fetch_end = pd.Timestamp(end_date).strftime("%d-%m-%Y")
+        # EVDS aylık seri için ayın 1. günü formatını bekliyor
+        fetch_start = (pd.Timestamp(start_date) - pd.DateOffset(months=13)).replace(day=1).strftime("%d-%m-%Y")
+        fetch_end = pd.Timestamp(end_date).replace(day=1).strftime("%d-%m-%Y")
         _tufe_debug.append(f"fetch_start={fetch_start}, fetch_end={fetch_end}")
         raw = evds_client.get_data(
             [EVDS_TUFE_SERIES],

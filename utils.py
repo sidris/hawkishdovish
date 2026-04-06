@@ -59,8 +59,7 @@ try:
 except Exception:
     supabase = None
 
-EVDS_BASE = "https://evds2.tcmb.gov.tr/service/evds"
-EVDS_TUFE_SERIES = "TP.FG.J0"
+EVDS_TUFE_SERIES = "TP.FE.OKTG01"
 
 # =============================================================================
 # 3. VERİTABANI İŞLEMLERİ
@@ -159,7 +158,7 @@ def fetch_market_data_adapter(start_date, end_date):
     empty_df = pd.DataFrame(columns=["Donem", "Yıllık TÜFE", "PPK Faizi", "SortDate"])
     
     if not EVDS_API_KEY: 
-        dates = pd.date_range(start=start_date, end=end_date, freq='M')
+        dates = pd.date_range(start=start_date, end=end_date, freq='ME')
         if len(dates) == 0: return empty_df, "Tarih Yok"
         return pd.DataFrame({
             'Donem': dates.strftime('%Y-%m'),
@@ -170,21 +169,36 @@ def fetch_market_data_adapter(start_date, end_date):
 
     df_inf = pd.DataFrame()
     try:
-        s = start_date.strftime("%d-%m-%Y"); e = end_date.strftime("%d-%m-%Y")
-        for form, col in [(1, "Aylık TÜFE"), (3, "Yıllık TÜFE")]:
-            url = f"{EVDS_BASE}/series={EVDS_TUFE_SERIES}&startDate={s}&endDate={e}&type=json&formulas={form}"
-            r = requests.get(url, headers={"key": EVDS_API_KEY}, timeout=20)
-            if r.status_code == 200 and r.json().get("items"):
-                temp = pd.DataFrame(r.json()["items"])
-                temp["dt"] = pd.to_datetime(temp["Tarih"], dayfirst=True, errors="coerce")
-                if temp["dt"].isnull().all(): temp["dt"] = pd.to_datetime(temp["Tarih"], format="%Y-%m", errors="coerce")
-                temp = temp.dropna(subset=["dt"])
-                temp["Donem"] = temp["dt"].dt.strftime("%Y-%m")
-                val_c = [c for c in temp.columns if "TP" in c][0]
-                temp = temp.rename(columns={val_c: col})[["Donem", col]]
-                if df_inf.empty: df_inf = temp
-                else: df_inf = pd.merge(df_inf, temp, on="Donem", how="outer")
-    except Exception: pass
+        from evds import evdsAPI
+        evds_client = evdsAPI(EVDS_API_KEY)
+        # Yıllık değişim için 13 ay öncesinden başla (12 ay geri + 1 buffer)
+        fetch_start = (pd.Timestamp(start_date) - pd.DateOffset(months=13)).strftime("%d-%m-%Y")
+        fetch_end = end_date.strftime("%d-%m-%Y")
+        raw = evds_client.get_data(
+            [EVDS_TUFE_SERIES],
+            startdate=fetch_start,
+            enddate=fetch_end,
+            frequency=5  # 5 = aylık
+        )
+        if raw is not None and not raw.empty:
+            # Sütun adını normalize et (nokta -> alt çizgi)
+            tufe_col = [c for c in raw.columns if "TP" in c.upper() or "FE" in c.upper()][0]
+            raw = raw.rename(columns={tufe_col: "endeks"})
+            raw["endeks"] = pd.to_numeric(raw["endeks"], errors="coerce")
+            raw = raw.dropna(subset=["endeks"]).sort_index()
+            # Değişim oranlarını hesapla
+            raw["Aylık TÜFE"] = raw["endeks"].pct_change(1) * 100
+            raw["Yıllık TÜFE"] = raw["endeks"].pct_change(12) * 100
+            # Tarih indeksini Donem kolonuna çevir
+            if not isinstance(raw.index, pd.DatetimeIndex):
+                raw.index = pd.to_datetime(raw.index, dayfirst=True, errors="coerce")
+            raw = raw.dropna(subset=["Yıllık TÜFE"])
+            raw["Donem"] = raw.index.strftime("%Y-%m")
+            # Sadece istenen tarih aralığını filtrele
+            cutoff = pd.Timestamp(start_date).strftime("%Y-%m")
+            df_inf = raw[raw["Donem"] >= cutoff][["Donem", "Aylık TÜFE", "Yıllık TÜFE"]].reset_index(drop=True)
+    except Exception:
+        pass
 
     df_pol = pd.DataFrame()
     try:

@@ -155,25 +155,27 @@ def fetch_ppk_text_rate_data(source_filter: str = "TCMB PPK Kararı") -> pd.Data
 # --- MARKET DATA ---
 @st.cache_data(ttl=600)
 def fetch_market_data_adapter(start_date, end_date):
-    empty_df = pd.DataFrame(columns=["Donem", "Yıllık TÜFE", "PPK Faizi", "SortDate"])
-    
-    if not EVDS_API_KEY: 
+    empty_df = pd.DataFrame(columns=["Donem", "Aylık TÜFE", "Yıllık TÜFE", "PPK Faizi", "SortDate"])
+
+    if not EVDS_API_KEY:
         dates = pd.date_range(start=start_date, end=end_date, freq='ME')
         if len(dates) == 0: return empty_df, "Tarih Yok"
         return pd.DataFrame({
             'Donem': dates.strftime('%Y-%m'),
-            'Yıllık TÜFE': [0]*len(dates),
-            'PPK Faizi': [0]*len(dates),
+            'Aylık TÜFE': [0] * len(dates),
+            'Yıllık TÜFE': [0] * len(dates),
+            'PPK Faizi': [0] * len(dates),
             'SortDate': dates
         }), "API Key Yok"
 
+    # --- TÜFE: evds paketi ile endeks çek, pct_change ile oran hesapla ---
     df_inf = pd.DataFrame()
     try:
         from evds import evdsAPI
         evds_client = evdsAPI(EVDS_API_KEY)
-        # Yıllık değişim için 13 ay öncesinden başla (12 ay geri + 1 buffer)
+        # Yıllık değişim için 13 ay öncesinden başlat (12 ay geri + 1 buffer)
         fetch_start = (pd.Timestamp(start_date) - pd.DateOffset(months=13)).strftime("%d-%m-%Y")
-        fetch_end = end_date.strftime("%d-%m-%Y")
+        fetch_end = pd.Timestamp(end_date).strftime("%d-%m-%Y")
         raw = evds_client.get_data(
             [EVDS_TUFE_SERIES],
             startdate=fetch_start,
@@ -181,28 +183,33 @@ def fetch_market_data_adapter(start_date, end_date):
             frequency=5  # 5 = aylık
         )
         if raw is not None and not raw.empty:
-            # Sütun adını normalize et (nokta -> alt çizgi)
-            tufe_col = [c for c in raw.columns if "TP" in c.upper() or "FE" in c.upper()][0]
-            raw = raw.rename(columns={tufe_col: "endeks"})
-            raw["endeks"] = pd.to_numeric(raw["endeks"], errors="coerce")
-            raw = raw.dropna(subset=["endeks"]).sort_index()
-            # Değişim oranlarını hesapla
-            raw["Aylık TÜFE"] = raw["endeks"].pct_change(1) * 100
-            raw["Yıllık TÜFE"] = raw["endeks"].pct_change(12) * 100
-            # Tarih indeksini Donem kolonuna çevir
+            # Ham endeks sütununu bul (TP içeren veya tek sayısal kolon)
+            tp_cols = [c for c in raw.columns if "TP" in c.upper() or "FE" in c.upper()]
+            tufe_col = tp_cols[0] if tp_cols else raw.select_dtypes(include='number').columns[0]
+            raw = raw[[tufe_col]].copy()
+            raw[tufe_col] = pd.to_numeric(raw[tufe_col], errors="coerce")
+            raw = raw.dropna()
+            # Tarih indeksini datetime'a çevir
             if not isinstance(raw.index, pd.DatetimeIndex):
                 raw.index = pd.to_datetime(raw.index, dayfirst=True, errors="coerce")
-            raw = raw.dropna(subset=["Yıllık TÜFE"])
+            raw = raw.sort_index()
+            # Değişim oranlarını hesapla
+            raw["Aylık TÜFE"] = raw[tufe_col].pct_change(1) * 100
+            raw["Yıllık TÜFE"] = raw[tufe_col].pct_change(12) * 100
             raw["Donem"] = raw.index.strftime("%Y-%m")
-            # Sadece istenen tarih aralığını filtrele
+            # İstenen tarih aralığına kırp
             cutoff = pd.Timestamp(start_date).strftime("%Y-%m")
             df_inf = raw[raw["Donem"] >= cutoff][["Donem", "Aylık TÜFE", "Yıllık TÜFE"]].reset_index(drop=True)
+            df_inf["Aylık TÜFE"] = pd.to_numeric(df_inf["Aylık TÜFE"], errors="coerce").round(2)
+            df_inf["Yıllık TÜFE"] = pd.to_numeric(df_inf["Yıllık TÜFE"], errors="coerce").round(2)
     except Exception:
         pass
 
+    # --- PPK Faizi: BIS ---
     df_pol = pd.DataFrame()
     try:
-        s_bis = start_date.strftime("%Y-%m-%d"); e_bis = end_date.strftime("%Y-%m-%d")
+        s_bis = pd.Timestamp(start_date).strftime("%Y-%m-%d")
+        e_bis = pd.Timestamp(end_date).strftime("%Y-%m-%d")
         url_bis = f"https://stats.bis.org/api/v1/data/WS_CBPOL/D.TR?format=csv&startPeriod={s_bis}&endPeriod={e_bis}"
         r_bis = requests.get(url_bis, timeout=20)
         if r_bis.status_code == 200:
@@ -211,20 +218,27 @@ def fetch_market_data_adapter(start_date, end_date):
             temp_bis["Donem"] = temp_bis["dt"].dt.strftime("%Y-%m")
             temp_bis["PPK Faizi"] = pd.to_numeric(temp_bis["OBS_VALUE"], errors="coerce")
             df_pol = temp_bis.sort_values("dt").groupby("Donem").last().reset_index()[["Donem", "PPK Faizi"]]
-    except Exception: pass
+    except Exception:
+        pass
 
+    # --- Birleştir ---
     master_df = pd.DataFrame()
-    if not df_inf.empty and not df_pol.empty: master_df = pd.merge(df_inf, df_pol, on="Donem", how="outer")
-    elif not df_inf.empty: master_df = df_inf
-    elif not df_pol.empty: master_df = df_pol
+    if not df_inf.empty and not df_pol.empty:
+        master_df = pd.merge(df_inf, df_pol, on="Donem", how="outer")
+    elif not df_inf.empty:
+        master_df = df_inf
+    elif not df_pol.empty:
+        master_df = df_pol
 
-    if master_df.empty: return empty_df, "Veri Bulunamadı"
-    
-    for c in ["Yıllık TÜFE", "PPK Faizi"]:
-        if c not in master_df.columns: master_df[c] = 0.0
-        
+    if master_df.empty:
+        return empty_df, "Veri Bulunamadı"
+
+    for c in ["Aylık TÜFE", "Yıllık TÜFE", "PPK Faizi"]:
+        if c not in master_df.columns:
+            master_df[c] = 0.0
+
     master_df["SortDate"] = pd.to_datetime(master_df["Donem"] + "-01")
-    return master_df.sort_values("SortDate"), None
+    return master_df.sort_values("SortDate").reset_index(drop=True), None
 
 # =============================================================================
 # 4. OKUNABİLİRLİK VE FREKANS ANALİZİ

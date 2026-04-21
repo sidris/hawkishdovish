@@ -162,14 +162,12 @@ def _evds_to_pct(evds_client, series_code, fetch_start, fetch_end):
             [series_code],
             startdate=fetch_start,
             enddate=fetch_end,
-            frequency=5  # aylık
+            frequency=5
         )
         if raw is None or raw.empty:
             return pd.DataFrame()
-        # Tarih kolonu "Tarih" adıyla gelir, format: "2025-1", "2025-12" vb.
         raw["dt"] = pd.to_datetime(raw["Tarih"], format="%Y-%m", errors="coerce")
         raw = raw.dropna(subset=["dt"]).sort_values("dt").reset_index(drop=True)
-        # Endeks sütununu bul
         val_col = [c for c in raw.columns if c not in ("Tarih", "dt")][0]
         raw[val_col] = pd.to_numeric(raw[val_col], errors="coerce")
         raw = raw.dropna(subset=[val_col])
@@ -196,35 +194,39 @@ def fetch_market_data_adapter(start_date, end_date):
             'SortDate': dates
         }), "API Key Yok"
 
-    # --- TÜFE: iki seriyi birleştir ---
+    # --- TÜFE: iki seriden hibrit ---
+    # Eski seri (2003=100): 2025 sonuna kadar — geçmiş yıllıklar buradan
+    # Yeni seri (2025=100): 2025 Ocak'tan başlar — 2026+ yıllıklar buradan
     df_inf = pd.DataFrame()
     try:
         from evds import evdsAPI
         evds_client = evdsAPI(EVDS_API_KEY)
-
-        # Yıllık değişim için 13 ay öncesinden başlat
         ts_start = pd.Timestamp(start_date)
         ts_end   = pd.Timestamp(end_date)
-        fetch_start_old = (ts_start - pd.DateOffset(months=13)).replace(day=1).strftime("%d-%m-%Y")
-        fetch_end_old   = "01-12-2025"  # eski seri buraya kadar güvenilir
-        fetch_start_new = "01-12-2024"  # yeni seri: 12 ay öncesinden başlat (yıllık için)
-        fetch_end_new   = ts_end.replace(day=1).strftime("%d-%m-%Y")
 
-        # Eski seri (2003=100) — geçmiş
+        # Eski seri: başlangıçtan 13 ay öncesi → 2025 sonu
+        fetch_start_old = (ts_start - pd.DateOffset(months=13)).replace(day=1).strftime("%d-%m-%Y")
+        fetch_end_old   = "01-12-2025"
         df_old = _evds_to_pct(evds_client, EVDS_TUFE_OLD, fetch_start_old, fetch_end_old)
 
-        # Yeni seri (2025=100) — 2026+
-        df_new = _evds_to_pct(evds_client, EVDS_TUFE_NEW, fetch_start_new, fetch_end_new)
+        # Yeni seri: 2025 Ocak'tan bitiş tarihine kadar (yıllık için 12 ay lazım)
+        fetch_end_new = ts_end.replace(day=1).strftime("%d-%m-%Y")
+        df_new = _evds_to_pct(evds_client, EVDS_TUFE_NEW, "01-01-2025", fetch_end_new)
+        # Yeni seriden sadece 2026+ dönemleri al (2025 yıllıklar eski seriden gelsin)
+        if not df_new.empty:
+            df_new = df_new[df_new["Donem"] >= "2026-01"].copy()
 
-        # Birleştir: dönem bazında yeni seri öncelikli
+        # Birleştir
         df_combined = pd.concat([df_old, df_new], ignore_index=True)
-        # Aynı dönem varsa yeni seriyi (sonraki) tut
         df_combined = df_combined.drop_duplicates(subset=["Donem"], keep="last")
         df_combined = df_combined.sort_values("Donem").reset_index(drop=True)
 
         # İstenen aralığa kırp
         cutoff = ts_start.strftime("%Y-%m")
-        df_inf = df_combined[df_combined["Donem"] >= cutoff].copy()
+        end_cutoff = ts_end.strftime("%Y-%m")
+        df_inf = df_combined[
+            (df_combined["Donem"] >= cutoff) & (df_combined["Donem"] <= end_cutoff)
+        ].copy()
         df_inf["Aylık TÜFE"]  = pd.to_numeric(df_inf["Aylık TÜFE"],  errors="coerce").round(2)
         df_inf["Yıllık TÜFE"] = pd.to_numeric(df_inf["Yıllık TÜFE"], errors="coerce").round(2)
         df_inf = df_inf.dropna(subset=["Aylık TÜFE", "Yıllık TÜFE"]).reset_index(drop=True)

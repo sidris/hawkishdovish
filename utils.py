@@ -59,7 +59,9 @@ try:
 except Exception:
     supabase = None
 
-EVDS_TUFE_SERIES = "TP.FE.OKTG01"
+# TÜFE serileri: eski (2003=100) + yeni (2025=100)
+EVDS_TUFE_OLD = "TP.FE.OKTG01"        # 2003=100, geçmiş veriler
+EVDS_TUFE_NEW = "TP.TUKFIY2025.GENEL" # 2025=100, 2026+ veriler
 
 # =============================================================================
 # 3. VERİTABANI İŞLEMLERİ
@@ -153,6 +155,32 @@ def fetch_ppk_text_rate_data(source_filter: str = "TCMB PPK Kararı") -> pd.Data
 
 
 # --- MARKET DATA ---
+def _evds_to_pct(evds_client, series_code, fetch_start, fetch_end):
+    """Verilen seri kodunu çekip aylık/yıllık pct_change hesaplar, Donem kolonlu df döner."""
+    try:
+        raw = evds_client.get_data(
+            [series_code],
+            startdate=fetch_start,
+            enddate=fetch_end,
+            frequency=5  # aylık
+        )
+        if raw is None or raw.empty:
+            return pd.DataFrame()
+        # Tarih kolonu "Tarih" adıyla gelir, format: "2025-1", "2025-12" vb.
+        raw["dt"] = pd.to_datetime(raw["Tarih"], format="%Y-%m", errors="coerce")
+        raw = raw.dropna(subset=["dt"]).sort_values("dt").reset_index(drop=True)
+        # Endeks sütununu bul
+        val_col = [c for c in raw.columns if c not in ("Tarih", "dt")][0]
+        raw[val_col] = pd.to_numeric(raw[val_col], errors="coerce")
+        raw = raw.dropna(subset=[val_col])
+        raw["Aylık TÜFE"]  = raw[val_col].pct_change(1)  * 100
+        raw["Yıllık TÜFE"] = raw[val_col].pct_change(12) * 100
+        raw["Donem"] = raw["dt"].dt.strftime("%Y-%m")
+        return raw[["Donem", "Aylık TÜFE", "Yıllık TÜFE"]].copy()
+    except Exception:
+        return pd.DataFrame()
+
+
 @st.cache_data(ttl=600)
 def fetch_market_data_adapter(start_date, end_date):
     empty_df = pd.DataFrame(columns=["Donem", "Aylık TÜFE", "Yıllık TÜFE", "PPK Faizi", "SortDate"])
@@ -162,54 +190,46 @@ def fetch_market_data_adapter(start_date, end_date):
         if len(dates) == 0: return empty_df, "Tarih Yok"
         return pd.DataFrame({
             'Donem': dates.strftime('%Y-%m'),
-            'Aylık TÜFE': [0] * len(dates),
-            'Yıllık TÜFE': [0] * len(dates),
-            'PPK Faizi': [0] * len(dates),
+            'Aylık TÜFE': [0]*len(dates),
+            'Yıllık TÜFE': [0]*len(dates),
+            'PPK Faizi': [0]*len(dates),
             'SortDate': dates
         }), "API Key Yok"
 
-    # --- TÜFE: evds paketi ile endeks çek, pct_change ile oran hesapla ---
+    # --- TÜFE: iki seriyi birleştir ---
     df_inf = pd.DataFrame()
-    _tufe_debug = []
     try:
         from evds import evdsAPI
         evds_client = evdsAPI(EVDS_API_KEY)
-        # EVDS aylık seri için ayın 1. günü formatını bekliyor
-        fetch_start = (pd.Timestamp(start_date) - pd.DateOffset(months=13)).replace(day=1).strftime("%d-%m-%Y")
-        fetch_end = pd.Timestamp(end_date).replace(day=1).strftime("%d-%m-%Y")
-        _tufe_debug.append(f"fetch_start={fetch_start}, fetch_end={fetch_end}")
-        raw = evds_client.get_data(
-            [EVDS_TUFE_SERIES],
-            startdate=fetch_start,
-            enddate=fetch_end,
-            frequency=5
-        )
-        _tufe_debug.append(f"raw type={type(raw)}, shape={getattr(raw,'shape','?')}")
-        _tufe_debug.append(f"raw.columns={list(raw.columns) if raw is not None else 'None'}")
-        _tufe_debug.append(f"raw.index[:3]={list(raw.index[:3]) if raw is not None and not raw.empty else 'empty'}")
-        if raw is not None and not raw.empty:
-            # Tarih bilgisi "Tarih" kolonunda geliyor (RangeIndex, index değil)
-            raw["dt"] = pd.to_datetime(raw["Tarih"], format="%Y-%m", errors="coerce")
-            raw = raw.dropna(subset=["dt"]).sort_values("dt").reset_index(drop=True)
-            # Endeks sütununu bul (Tarih ve dt hariç)
-            tp_cols = [c for c in raw.columns if c not in ("Tarih", "dt") and ("TP" in c.upper() or "FE" in c.upper())]
-            tufe_col = tp_cols[0] if tp_cols else [c for c in raw.columns if c not in ("Tarih", "dt")][0]
-            _tufe_debug.append(f"tufe_col={tufe_col}, sample={list(raw[tufe_col].head(3))}")
-            raw[tufe_col] = pd.to_numeric(raw[tufe_col], errors="coerce")
-            raw = raw.dropna(subset=[tufe_col])
-            _tufe_debug.append(f"after dropna rows={len(raw)}, dt[:3]={list(raw['dt'].head(3))}")
-            # Değişim oranlarını hesapla
-            raw["Aylık TÜFE"] = raw[tufe_col].pct_change(1) * 100
-            raw["Yıllık TÜFE"] = raw[tufe_col].pct_change(12) * 100
-            raw["Donem"] = raw["dt"].dt.strftime("%Y-%m")
-            cutoff = pd.Timestamp(start_date).strftime("%Y-%m")
-            df_inf = raw[raw["Donem"] >= cutoff][["Donem", "Aylık TÜFE", "Yıllık TÜFE"]].reset_index(drop=True)
-            df_inf["Aylık TÜFE"] = pd.to_numeric(df_inf["Aylık TÜFE"], errors="coerce").round(2)
-            df_inf["Yıllık TÜFE"] = pd.to_numeric(df_inf["Yıllık TÜFE"], errors="coerce").round(2)
-            _tufe_debug.append(f"df_inf rows={len(df_inf)}, sample={df_inf.tail(3).to_dict()}")
-    except Exception as e:
-        _tufe_debug.append(f"EXCEPTION: {type(e).__name__}: {e}")
-    st.session_state["_tufe_debug"] = _tufe_debug
+
+        # Yıllık değişim için 13 ay öncesinden başlat
+        ts_start = pd.Timestamp(start_date)
+        ts_end   = pd.Timestamp(end_date)
+        fetch_start_old = (ts_start - pd.DateOffset(months=13)).replace(day=1).strftime("%d-%m-%Y")
+        fetch_end_old   = "01-12-2025"  # eski seri buraya kadar güvenilir
+        fetch_start_new = "01-12-2024"  # yeni seri: 12 ay öncesinden başlat (yıllık için)
+        fetch_end_new   = ts_end.replace(day=1).strftime("%d-%m-%Y")
+
+        # Eski seri (2003=100) — geçmiş
+        df_old = _evds_to_pct(evds_client, EVDS_TUFE_OLD, fetch_start_old, fetch_end_old)
+
+        # Yeni seri (2025=100) — 2026+
+        df_new = _evds_to_pct(evds_client, EVDS_TUFE_NEW, fetch_start_new, fetch_end_new)
+
+        # Birleştir: dönem bazında yeni seri öncelikli
+        df_combined = pd.concat([df_old, df_new], ignore_index=True)
+        # Aynı dönem varsa yeni seriyi (sonraki) tut
+        df_combined = df_combined.drop_duplicates(subset=["Donem"], keep="last")
+        df_combined = df_combined.sort_values("Donem").reset_index(drop=True)
+
+        # İstenen aralığa kırp
+        cutoff = ts_start.strftime("%Y-%m")
+        df_inf = df_combined[df_combined["Donem"] >= cutoff].copy()
+        df_inf["Aylık TÜFE"]  = pd.to_numeric(df_inf["Aylık TÜFE"],  errors="coerce").round(2)
+        df_inf["Yıllık TÜFE"] = pd.to_numeric(df_inf["Yıllık TÜFE"], errors="coerce").round(2)
+        df_inf = df_inf.dropna(subset=["Aylık TÜFE", "Yıllık TÜFE"]).reset_index(drop=True)
+    except Exception:
+        pass
 
     # --- PPK Faizi: BIS ---
     df_pol = pd.DataFrame()
@@ -230,7 +250,8 @@ def fetch_market_data_adapter(start_date, end_date):
     # --- Birleştir ---
     master_df = pd.DataFrame()
     if not df_inf.empty and not df_pol.empty:
-        master_df = pd.merge(df_inf, df_pol, on="Donem", how="outer")
+        master_df = pd.merge(df_inf, df_pol, on="Donem", how="left")
+        master_df["PPK Faizi"] = master_df["PPK Faizi"].ffill()
     elif not df_inf.empty:
         master_df = df_inf
     elif not df_pol.empty:

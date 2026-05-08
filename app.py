@@ -182,7 +182,7 @@ with tab1:
         fig.add_trace(go.Bar(x=merged['period_date'], y=merged['word_count'], name="Metin Uzunluğu", marker=dict(color='gray'), opacity=0.10, yaxis="y3", hoverinfo="x+y+name"))
         
         # --- SKORLAR ---
-        fig.add_trace(go.Scatter(x=merged['period_date'], y=merged['score_abg_scaled'], name="Şahin/Güvercin-Hibrit", line=dict(color='black', width=2, dash='dot'), marker=dict(size=6, color='black'), yaxis="y"))
+        # NOT: "Şahin/Güvercin-Hibrit" (score_abg_scaled) çizgisi kullanıcı isteği üzerine ana ekrandan kaldırıldı.
         fig.add_trace(go.Scatter(x=merged['period_date'], y=merged['abg_dashboard_val'], name="Şahin/Güvercin ABG 2019", line=dict(color='navy', width=4), yaxis="y"))
 
                 # --- AI Score (mrince) çizgileri ---
@@ -762,8 +762,8 @@ def _render_tab_text_as_data():
     if err:
         st.warning(f"Market veri uyarısı: {err}")
 
-    # HYBRID + CPI prepare
-    df_td = utils.textasdata_prepare_df_hybrid_cpi(
+    # HYBRID + CPI prepare (TÜM tarihçeyle hazırla; lag/rolling feature'lar bozulmasın)
+    df_td_full = utils.textasdata_prepare_df_hybrid_cpi(
         df_logs,
         df_market,
         text_col="text_content",
@@ -772,8 +772,76 @@ def _render_tab_text_as_data():
         rate_col="policy_rate"
     )
 
-    if df_td.empty or df_td["delta_bp"].notna().sum() < 10:
+    if df_td_full.empty or df_td_full["delta_bp"].notna().sum() < 10:
         st.warning("HYBRID+CPI eğitim için yeterli gözlem yok. (En az ~10 kayıt önerilir)")
+        return
+
+    # -------------------------
+    # 0) TARİH ARALIĞI & VERİ TAZELEME
+    # -------------------------
+    # Veri aralığı: DB'deki en eski etiketli karardan en yeni etiketli karara kadar
+    labeled_dates = df_td_full.dropna(subset=["delta_bp"])["period_date"]
+    data_min = pd.to_datetime(labeled_dates.min()).date()
+    data_max = pd.to_datetime(labeled_dates.max()).date()
+
+    cdate1, cdate2, cdate3 = st.columns([2, 2, 1])
+    with cdate1:
+        auto_extend = st.checkbox(
+            "🔄 Son karara kadar otomatik uzat",
+            value=True,
+            help="Açıkken üst sınır otomatik olarak veritabanındaki en güncel PPK kararına eşitlenir. "
+                 "Yeni bir karar girildiğinde grafik kendiliğinden uzanır."
+        )
+    with cdate2:
+        st.caption(f"📅 Veri aralığı: **{data_min}** → **{data_max}**  ·  Etiketli karar: **{int(labeled_dates.notna().sum())}**")
+    with cdate3:
+        if st.button("♻️ Veriyi Yenile", help="Cache'i temizleyip Supabase + EVDS'den yeniden çeker"):
+            try:
+                utils.fetch_market_data_adapter.clear()
+            except Exception:
+                pass
+            try:
+                st.cache_data.clear()
+            except Exception:
+                pass
+            st.rerun()
+
+    # Date range picker — default tüm aralık; auto_extend AÇIKsa üst sınırı her zaman data_max'a sabitle
+    dr_default = (data_min, data_max)
+    dr = st.date_input(
+        "Backtest tarih aralığı (eğitim ve grafik bu aralıkla sınırlanır)",
+        value=dr_default,
+        min_value=data_min,
+        max_value=data_max,
+        help="Sol uçtan başlangıç, sağ uçtan bitiş tarihini seç. "
+             "‘Son karara kadar otomatik uzat’ açıkken sağ uç her zaman en güncel karara eşitlenir."
+    )
+
+    # date_input bazen tek tarih, bazen tuple döner — güvenli ayrıştırma
+    if isinstance(dr, (list, tuple)) and len(dr) == 2:
+        sel_start, sel_end = dr
+    else:
+        sel_start, sel_end = data_min, data_max
+
+    if auto_extend:
+        sel_end = data_max  # her durumda son karara çek
+
+    if sel_start > sel_end:
+        st.error("Başlangıç tarihi, bitiş tarihinden büyük olamaz.")
+        return
+
+    # df_td = seçili aralığa göre filtrelenmiş veri
+    mask_range = (
+        (pd.to_datetime(df_td_full["period_date"]).dt.date >= sel_start) &
+        (pd.to_datetime(df_td_full["period_date"]).dt.date <= sel_end)
+    )
+    df_td = df_td_full.loc[mask_range].reset_index(drop=True)
+
+    if df_td.empty or df_td["delta_bp"].notna().sum() < 10:
+        st.warning(
+            f"Seçili aralıkta ({sel_start} → {sel_end}) yeterli etiketli gözlem yok. "
+            f"En az ~10 kayıt önerilir. Aralığı genişletmeyi deneyin."
+        )
         return
 
     # -------------------------

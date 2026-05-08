@@ -779,21 +779,51 @@ def _render_tab_text_as_data():
     # -------------------------
     # 0) TARİH ARALIĞI & VERİ TAZELEME
     # -------------------------
-    # Veri aralığı: DB'deki en eski etiketli karardan en yeni etiketli karara kadar
+    # ÜÇ FARKLI "MAX TARİH" KAVRAMI VAR — kullanıcının kafası karışmasın diye hepsini gösteriyoruz:
+    #   1) raw_max     : Supabase'deki TÜM kayıtların en yeni period_date'i (etiketli/etiketsiz fark etmez)
+    #   2) prep_max    : df_td_full'a giren (yani lag/rolling feature'ları NaN-değil olan) en yeni satır
+    #   3) labeled_max : delta_bp'si DOLU olan en yeni satır — backtest grafiği bunda biter
+    raw_dates = pd.to_datetime(df_logs["period_date"], errors="coerce").dropna()
+    raw_min = raw_dates.min().date()
+    raw_max = raw_dates.max().date()
+
+    prep_dates = pd.to_datetime(df_td_full["period_date"], errors="coerce").dropna()
+    prep_max = prep_dates.max().date() if not prep_dates.empty else raw_max
+
     labeled_dates = df_td_full.dropna(subset=["delta_bp"])["period_date"]
+    if labeled_dates.empty:
+        st.warning("Etiketli (delta_bp dolu) hiçbir karar yok.")
+        return
     data_min = pd.to_datetime(labeled_dates.min()).date()
     data_max = pd.to_datetime(labeled_dates.max()).date()
+
+    # Etiketli son karardan SONRA gelen ama eğitime giremeyen kayıtları yakala
+    df_logs_after = df_logs[pd.to_datetime(df_logs["period_date"]).dt.date > data_max].copy()
+    missing_after = []
+    for _, r in df_logs_after.iterrows():
+        d = pd.to_datetime(r["period_date"]).date()
+        why = []
+        if pd.isna(r.get("delta_bp")):
+            why.append("delta_bp boş")
+        if pd.isna(r.get("policy_rate")):
+            why.append("policy_rate boş")
+        if not why:
+            why.append("lag/rolling feature NaN (CPI veya komşu kayıt eksik)")
+        missing_after.append((d, ", ".join(why)))
 
     cdate1, cdate2, cdate3 = st.columns([2, 2, 1])
     with cdate1:
         auto_extend = st.checkbox(
             "🔄 Son karara kadar otomatik uzat",
             value=True,
-            help="Açıkken üst sınır otomatik olarak veritabanındaki en güncel PPK kararına eşitlenir. "
-                 "Yeni bir karar girildiğinde grafik kendiliğinden uzanır."
+            help="Açıkken üst sınır otomatik olarak veritabanındaki en güncel ETİKETLİ (delta_bp dolu) PPK kararına eşitlenir."
         )
     with cdate2:
-        st.caption(f"📅 Veri aralığı: **{data_min}** → **{data_max}**  ·  Etiketli karar: **{int(labeled_dates.notna().sum())}**")
+        st.caption(
+            f"📅 Ham veri: **{raw_min} → {raw_max}**  ·  "
+            f"Etiketli son karar: **{data_max}**  ·  "
+            f"Etiketli karar sayısı: **{int(labeled_dates.notna().sum())}**"
+        )
     with cdate3:
         if st.button("♻️ Veriyi Yenile", help="Cache'i temizleyip Supabase + EVDS'den yeniden çeker"):
             try:
@@ -806,15 +836,26 @@ def _render_tab_text_as_data():
                 pass
             st.rerun()
 
-    # Date range picker — default tüm aralık; auto_extend AÇIKsa üst sınırı her zaman data_max'a sabitle
+    # Eğer DB'de etiketli son karardan daha yeni kayıtlar varsa, kullanıcıyı bilgilendir
+    if missing_after:
+        lines = "\n".join([f"- **{d}** → _{reason}_" for d, reason in missing_after])
+        st.warning(
+            f"⚠️ DB'de **{data_max}** sonrası **{len(missing_after)}** kayıt var ama eğitime giremiyor:\n\n{lines}\n\n"
+            f"👉 Çözüm: **Veri Girişi** sekmesinden o kararın `delta_bp` ve `policy_rate` alanlarını doldurun, "
+            f"sonra burada **♻️ Veriyi Yenile**'ye basın."
+        )
+
+    # Date range picker — max_value RAW max'a kadar açık (kullanıcı son etiketsiz kaydı da görsün);
+    # ama default ve auto_extend ETİKETLİ son karara (data_max) bağlanır.
+    picker_max = max(raw_max, data_max)
     dr_default = (data_min, data_max)
     dr = st.date_input(
         "Backtest tarih aralığı (eğitim ve grafik bu aralıkla sınırlanır)",
         value=dr_default,
         min_value=data_min,
-        max_value=data_max,
+        max_value=picker_max,
         help="Sol uçtan başlangıç, sağ uçtan bitiş tarihini seç. "
-             "‘Son karara kadar otomatik uzat’ açıkken sağ uç her zaman en güncel karara eşitlenir."
+             "‘Son karara kadar otomatik uzat’ açıkken sağ uç her zaman en güncel ETİKETLİ karara eşitlenir."
     )
 
     # date_input bazen tek tarih, bazen tuple döner — güvenli ayrıştırma
@@ -824,7 +865,7 @@ def _render_tab_text_as_data():
         sel_start, sel_end = data_min, data_max
 
     if auto_extend:
-        sel_end = data_max  # her durumda son karara çek
+        sel_end = data_max  # her durumda etiketli son karara çek
 
     if sel_start > sel_end:
         st.error("Başlangıç tarihi, bitiş tarihinden büyük olamaz.")

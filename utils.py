@@ -64,10 +64,12 @@ EVDS_TUFE_OLD = "TP.FE.OKTG01"        # 2003=100, geçmiş veriler
 EVDS_TUFE_NEW = "TP.TUKFIY2025.GENEL" # 2025=100, 2026+ veriler
 
 # Enflasyon beklentisi serileri
+# Not: EVDS seri kodları resmi ekranda noktalı biçimde geçiyor.
+# API dönüşlerinde kolon adları alt çizgili gelebileceği için okuma fonksiyonları iki biçimi de destekler.
 EVDS_EXPECTATION_SERIES = {
-    "PKA 12 Ay Enflasyon Beklentisi": "TP_ENFBEK_PKA12ENF",
-    "İYA 12 Ay Enflasyon Beklentisi": "TP_ENFBEK_IYA12ENF",
-    "HBA 12 Ay Enflasyon Beklentisi": "TP_ENFBEK_HBA12ENF",
+    "PKA 12 Ay Enflasyon Beklentisi": "TP.ENFBEK.PKA12ENF",
+    "İYA 12 Ay Enflasyon Beklentisi": "TP.ENFBEK.IYA12ENF",
+    "HBA 12 Ay Enflasyon Beklentisi": "TP.ENFBEK.HBA12ENF",
 }
 
 # =============================================================================
@@ -186,8 +188,101 @@ def _evds_to_pct(evds_client, series_code, fetch_start, fetch_end):
         return pd.DataFrame()
 
 
+def _clean_evds_numeric(series):
+    """EVDS değerlerini güvenli biçimde sayıya çevirir; hem nokta hem virgül ondalığı destekler."""
+    s = series.astype(str).str.strip()
+
+    # Virgül varsa TR biçimi kabul et: 22,17 veya 1.234,56
+    has_comma = s.str.contains(",", regex=False)
+    out = pd.Series(np.nan, index=s.index, dtype="float64")
+
+    if has_comma.any():
+        out.loc[has_comma] = pd.to_numeric(
+            s.loc[has_comma]
+             .str.replace(".", "", regex=False)
+             .str.replace(",", ".", regex=False),
+            errors="coerce"
+        )
+
+    if (~has_comma).any():
+        out.loc[~has_comma] = pd.to_numeric(s.loc[~has_comma], errors="coerce")
+
+    return out
+
+
+def _parse_evds_months(date_series):
+    """EVDS Tarih kolonunu aylık dönemlere çevirir."""
+    dt = pd.to_datetime(date_series, format="%Y-%m", errors="coerce")
+    if dt.isna().all():
+        dt = pd.to_datetime(date_series, dayfirst=True, errors="coerce")
+    return dt
+
+
+def _pick_evds_value_col(raw: pd.DataFrame, series_code: str):
+    """EVDS dönüşünde gerçek seri kolonunu bulur; Tarih/UNIXTIME gibi yardımcı kolonları dışarıda bırakır."""
+    if raw is None or raw.empty:
+        return None
+
+    ignored = {"Tarih", "TARIH", "DATE", "date", "dt", "UNIXTIME", "unixTime", "UNIX_TIME"}
+    candidates = [c for c in raw.columns if c not in ignored]
+    if not candidates:
+        return None
+
+    normalized_target = series_code.replace(".", "_").replace("-", "_").upper()
+    for c in candidates:
+        normalized_col = str(c).replace(".", "_").replace("-", "_").upper()
+        if normalized_col == normalized_target:
+            return c
+
+    # İlk sayısallaştırılabilen kolonu seç. Böylece kolon adı beklenenden farklı gelse de veri kaybolmaz.
+    for c in candidates:
+        vals = _clean_evds_numeric(raw[c])
+        if vals.notna().any():
+            return c
+
+    return candidates[0]
+
+
+def _evds_direct_request(series_code, fetch_start, fetch_end):
+    """evds paketinden sonuç gelmezse resmi web servise doğrudan istek atar."""
+    if not EVDS_API_KEY:
+        return pd.DataFrame()
+
+    params = {
+        "series": series_code,
+        "startDate": fetch_start,
+        "endDate": fetch_end,
+        "type": "json",
+        "frequency": "5",
+        "formulas": "0",
+        "aggregationTypes": "avg",
+    }
+
+    urls = [
+        "https://evds2.tcmb.gov.tr/service/evds",
+        "https://evds2.tcmb.gov.tr/service/evds/",
+    ]
+
+    for url in urls:
+        try:
+            r = requests.get(url, params=params, headers={"key": EVDS_API_KEY}, timeout=20)
+            if r.status_code != 200:
+                continue
+            payload = r.json()
+            items = payload.get("items", []) if isinstance(payload, dict) else []
+            if items:
+                return pd.DataFrame(items)
+        except Exception:
+            continue
+
+    return pd.DataFrame()
+
+
 def _evds_to_monthly_level(evds_client, series_code, column_name, fetch_start, fetch_end):
     """Verilen EVDS serisini aylık frekansta çekip Donem + değer kolonu olarak döner."""
+    raw = pd.DataFrame()
+
+    # 1) Önce mevcut evds paketiyle dene.
     try:
         raw = evds_client.get_data(
             [series_code],
@@ -195,13 +290,42 @@ def _evds_to_monthly_level(evds_client, series_code, column_name, fetch_start, f
             enddate=fetch_end,
             frequency=5
         )
-        if raw is None or raw.empty:
-            return pd.DataFrame()
-        raw["dt"] = pd.to_datetime(raw["Tarih"], format="%Y-%m", errors="coerce")
+    except Exception:
+        raw = pd.DataFrame()
+
+    # 2) Sonuç gelmezse alt çizgili varyantı dene.
+    if raw is None or raw.empty:
+        try:
+            raw = evds_client.get_data(
+                [series_code.replace(".", "_")],
+                startdate=fetch_start,
+                enddate=fetch_end,
+                frequency=5
+            )
+        except Exception:
+            raw = pd.DataFrame()
+
+    # 3) Hâlâ boşsa web servise doğrudan git.
+    if raw is None or raw.empty:
+        raw = _evds_direct_request(series_code, fetch_start, fetch_end)
+
+    if raw is None or raw.empty or "Tarih" not in raw.columns:
+        return pd.DataFrame()
+
+    try:
+        raw = raw.copy()
+        raw["dt"] = _parse_evds_months(raw["Tarih"])
         raw = raw.dropna(subset=["dt"]).sort_values("dt").reset_index(drop=True)
-        val_col = [c for c in raw.columns if c not in ("Tarih", "dt")][0]
-        raw[column_name] = pd.to_numeric(raw[val_col], errors="coerce")
+
+        val_col = _pick_evds_value_col(raw, series_code)
+        if val_col is None:
+            return pd.DataFrame()
+
+        raw[column_name] = _clean_evds_numeric(raw[val_col])
         raw = raw.dropna(subset=[column_name])
+        if raw.empty:
+            return pd.DataFrame()
+
         raw["Donem"] = raw["dt"].dt.strftime("%Y-%m")
         return raw.sort_values("dt").groupby("Donem").last().reset_index()[["Donem", column_name]]
     except Exception:
@@ -227,7 +351,7 @@ def fetch_market_data_adapter(start_date, end_date):
             'SortDate': dates
         })
         for col in expectation_cols:
-            fallback[col] = 0
+            fallback[col] = np.nan
         return fallback, "API Key Yok"
 
     # --- TÜFE: iki seriden hibrit ---
@@ -321,9 +445,16 @@ def fetch_market_data_adapter(start_date, end_date):
     if "PPK Faizi" in master_df.columns:
         master_df["PPK Faizi"] = master_df["PPK Faizi"].ffill()
 
-    for c in ["Aylık TÜFE", "Yıllık TÜFE", "PPK Faizi"] + expectation_cols:
+    # Eski kolon davranışını koru: temel seriler yoksa 0.0 ile tamamlanabilir.
+    # Beklenti serilerinde ise veri gelmezse 0 basma; NaN kalsın ki grafikte yanlış sıfır çizgisi görünmesin.
+    for c in ["Aylık TÜFE", "Yıllık TÜFE", "PPK Faizi"]:
         if c not in master_df.columns:
             master_df[c] = 0.0
+        master_df[c] = pd.to_numeric(master_df[c], errors="coerce")
+
+    for c in expectation_cols:
+        if c not in master_df.columns:
+            master_df[c] = np.nan
         master_df[c] = pd.to_numeric(master_df[c], errors="coerce")
 
     cutoff = ts_start.strftime("%Y-%m")

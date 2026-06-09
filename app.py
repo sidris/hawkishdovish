@@ -85,7 +85,11 @@ tab1, tab2, tab3, tab4, tab_textdata, tab6, tab7, tab_roberta, tab_imp = st.tabs
     "📅 Haberler"
 ])
 
-
+ENFLATION_EXPECTATION_COLS = [
+    "PKA 12 Ay Enflasyon Beklentisi",
+    "İYA 12 Ay Enflasyon Beklentisi",
+    "HBA 12 Ay Enflasyon Beklentisi",
+]
 
 
 # --- SESSION & STATE --- bloğunun içine ekleyin:
@@ -175,6 +179,9 @@ with tab1:
         if 'Yıllık TÜFE' in merged.columns: merged['Yıllık TÜFE'] = pd.to_numeric(merged['Yıllık TÜFE'], errors='coerce')
         if 'Aylık TÜFE' in merged.columns: merged['Aylık TÜFE'] = pd.to_numeric(merged['Aylık TÜFE'], errors='coerce')
         if 'PPK Faizi' in merged.columns: merged['PPK Faizi'] = pd.to_numeric(merged['PPK Faizi'], errors='coerce')
+        for col in ENFLATION_EXPECTATION_COLS:
+            if col in merged.columns:
+                merged[col] = pd.to_numeric(merged[col], errors='coerce')
         
         fig = make_subplots(specs=[[{"secondary_y": True}]])
         
@@ -208,6 +215,22 @@ with tab1:
         if 'Yıllık TÜFE' in merged.columns: fig.add_trace(go.Scatter(x=merged['period_date'], y=merged['Yıllık TÜFE'], name="Yıllık TÜFE (%)", line=dict(color='red', dash='dot'), yaxis="y"))
         if 'Aylık TÜFE' in merged.columns: fig.add_trace(go.Scatter(x=merged['period_date'], y=merged['Aylık TÜFE'], name="Aylık TÜFE (%)", line=dict(color='crimson', dash='dash', width=1), yaxis="y"))
         if 'PPK Faizi' in merged.columns: fig.add_trace(go.Scatter(x=merged['period_date'], y=merged['PPK Faizi'], name="Faiz (%)", line=dict(color='orange', dash='dot'), yaxis="y"))
+
+        expectation_styles = {
+            "PKA 12 Ay Enflasyon Beklentisi": dict(color='purple', dash='solid', width=2),
+            "İYA 12 Ay Enflasyon Beklentisi": dict(color='mediumpurple', dash='dash', width=2),
+            "HBA 12 Ay Enflasyon Beklentisi": dict(color='indigo', dash='dot', width=2),
+        }
+        for col in ENFLATION_EXPECTATION_COLS:
+            if col in merged.columns and merged[col].notna().any():
+                fig.add_trace(go.Scatter(
+                    x=merged['period_date'],
+                    y=merged[col],
+                    name=f"{col} (%)",
+                    line=expectation_styles.get(col, dict(dash='dash')),
+                    yaxis="y"
+                ))
+
         fig.add_trace(go.Scatter(x=merged['period_date'], y=merged['flesch_score'], name="Okunabilirlik (Flesch)", mode='markers', marker=dict(color='teal', size=8, opacity=0.8), yaxis="y"))
 
         layout_shapes = [
@@ -508,6 +531,19 @@ with tab3:
             if 'Yıllık TÜFE' in df.columns: fig_m.add_trace(go.Scatter(x=df['Donem'], y=df['Yıllık TÜFE'], name="Yıllık TÜFE", line=dict(color='red')))
             if 'Aylık TÜFE' in df.columns: fig_m.add_trace(go.Scatter(x=df['Donem'], y=df['Aylık TÜFE'], name="Aylık TÜFE", line=dict(color='blue', dash='dot')))
             if 'PPK Faizi' in df.columns: fig_m.add_trace(go.Scatter(x=df['Donem'], y=df['PPK Faizi'], name="Faiz", line=dict(color='orange')))
+            expectation_styles_m = {
+                "PKA 12 Ay Enflasyon Beklentisi": dict(color='purple', dash='solid', width=2),
+                "İYA 12 Ay Enflasyon Beklentisi": dict(color='mediumpurple', dash='dash', width=2),
+                "HBA 12 Ay Enflasyon Beklentisi": dict(color='indigo', dash='dot', width=2),
+            }
+            for col in ENFLATION_EXPECTATION_COLS:
+                if col in df.columns and pd.to_numeric(df[col], errors='coerce').notna().any():
+                    fig_m.add_trace(go.Scatter(
+                        x=df['Donem'],
+                        y=pd.to_numeric(df[col], errors='coerce'),
+                        name=col,
+                        line=expectation_styles_m.get(col, dict(dash='dash'))
+                    ))
             st.plotly_chart(fig_m, use_container_width=True)
             st.dataframe(df, use_container_width=True)
         else: st.error(f"Hata: {err}")

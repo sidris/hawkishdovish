@@ -63,6 +63,13 @@ except Exception:
 EVDS_TUFE_OLD = "TP.FE.OKTG01"        # 2003=100, geçmiş veriler
 EVDS_TUFE_NEW = "TP.TUKFIY2025.GENEL" # 2025=100, 2026+ veriler
 
+# Enflasyon beklentisi serileri
+EVDS_EXPECTATION_SERIES = {
+    "PKA 12 Ay Enflasyon Beklentisi": "TP_ENFBEK_PKA12ENF",
+    "İYA 12 Ay Enflasyon Beklentisi": "TP_ENFBEK_IYA12ENF",
+    "HBA 12 Ay Enflasyon Beklentisi": "TP_ENFBEK_HBA12ENF",
+}
+
 # =============================================================================
 # 3. VERİTABANI İŞLEMLERİ
 # =============================================================================
@@ -179,20 +186,49 @@ def _evds_to_pct(evds_client, series_code, fetch_start, fetch_end):
         return pd.DataFrame()
 
 
+def _evds_to_monthly_level(evds_client, series_code, column_name, fetch_start, fetch_end):
+    """Verilen EVDS serisini aylık frekansta çekip Donem + değer kolonu olarak döner."""
+    try:
+        raw = evds_client.get_data(
+            [series_code],
+            startdate=fetch_start,
+            enddate=fetch_end,
+            frequency=5
+        )
+        if raw is None or raw.empty:
+            return pd.DataFrame()
+        raw["dt"] = pd.to_datetime(raw["Tarih"], format="%Y-%m", errors="coerce")
+        raw = raw.dropna(subset=["dt"]).sort_values("dt").reset_index(drop=True)
+        val_col = [c for c in raw.columns if c not in ("Tarih", "dt")][0]
+        raw[column_name] = pd.to_numeric(raw[val_col], errors="coerce")
+        raw = raw.dropna(subset=[column_name])
+        raw["Donem"] = raw["dt"].dt.strftime("%Y-%m")
+        return raw.sort_values("dt").groupby("Donem").last().reset_index()[["Donem", column_name]]
+    except Exception:
+        return pd.DataFrame()
+
+
 @st.cache_data(ttl=600)
 def fetch_market_data_adapter(start_date, end_date):
-    empty_df = pd.DataFrame(columns=["Donem", "Aylık TÜFE", "Yıllık TÜFE", "PPK Faizi", "SortDate"])
+    expectation_cols = list(EVDS_EXPECTATION_SERIES.keys())
+    base_cols = ["Donem", "Aylık TÜFE", "Yıllık TÜFE", "PPK Faizi"]
+    empty_df = pd.DataFrame(columns=base_cols + expectation_cols + ["SortDate"])
+    ts_start = pd.Timestamp(start_date)
+    ts_end = pd.Timestamp(end_date)
 
     if not EVDS_API_KEY:
         dates = pd.date_range(start=start_date, end=end_date, freq='ME')
         if len(dates) == 0: return empty_df, "Tarih Yok"
-        return pd.DataFrame({
+        fallback = pd.DataFrame({
             'Donem': dates.strftime('%Y-%m'),
             'Aylık TÜFE': [0]*len(dates),
             'Yıllık TÜFE': [0]*len(dates),
             'PPK Faizi': [0]*len(dates),
             'SortDate': dates
-        }), "API Key Yok"
+        })
+        for col in expectation_cols:
+            fallback[col] = 0
+        return fallback, "API Key Yok"
 
     # --- TÜFE: iki seriden hibrit ---
     # Eski seri (2003=100): 2025 sonuna kadar — geçmiş yıllıklar buradan
@@ -201,8 +237,6 @@ def fetch_market_data_adapter(start_date, end_date):
     try:
         from evds import evdsAPI
         evds_client = evdsAPI(EVDS_API_KEY)
-        ts_start = pd.Timestamp(start_date)
-        ts_end   = pd.Timestamp(end_date)
 
         # Eski seri: başlangıçtan 13 ay öncesi → 2025 sonu
         fetch_start_old = (ts_start - pd.DateOffset(months=13)).replace(day=1).strftime("%d-%m-%Y")
@@ -233,6 +267,28 @@ def fetch_market_data_adapter(start_date, end_date):
     except Exception:
         pass
 
+    # --- Enflasyon beklentileri: EVDS ---
+    df_exp = pd.DataFrame()
+    try:
+        from evds import evdsAPI
+        evds_client = evdsAPI(EVDS_API_KEY)
+        fetch_start_exp = ts_start.replace(day=1).strftime("%d-%m-%Y")
+        fetch_end_exp = ts_end.replace(day=1).strftime("%d-%m-%Y")
+
+        for col_name, series_code in EVDS_EXPECTATION_SERIES.items():
+            tmp_exp = _evds_to_monthly_level(evds_client, series_code, col_name, fetch_start_exp, fetch_end_exp)
+            if tmp_exp.empty:
+                continue
+            if df_exp.empty:
+                df_exp = tmp_exp
+            else:
+                df_exp = pd.merge(df_exp, tmp_exp, on="Donem", how="outer")
+
+        if not df_exp.empty:
+            df_exp = df_exp.sort_values("Donem").reset_index(drop=True)
+    except Exception:
+        pass
+
     # --- PPK Faizi: BIS ---
     df_pol = pd.DataFrame()
     try:
@@ -250,22 +306,29 @@ def fetch_market_data_adapter(start_date, end_date):
         pass
 
     # --- Birleştir ---
+    market_frames = [df for df in [df_inf, df_pol, df_exp] if df is not None and not df.empty]
     master_df = pd.DataFrame()
-    if not df_inf.empty and not df_pol.empty:
-        master_df = pd.merge(df_inf, df_pol, on="Donem", how="left")
-        master_df["PPK Faizi"] = master_df["PPK Faizi"].ffill()
-    elif not df_inf.empty:
-        master_df = df_inf
-    elif not df_pol.empty:
-        master_df = df_pol
+    for frame in market_frames:
+        if master_df.empty:
+            master_df = frame.copy()
+        else:
+            master_df = pd.merge(master_df, frame, on="Donem", how="outer")
 
     if master_df.empty:
         return empty_df, "Veri Bulunamadı"
 
-    for c in ["Aylık TÜFE", "Yıllık TÜFE", "PPK Faizi"]:
+    master_df = master_df.sort_values("Donem").reset_index(drop=True)
+    if "PPK Faizi" in master_df.columns:
+        master_df["PPK Faizi"] = master_df["PPK Faizi"].ffill()
+
+    for c in ["Aylık TÜFE", "Yıllık TÜFE", "PPK Faizi"] + expectation_cols:
         if c not in master_df.columns:
             master_df[c] = 0.0
+        master_df[c] = pd.to_numeric(master_df[c], errors="coerce")
 
+    cutoff = ts_start.strftime("%Y-%m")
+    end_cutoff = ts_end.strftime("%Y-%m")
+    master_df = master_df[(master_df["Donem"] >= cutoff) & (master_df["Donem"] <= end_cutoff)].copy()
     master_df["SortDate"] = pd.to_datetime(master_df["Donem"] + "-01")
     return master_df.sort_values("SortDate").reset_index(drop=True), None
 

@@ -2008,6 +2008,71 @@ def document_signal_from_sentences(df_sent: pd.DataFrame,
     }
 
 
+def combine_tone_action(tone_signal,
+                        delta_bp=None,
+                        action_label=None,
+                        deadband: float = DOC_STANCE_DEADBAND) -> dict:
+    """
+    Tonu (iletişim) ve aksiyonu (gerçekleşen faiz kararı) AYRI iki boyut olarak
+    birleştirip rejim etiketi üretir: 'Hawkish Cut', 'Dovish Hike', 'Neutral Hold'...
+
+    - Ton yönü: saf cümle sinyalinden (deadband ile).
+    - Aksiyon yönü: önce gerçek delta_bp (metinden), yoksa CUT/HIKE/HOLD etiketi.
+    """
+    # --- Ton yönü ---
+    try:
+        ts = float(tone_signal)
+        if not np.isfinite(ts):
+            ts = 0.0
+    except Exception:
+        ts = 0.0
+
+    if ts >= deadband:
+        tone_word, tone_emoji, tone_dir = "Hawkish", "🦅", 1
+    elif ts <= -deadband:
+        tone_word, tone_emoji, tone_dir = "Dovish", "🕊️", -1
+    else:
+        tone_word, tone_emoji, tone_dir = "Neutral", "⚖️", 0
+
+    # --- Aksiyon yönü: önce delta_bp, sonra etiket fallback ---
+    bp = None
+    try:
+        if delta_bp is not None and np.isfinite(float(delta_bp)):
+            bp = float(delta_bp)
+    except Exception:
+        bp = None
+
+    action_dir = None
+    if bp is not None:
+        action_dir = 1 if bp > 0 else (-1 if bp < 0 else 0)
+    else:
+        lab = (action_label or "").upper()
+        if lab == "HIKE":
+            action_dir = 1
+        elif lab == "CUT":
+            action_dir = -1
+        elif lab == "HOLD":
+            action_dir = 0
+        else:
+            action_dir = None  # bilinmiyor
+
+    action_word = {1: "Hike", -1: "Cut", 0: "Hold"}.get(action_dir, "?")
+
+    if action_dir is None:
+        regime = f"{tone_emoji} {tone_word} (aksiyon ?)"
+    else:
+        regime = f"{tone_emoji} {tone_word} {action_word}"
+
+    return {
+        "regime": regime,
+        "tone_word": tone_word,
+        "action_word": action_word,
+        "tone_dir": tone_dir,
+        "action_dir": action_dir,
+        "delta_bp": bp,
+    }
+
+
 def analyze_with_roberta(text: str):
     """
     Tek metin için sınıf olasılıkları + diff + basit duruş.
@@ -2041,51 +2106,59 @@ def analyze_with_roberta(text: str):
         n = float(scores_map.get("NEUT", 0.0))
         diff = h - d
 
-        # === KANONİK DOKÜMAN DURUŞU: cümle-bazlı, karar-ağırlıklı sinyal ===
-        # Full-text tek-parça tahmin yalnızca REFERANS/DEBUG içindir (512 token
-        # sınırı yüzünden metnin tamamını görmez). Kanonik 'diff' ve 'stance'
-        # cümle bazlı sinyalden gelir; böylece grafik ve detay paneli AYNI sayıyı
-        # okur ve asla çelişemez.
+        # === KANONİK TON (saf, karar-ağırlıksız) + AYRI AKSİYON + REJİM ===
+        # Ton = cümle diff'lerinin SAF ortalaması (iletişim tonu).
+        # Aksiyon = gerçek delta_bp (yoksa CUT/HIKE/HOLD). Rejim = ton × aksiyon.
+        # Full-text tek-parça tahmin yalnızca referans/debug.
         diff_fulltext = diff
         stance_fulltext = stance_3class_from_diff(diff_fulltext)
 
-        doc_signal = diff_fulltext      # fallback (cümle çıkmazsa)
-        stance_doc = stance_fulltext    # fallback
+        tone_signal = diff_fulltext      # fallback (cümle çıkmazsa)
+        stance_tone = stance_fulltext    # fallback
         doc_diff_mean = None
         net_push = None
-        stance_sent = None
+        delta_bp = None
+        action_label = "UNKNOWN"
 
         try:
-            # ÖNEMLİ: cümle analizi TAM metin üzerinde (truncation bias yok)
+            # cümle analizi TAM metin üzerinde (truncation bias yok)
             df_sent = analyze_sentences_with_roberta(str(text))
             if df_sent is not None and "Diff (H-D)" in df_sent.columns:
                 doc = document_signal_from_sentences(df_sent, full_text=str(text))
                 if doc.get("n", 0) > 0:
-                    doc_signal = float(doc["signal"])
-                    stance_doc = str(doc["stance"])
-                    doc_diff_mean = float(doc.get("diff_mean", 0.0) or 0.0)
-                    stance_sent = stance_doc
+                    tone_signal = float(doc["diff_mean"])   # SAF ton (karar-ağırlıksız)
+                    stance_tone = stance_3class_from_diff(tone_signal, deadband=DOC_STANCE_DEADBAND)
+                    doc_diff_mean = tone_signal
+                    action_label = str(doc.get("action", "UNKNOWN") or "UNKNOWN")
+                    delta_bp = doc.get("real_delta_bp", None)
 
-                    # net_push sadece caption/debug için
                     summ = summarize_sentence_roberta(df_sent, full_text=str(text))
                     if summ and summ.get("n", 0) > 0:
                         net_push = float((summ.get("pos_sum", 0.0) or 0.0) + (summ.get("neg_sum", 0.0) or 0.0))
         except Exception:
             pass
 
+        ta = combine_tone_action(tone_signal, delta_bp=delta_bp, action_label=action_label)
+
         return {
             "scores_map": scores_map,
             "best_score": float(best_score),
-            # --- KANONİK (chart + detay aynı bunu kullanır) ---
-            "diff": float(doc_signal),     # cümle-bazlı, karar-ağırlıklı sinyal
-            "stance": stance_doc,
+            # --- KANONİK TON (chart + detay aynı bunu kullanır) ---
+            "diff": float(tone_signal),
+            "stance": stance_tone,
+            # --- AYRI AKSİYON + REJİM ---
+            "delta_bp": ta.get("delta_bp"),
+            "action_label": action_label,
+            "action_dir": ta.get("action_dir"),
+            "tone_dir": ta.get("tone_dir"),
+            "regime": ta.get("regime"),
             # --- Referans / debug ---
             "diff_fulltext": float(diff_fulltext),
             "stance_full_raw": stance_fulltext,
-            "stance_sentence": stance_sent,
+            "stance_sentence": stance_tone,
             "doc_diff_mean": doc_diff_mean,
             "net_push": net_push,
-            "label_map": _mrince_label_map(),  # debug için (istersen UI'da göster)
+            "label_map": _mrince_label_map(),
             "h": h, "d": d, "n": n
         }
 
@@ -2245,7 +2318,7 @@ def create_ai_trend_chart_step(df_res: pd.DataFrame, step: int = 3):
     step = int(step or 0)
     if step <= 0:
         y_col = "AI Diff (Raw)"
-        title = "CB-RoBERTa — Ham Doküman Sinyali (cümle-bazlı, karar-ağırlıklı)"
+        title = "CB-RoBERTa — Ham Ton Sinyali (cümle-bazlı, saf)"
         yrange = None
     elif step == 1:
         y_col = "AI Score (Calib)"
@@ -2300,7 +2373,121 @@ def create_ai_trend_chart_step(df_res: pd.DataFrame, step: int = 3):
     )
     return fig
 
-def calculate_ai_trend_series(df_all: pd.DataFrame) -> pd.DataFrame:
+
+def create_tone_action_chart(df_res: pd.DataFrame, step: int = 3):
+    """
+    Ton × Aksiyon ayrık görünüm:
+      - Üst panel: TON çizgisi (radio adımına göre ham/kalibre/EMA), renk = ton.
+                   İşaretçi ŞEKLİ = aksiyon (▲ hike, ▼ cut, ■ hold, ● bilinmiyor).
+                   Böylece 'Hawkish Cut' = yukarıda duran bir ▼ olarak GÖZE ÇARPAR.
+      - Alt panel: gerçek AKSİYON (Δbp) barları.
+    Hover'da birleşik rejim etiketi ('🦅 Hawkish Cut') görünür.
+    """
+    import plotly.graph_objects as go
+    from plotly.subplots import make_subplots
+
+    if df_res is None or df_res.empty:
+        return None
+
+    df = df_res.copy()
+    if ("AI Score (EMA)" not in df.columns) or ("AI Diff (Raw)" not in df.columns):
+        df = postprocess_ai_series_steps(df, diff_col="Diff (H-D)", span=7, z_scale=2.0, hyst=25.0)
+
+    step = int(step or 0)
+    if step <= 0:
+        tone_col, tone_lbl, tone_range = "AI Diff (Raw)", "Ham", None
+    elif step == 1:
+        tone_col, tone_lbl, tone_range = "AI Score (Calib)", "Kalibre", [-110, 110]
+    elif step == 2:
+        tone_col, tone_lbl, tone_range = "AI Score (EMA)", "EMA", [-110, 110]
+    else:
+        tone_col, tone_lbl, tone_range = "AI Score (EMA)", "EMA + Histerezis", [-110, 110]
+
+    y_tone = pd.to_numeric(df.get(tone_col), errors="coerce")
+    adir = pd.to_numeric(df.get("Aksiyon Yön", np.nan), errors="coerce")
+    bp = pd.to_numeric(df.get("Delta BP", np.nan), errors="coerce")
+    regime = df.get("Rejim", pd.Series([""] * len(df))).astype(str)
+
+    sym_map = {1: "triangle-up", -1: "triangle-down", 0: "square"}
+    symbols = [sym_map.get(int(a), "circle") if pd.notna(a) else "circle" for a in adir]
+
+    hover = []
+    for r, t, b in zip(regime, y_tone, bp):
+        b_txt = f"{b:+.0f} bp" if pd.notna(b) else "—"
+        t_txt = f"{t:.2f}" if pd.notna(t) else "—"
+        hover.append(f"{r}<br>Ton={t_txt}<br>Aksiyon={b_txt}")
+
+    fig = make_subplots(
+        rows=2, cols=1, shared_xaxes=True,
+        row_heights=[0.68, 0.32], vertical_spacing=0.07,
+        subplot_titles=(f"Ton ({tone_lbl}) — işaret şekli = aksiyon (▲hike ▼cut ■hold)",
+                        "Gerçekleşen Aksiyon (Δ bp)")
+    )
+
+    # Üst: ton çizgisi
+    fig.add_trace(go.Scatter(
+        x=df["Dönem"], y=y_tone, mode="lines",
+        line=dict(width=2, color="rgba(120,120,120,0.7)"),
+        name="Ton", showlegend=False
+    ), row=1, col=1)
+
+    # Üst: ton işaretçileri (şekil = aksiyon, renk = ton)
+    fig.add_trace(go.Scatter(
+        x=df["Dönem"], y=y_tone, mode="markers", name="Dönem", showlegend=False,
+        marker=dict(
+            size=13, symbol=symbols, color=y_tone, colorscale="RdBu_r",
+            cmin=-100 if tone_range else None, cmax=100 if tone_range else None,
+            line=dict(width=1, color="white"),
+            showscale=True, colorbar=dict(title="Ton", len=0.55, y=0.78)
+        ),
+        text=hover,
+        hovertemplate="<b>%{x}</b><br>%{text}<extra></extra>"
+    ), row=1, col=1)
+    fig.add_hline(y=0, line_color="black", opacity=0.25, row=1, col=1)
+
+    # Alt: aksiyon barları (Δbp)
+    bar_color = ["#c0392b" if (pd.notna(v) and v > 0)
+                 else "#2471a3" if (pd.notna(v) and v < 0)
+                 else "#95a5a6" for v in bp]
+    fig.add_trace(go.Bar(
+        x=df["Dönem"], y=bp.fillna(0.0), marker_color=bar_color,
+        name="Δ bp", showlegend=False,
+        hovertemplate="<b>%{x}</b><br>Δ bp = %{y:+.0f}<extra></extra>"
+    ), row=2, col=1)
+    fig.add_hline(y=0, line_color="black", opacity=0.25, row=2, col=1)
+
+    fig.update_yaxes(title_text="Ton", range=tone_range, row=1, col=1)
+    fig.update_yaxes(title_text="Δ bp", row=2, col=1)
+    fig.update_layout(
+        title="CB-RoBERTa — Ton × Aksiyon (Hawkish Cut / Dovish Hike yakalama)",
+        height=580, bargap=0.55,
+        margin=dict(l=20, r=20, t=70, b=20),
+        hovermode="x unified"
+    )
+    return fig
+
+
+def build_regime_summary_table(df_res: pd.DataFrame) -> pd.DataFrame:
+    """Tüm dönemler için Ton + Aksiyon + Rejim özet tablosu (tarihe göre yeni→eski)."""
+    if df_res is None or df_res.empty:
+        return pd.DataFrame()
+
+    df = df_res.copy()
+    out = pd.DataFrame()
+    out["Dönem"] = df.get("Dönem")
+    out["Ton"] = df.get("Duruş", "")
+    out["Ton Sinyali"] = pd.to_numeric(df.get("Diff (H-D)", np.nan), errors="coerce").round(3)
+    bp = pd.to_numeric(df.get("Delta BP", np.nan), errors="coerce")
+    out["Aksiyon (bp)"] = bp.map(lambda v: f"{v:+.0f}" if pd.notna(v) else "—")
+    out["Aksiyon"] = df.get("Aksiyon", "")
+    out["Rejim"] = df.get("Rejim", "")
+
+    try:
+        out = out.assign(_d=pd.to_datetime(df.get("period_date"), errors="coerce")) \
+                 .sort_values("_d", ascending=False).drop(columns=["_d"])
+    except Exception:
+        pass
+    return out.reset_index(drop=True)
     """
     Tüm geçmişi tarar (mrince) ve sonra postprocess ile trend endeksi üretir.
     """
@@ -2338,10 +2525,15 @@ def calculate_ai_trend_series(df_all: pd.DataFrame) -> pd.DataFrame:
         h = float(scores.get("HAWK", 0.0))
         d = float(scores.get("DOVE", 0.0))
         n = float(scores.get("NEUT", 0.0))
-        # 'diff' artık KANONİK (cümle-bazlı, karar-ağırlıklı) sinyaldir.
-        # Full-text ham diff yalnızca referans olarak ayrıca saklanır.
+        # 'diff' artık KANONİK SAF TON sinyalidir (karar-ağırlıksız).
+        # Aksiyon (delta_bp / etiket) AYRI kolonlarda izlenir.
         diff = float(res.get("diff", h - d))
         diff_fulltext = float(res.get("diff_fulltext", h - d))
+
+        _bp = res.get("delta_bp", None)
+        _bp = float(_bp) if (_bp is not None) else np.nan
+        _adir = res.get("action_dir", None)
+        _adir = float(_adir) if (_adir is not None) else np.nan
 
         results.append({
             "Dönem": period,
@@ -2349,9 +2541,13 @@ def calculate_ai_trend_series(df_all: pd.DataFrame) -> pd.DataFrame:
             "Şahin Olasılık": h,        # full-text raw prob (referans)
             "Güvercin Olasılık": d,     # full-text raw prob (referans)
             "Nötr Olasılık": n,
-            "Diff (H-D)": diff,                 # KANONİK sinyal (grafik bunu çizer)
+            "Diff (H-D)": diff,                 # KANONİK SAF TON (grafik bunu çizer)
             "Diff (Full-text)": diff_fulltext,  # referans/debug
-            "Duruş": str(res.get("stance", "")),
+            "Duruş": str(res.get("stance", "")),     # ton duruşu (Şahin/Güvercin/Nötr)
+            "Delta BP": _bp,                          # gerçek aksiyon (bp)
+            "Aksiyon": str(res.get("action_label", "UNKNOWN")),
+            "Aksiyon Yön": _adir,                     # +1 hike / -1 cut / 0 hold / NaN ?
+            "Rejim": str(res.get("regime", "")),      # ör. "🦅 Hawkish Cut"
             "Güven": float(res.get("best_score", 0.0)),
         })
 

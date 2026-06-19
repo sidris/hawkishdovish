@@ -2488,6 +2488,9 @@ def build_regime_summary_table(df_res: pd.DataFrame) -> pd.DataFrame:
     except Exception:
         pass
     return out.reset_index(drop=True)
+
+
+def calculate_ai_trend_series(df_all: pd.DataFrame) -> pd.DataFrame:
     """
     Tüm geçmişi tarar (mrince) ve sonra postprocess ile trend endeksi üretir.
     """

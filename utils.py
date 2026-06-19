@@ -1904,6 +1904,110 @@ def stance_3class_from_diff(diff: float, deadband: float = 0.15) -> str:
     return "⚖️ Nötr"
 
 
+# ==============================================================================
+# KANONİK DOKÜMAN SİNYALİ (cümle-bazlı, karar-ağırlıklı)
+# ------------------------------------------------------------------------------
+# Bilimsel gerekçe:
+#  - CentralBankRoBERTa (Pfeifer & Marohl, 2023) CÜMLE düzeyinde eğitilmiştir;
+#    duruş endeksleri literatürde (Apel & Blix Grimaldi, Picault & Renault vb.)
+#    cümle bazında sınıflandırıp dokümana aggregate edilerek kurulur.
+#  - Tek-parça "full-text" tahmin hem dağılım-dışıdır hem de 512 token sınırı
+#    nedeniyle metnin yalnızca başını görür. Bu yüzden full-text yalnızca
+#    referans/debug amaçlı tutulur; KANONİK sinyal burada üretilir.
+#
+# Yöntem:
+#  - Her cümlenin katkısı diff = P(HAWK)-P(DOVE)'dir; bu zaten GÜVEN-AĞIRLIKLIDIR
+#    (düşük güvenli cümlenin |diff|'i küçüktür -> çıplak sayımdan üstündür).
+#  - Politika KARAR cümlesi (faiz artış/indirim bağlamı) ekstra ağırlık alır.
+#  - Tek, gerekçeli bir deadband (DOC_STANCE_DEADBAND) ile etiketlenir.
+# ==============================================================================
+
+DOC_STANCE_DEADBAND = 0.10   # tek, gerekçeli eşik (full-text 0.15 ile cümle 0.05 arası)
+DOC_ACTION_WEIGHT = 3.0      # karar cümlesinin diğer cümlelere göre ağırlık çarpanı
+
+
+def _is_policy_action_sentence(s: str) -> bool:
+    """Cümle policy-rate bağlamında bir faiz artış/indirim cümlesi mi?"""
+    s = (s or "").lower()
+    if not re.search(r"\b(policy rate|interest rate|repo auction rate|one-week repo)\b", s):
+        return False
+    verbs = ["increase", "increased", "raise", "raised", "hike", "tightening",
+             "decrease", "decreased", "lower", "lowered", "cut", "reduce", "reduced", "easing"]
+    return any(re.search(rf"\b{re.escape(w)}\b", s) for w in verbs)
+
+
+def document_signal_from_sentences(df_sent: pd.DataFrame,
+                                   full_text: str | None = None,
+                                   action_weight_mult: float = DOC_ACTION_WEIGHT,
+                                   deadband: float = DOC_STANCE_DEADBAND) -> dict:
+    """
+    Cümle-bazlı RoBERTa çıktısından TEK kanonik doküman sinyali üretir.
+
+    Dönüş:
+      signal     : karar-ağırlıklı, güven-ağırlıklı ortalama diff (~[-1, +1])
+      stance     : tek deadband ile etiket (🦅/🕊️/⚖️)
+      diff_mean  : ağırlıksız ortalama diff (referans/debug)
+      n          : kullanılan cümle sayısı
+      hawk_n/dove_n/neut_n, action, real_delta_bp
+
+    Not: 'signal' full-text diff ile AYNI ölçektedir; mevcut postprocess
+    (robust z + tanh + EMA) bu sinyalde de sorunsuz çalışır.
+    """
+    empty = {"signal": 0.0, "stance": "⚖️ Nötr", "diff_mean": 0.0, "n": 0,
+             "hawk_n": 0, "dove_n": 0, "neut_n": 0,
+             "action": "UNKNOWN", "real_delta_bp": None}
+
+    if df_sent is None or df_sent.empty or "Diff (H-D)" not in df_sent.columns:
+        return empty
+
+    d = df_sent.copy()
+    d = d[pd.to_numeric(d["Diff (H-D)"], errors="coerce").notna()].copy()
+    if d.empty:
+        return empty
+
+    diffs = pd.to_numeric(d["Diff (H-D)"], errors="coerce").astype(float).values
+    if "Cümle" in d.columns:
+        sents = d["Cümle"].astype(str).values
+    else:
+        sents = np.array([""] * len(diffs))
+
+    # Karar cümlesine ekstra ağırlık -> güven-ağırlıklı diff'ler üzerinde ağırlıklı ortalama
+    weights = np.where(
+        np.array([_is_policy_action_sentence(s) for s in sents]),
+        float(action_weight_mult),
+        1.0,
+    )
+    wsum = float(np.sum(weights)) + 1e-12
+    signal = float(np.sum(diffs * weights) / wsum)
+
+    diff_mean = float(np.mean(diffs))
+    stance = stance_3class_from_diff(signal, deadband=deadband)
+
+    stance_series = d.get("Duruş", "").astype(str)
+    hawk_n = int(stance_series.str.contains("Şahin", na=False).sum())
+    dove_n = int(stance_series.str.contains("Güvercin", na=False).sum())
+    neut_n = int(stance_series.str.contains("Nötr", na=False).sum())
+
+    try:
+        action = detect_policy_action(full_text or "")
+    except Exception:
+        action = "UNKNOWN"
+    try:
+        real_delta_bp = extract_delta_bp_from_text(full_text or "")
+    except Exception:
+        real_delta_bp = None
+
+    return {
+        "signal": signal,
+        "stance": stance,
+        "diff_mean": diff_mean,
+        "n": int(len(d)),
+        "hawk_n": hawk_n, "dove_n": dove_n, "neut_n": neut_n,
+        "action": action,
+        "real_delta_bp": real_delta_bp,
+    }
+
+
 def analyze_with_roberta(text: str):
     """
     Tek metin için sınıf olasılıkları + diff + basit duruş.
@@ -1937,39 +2041,47 @@ def analyze_with_roberta(text: str):
         n = float(scores_map.get("NEUT", 0.0))
         diff = h - d
 
-        # --- Doküman duruşu için daha güvenilir özet ---
-        # Bazı metinlerde tek-parça (full text) sınıflandırma, birkaç "şahin" kalıbı yüzünden
-        # şişebiliyor. Bu yüzden cümle bazlı net itişi de hesaplayıp raporluyoruz.
-        stance_full = stance_3class_from_diff(diff)
-        stance_sent = None
+        # === KANONİK DOKÜMAN DURUŞU: cümle-bazlı, karar-ağırlıklı sinyal ===
+        # Full-text tek-parça tahmin yalnızca REFERANS/DEBUG içindir (512 token
+        # sınırı yüzünden metnin tamamını görmez). Kanonik 'diff' ve 'stance'
+        # cümle bazlı sinyalden gelir; böylece grafik ve detay paneli AYNI sayıyı
+        # okur ve asla çelişemez.
+        diff_fulltext = diff
+        stance_fulltext = stance_3class_from_diff(diff_fulltext)
+
+        doc_signal = diff_fulltext      # fallback (cümle çıkmazsa)
+        stance_doc = stance_fulltext    # fallback
         doc_diff_mean = None
         net_push = None
+        stance_sent = None
 
         try:
-            df_sent = analyze_sentences_with_roberta(truncated_text)
-            summ = summarize_sentence_roberta(df_sent, full_text=truncated_text) if df_sent is not None else {"n": 0}
-            if summ and summ.get("n", 0) > 0:
-                doc_diff_mean = float(summ.get("diff_mean", 0.0) or 0.0)
-                # pos_sum + neg_sum (neg zaten negatif)
-                net_push = float((summ.get("pos_sum", 0.0) or 0.0) + (summ.get("neg_sum", 0.0) or 0.0))
-                # cümle ortalamasında deadband'i biraz daha dar tut (doküman bias için)
-                stance_sent = stance_3class_from_diff(doc_diff_mean, deadband=0.05)
+            # ÖNEMLİ: cümle analizi TAM metin üzerinde (truncation bias yok)
+            df_sent = analyze_sentences_with_roberta(str(text))
+            if df_sent is not None and "Diff (H-D)" in df_sent.columns:
+                doc = document_signal_from_sentences(df_sent, full_text=str(text))
+                if doc.get("n", 0) > 0:
+                    doc_signal = float(doc["signal"])
+                    stance_doc = str(doc["stance"])
+                    doc_diff_mean = float(doc.get("diff_mean", 0.0) or 0.0)
+                    stance_sent = stance_doc
 
-                # HOLD/UNKNOWN aksiyonunda, net itiş güvercin ise "şahin" etiketi bastırılmasın
-                action = detect_policy_action(truncated_text)
-                if action in ("HOLD", "UNKNOWN") and stance_full == "🦅 Şahin" and net_push is not None and net_push < 0:
-                    stance_full = stance_sent or "⚖️ Nötr"
+                    # net_push sadece caption/debug için
+                    summ = summarize_sentence_roberta(df_sent, full_text=str(text))
+                    if summ and summ.get("n", 0) > 0:
+                        net_push = float((summ.get("pos_sum", 0.0) or 0.0) + (summ.get("neg_sum", 0.0) or 0.0))
         except Exception:
             pass
 
         return {
             "scores_map": scores_map,
             "best_score": float(best_score),
-            "diff": float(diff),
-            # Varsayılan metrik: full-text (ama gerektiğinde cümle özetine göre bastırılabilir)
-            "stance": stance_full,
-            # Debug / UI için ek alanlar
-            "stance_full_raw": stance_3class_from_diff(diff),
+            # --- KANONİK (chart + detay aynı bunu kullanır) ---
+            "diff": float(doc_signal),     # cümle-bazlı, karar-ağırlıklı sinyal
+            "stance": stance_doc,
+            # --- Referans / debug ---
+            "diff_fulltext": float(diff_fulltext),
+            "stance_full_raw": stance_fulltext,
             "stance_sentence": stance_sent,
             "doc_diff_mean": doc_diff_mean,
             "net_push": net_push,
@@ -2133,7 +2245,7 @@ def create_ai_trend_chart_step(df_res: pd.DataFrame, step: int = 3):
     step = int(step or 0)
     if step <= 0:
         y_col = "AI Diff (Raw)"
-        title = "CB-RoBERTa — Ham Sinyal (P(HAWK) − P(DOVE))"
+        title = "CB-RoBERTa — Ham Doküman Sinyali (cümle-bazlı, karar-ağırlıklı)"
         yrange = None
     elif step == 1:
         y_col = "AI Score (Calib)"
@@ -2226,15 +2338,19 @@ def calculate_ai_trend_series(df_all: pd.DataFrame) -> pd.DataFrame:
         h = float(scores.get("HAWK", 0.0))
         d = float(scores.get("DOVE", 0.0))
         n = float(scores.get("NEUT", 0.0))
+        # 'diff' artık KANONİK (cümle-bazlı, karar-ağırlıklı) sinyaldir.
+        # Full-text ham diff yalnızca referans olarak ayrıca saklanır.
         diff = float(res.get("diff", h - d))
+        diff_fulltext = float(res.get("diff_fulltext", h - d))
 
         results.append({
             "Dönem": period,
             "period_date": dt,
-            "Şahin Olasılık": h,
-            "Güvercin Olasılık": d,
+            "Şahin Olasılık": h,        # full-text raw prob (referans)
+            "Güvercin Olasılık": d,     # full-text raw prob (referans)
             "Nötr Olasılık": n,
-            "Diff (H-D)": diff,
+            "Diff (H-D)": diff,                 # KANONİK sinyal (grafik bunu çizer)
+            "Diff (Full-text)": diff_fulltext,  # referans/debug
             "Duruş": str(res.get("stance", "")),
             "Güven": float(res.get("best_score", 0.0)),
         })

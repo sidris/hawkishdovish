@@ -1376,7 +1376,7 @@ def _render_tab_roberta():
     st.radio(
         "Grafik adımı (tıkla, özellik ekle):",
         options=[
-            "0) Ham sinyal (Diff)",
+            "0) Ham doküman sinyali (cümle-bazlı)",
             "1) + Kalibrasyon (robust z + tanh)",
             "2) + EMA (yumuşatma)",
             "3) + Histerezis (rejim etiketi)"
@@ -1422,17 +1422,18 @@ def _render_tab_roberta():
     # Açıklama kutusu
     with st.expander("ℹ️ Bu grafik nasıl hesaplanıyor?", expanded=False):
         st.markdown("""
-    Bu grafik, modelin verdiği **3 sınıf olasılığından** (Şahin / Güvercin / Nötr) türetilmiş bir **endeks**tir.
+    Bu grafik, modelin **cümle düzeyindeki** Şahin/Güvercin/Nötr olasılıklarından türetilmiş bir **doküman duruş endeksi**dir.
 
-    1) Her metin için `P(HAWK)`, `P(DOVE)`, `P(NEUT)` alınır.  
-    2) Ham fark: **diff = P(HAWK) − P(DOVE)**  
-    3) Serinin kendi dağılımına göre **robust kalibrasyon** yapılır (median + MAD → robust z-score)  
-    4) `tanh` ile skor **−100..+100** bandına sıkıştırılır  
-    5) **EMA (span=7)** ile yumuşatılır  
-    6) Rejim etiketinde hızlı flip olmasın diye **histerezis** uygulanır (±25 giriş eşiği + ±15 nötr bant + işaret değişiminde hızlı nötre dönüş)
+    1) Metin **cümlelere** bölünür; her cümle için `P(HAWK)`, `P(DOVE)`, `P(NEUT)` alınır.  
+       *(CentralBankRoBERTa cümle düzeyinde eğitildiği için kanonik birim cümledir; metnin tamamı taranır, ilk 512 token'la sınırlı değildir.)*  
+    2) Her cümlenin katkısı **diff = P(HAWK) − P(DOVE)**'dir — bu zaten **güven-ağırlıklıdır** (düşük güvenli cümlenin |diff|'i küçüktür, çıplak sayımdan üstündür).  
+    3) **Karar cümlesi** (faiz artış/indirim bağlamı) ekstra ağırlık alır (×{aw:.0f}); doküman sinyali bu ağırlıklı ortalamadır.  
+    4) Tek, gerekçeli bir **deadband** (±{db:.2f}) ile Şahin/Güvercin/Nötr etiketi verilir.  
+    5) Serinin kendi dağılımına göre **robust kalibrasyon** (median + MAD → robust z-score), ardından `tanh` ile **−100..+100** bandına sıkıştırma.  
+    6) **EMA (span=7)** ile yumuşatma + rejim etiketinde **histerezis** (hızlı flip'i engeller).
 
-    Bu yüzden, model 3 sınıf üretse bile grafikteki çizgi “süreklilik” gösterir: bu bir **türetilmiş duruş endeksi**dir.
-        """)
+    **Not:** Full-text tek-parça tahmin yalnızca *referans/debug* amacıyla saklanır. Detay paneli ile bu grafik **aynı kanonik sinyali** okur; bu yüzden bir dönem için ikisi asla çelişmez.
+        """.format(aw=utils.DOC_ACTION_WEIGHT, db=utils.DOC_STANCE_DEADBAND))
 
     st.divider()
 
@@ -1475,9 +1476,11 @@ def _render_tab_roberta():
             h = float(scores.get("HAWK", 0.0))
             d = float(scores.get("DOVE", 0.0))
             n = float(scores.get("NEUT", 0.0))
-            diff = float(roberta_res.get("diff", h - d))
+            # 'diff' ve 'stance' artık KANONİK (cümle-bazlı, karar-ağırlıklı).
+            doc_signal = float(roberta_res.get("diff", h - d))
             stance = str(roberta_res.get("stance", ""))
-            stance_sent = roberta_res.get("stance_sentence")
+            diff_fulltext = float(roberta_res.get("diff_fulltext", h - d))
+            stance_full_raw = str(roberta_res.get("stance_full_raw", ""))
             doc_diff_mean = roberta_res.get("doc_diff_mean")
             net_push = roberta_res.get("net_push")
 
@@ -1490,23 +1493,23 @@ def _render_tab_roberta():
                     ema_score = float(hit.iloc[0]["AI Score (EMA)"])
 
             c1, c2, c3 = st.columns(3)
-            # Öncelik: cümle-özet duruşu (varsa) — full-text tek parça tahmin bazen şişebiliyor
-            primary_stance = str(stance_sent or stance)
-            c1.metric("Duruş", primary_stance)
-            c2.metric("Diff (H-D)", f"{diff:.3f}")
+            # Kanonik duruş = grafikle AYNI kaynak (cümle-bazlı doküman sinyali)
+            c1.metric("Duruş", stance)
+            c2.metric("Doküman Sinyali", f"{doc_signal:+.3f}")
             if ema_score is not None:
                 c3.metric("AI Score (EMA)", f"{ema_score:.1f}")
             else:
                 c3.metric("AI Score (EMA)", "—")
 
-            st.write("Sınıf Skorları:")
+            st.write("Full-text ham sınıf skorları (yalnızca referans):")
             st.json({"HAWK": h, "DOVE": d, "NEUT": n})
 
-            if stance_sent is not None:
-                st.caption(
-                    f"Cümle-özet: {stance_sent} | diff_mean={doc_diff_mean:+.3f} | net_push={net_push:+.2f} — "
-                    f"Full-text ham: {roberta_res.get('stance_full_raw', stance)}"
-                )
+            st.caption(
+                "Kanonik duruş **cümle-bazlı, karar-ağırlıklı** sinyalden gelir (grafikle aynı kaynak). "
+                f"Referans → full-text ham diff = {diff_fulltext:+.3f} ({stance_full_raw})"
+                + (f" | cümle diff_mean = {doc_diff_mean:+.3f}" if doc_diff_mean is not None else "")
+                + (f" | net_push = {net_push:+.2f}" if net_push is not None else "")
+            )
 
             # Debug
             with st.expander("DEBUG (ham çıktı)", expanded=False):

@@ -1376,7 +1376,7 @@ def _render_tab_roberta():
     st.radio(
         "Grafik adımı (tıkla, özellik ekle):",
         options=[
-            "0) Ham doküman sinyali (cümle-bazlı)",
+            "0) Ham ton sinyali (saf)",
             "1) + Kalibrasyon (robust z + tanh)",
             "2) + EMA (yumuşatma)",
             "3) + Histerezis (rejim etiketi)"
@@ -1391,12 +1391,22 @@ def _render_tab_roberta():
     if st.session_state.get("ai_trend_df") is not None and not st.session_state["ai_trend_df"].empty:
         df_tr = st.session_state["ai_trend_df"]
 
+        # Ton × Aksiyon ayrık grafik (Hawkish Cut / Dovish Hike yakalar)
         fig_trend = None
-        if hasattr(utils, "create_ai_trend_chart"):
-            fig_trend = utils.create_ai_trend_chart_step(df_tr, step=st.session_state.get('ai_step', 3)) if hasattr(utils, 'create_ai_trend_chart_step') else utils.create_ai_trend_chart(df_tr)
+        if hasattr(utils, "create_tone_action_chart"):
+            fig_trend = utils.create_tone_action_chart(df_tr, step=st.session_state.get('ai_step', 3))
+        elif hasattr(utils, "create_ai_trend_chart_step"):
+            fig_trend = utils.create_ai_trend_chart_step(df_tr, step=st.session_state.get('ai_step', 3))
+        else:
+            fig_trend = utils.create_ai_trend_chart(df_tr)
 
         if fig_trend:
             st.plotly_chart(fig_trend, use_container_width=True, key="ai_chart_roberta")
+            st.caption(
+                "Üst panel **ton** (iletişim, saf cümle sinyali); işaret şekli **aksiyonu** gösterir "
+                "(▲ hike, ▼ cut, ■ hold). Alt panel **gerçekleşen Δbp**. "
+                "Yukarıda duran bir ▼ = **Hawkish Cut**; aşağıda duran bir ▲ = **Dovish Hike**."
+            )
         else:
             st.warning("Grafik oluşturulamadı.")
 
@@ -1405,6 +1415,31 @@ def _render_tab_roberta():
             if st.button("🔄 Tekrar Hesapla", key="btn_ai_recalc"):
                 st.session_state["ai_trend_df"] = None
                 st.rerun()
+
+        # --- Rejim özet tablosu (tüm dönemler) ---
+        if hasattr(utils, "build_regime_summary_table"):
+            tbl = utils.build_regime_summary_table(df_tr)
+            if tbl is not None and not tbl.empty:
+                st.markdown("#### 🧭 Ton × Aksiyon Rejim Özeti (tüm dönemler)")
+                # 'Hawkish Cut' / 'Dovish Hike' satırlarını hafifçe vurgula
+                def _hl(row):
+                    rg = str(row.get("Rejim", ""))
+                    if "Hawkish Cut" in rg:
+                        return ["background-color: rgba(192,57,43,0.12)"] * len(row)
+                    if "Dovish Hike" in rg:
+                        return ["background-color: rgba(36,113,163,0.12)"] * len(row)
+                    return [""] * len(row)
+                try:
+                    st.dataframe(tbl.style.apply(_hl, axis=1), use_container_width=True, hide_index=True)
+                except Exception:
+                    st.dataframe(tbl, use_container_width=True, hide_index=True)
+
+                # Dikkat çekici rejimleri ayrıca say
+                rg_all = tbl["Rejim"].astype(str)
+                n_hc = int(rg_all.str.contains("Hawkish Cut").sum())
+                n_dh = int(rg_all.str.contains("Dovish Hike").sum())
+                if n_hc or n_dh:
+                    st.caption(f"⚡ Ton–aksiyon ayrışması: **Hawkish Cut** × {n_hc} · **Dovish Hike** × {n_dh}")
 
     else:
         st.info("Tarihsel trend için tüm metinler taranır. (Biraz zaman alabilir)")
@@ -1422,18 +1457,25 @@ def _render_tab_roberta():
     # Açıklama kutusu
     with st.expander("ℹ️ Bu grafik nasıl hesaplanıyor?", expanded=False):
         st.markdown("""
-    Bu grafik, modelin **cümle düzeyindeki** Şahin/Güvercin/Nötr olasılıklarından türetilmiş bir **doküman duruş endeksi**dir.
+    Grafik **iki ayrı boyutu** gösterir: **ton** (iletişim) ve **aksiyon** (gerçekleşen faiz kararı).
+    Bunları tek sayıya sıkıştırmak **'Hawkish Cut'** gibi ayrışmaları gizler; burada ayrı tutulurlar.
 
+    **TON (üst panel, çizgi + renk):**
     1) Metin **cümlelere** bölünür; her cümle için `P(HAWK)`, `P(DOVE)`, `P(NEUT)` alınır.  
-       *(CentralBankRoBERTa cümle düzeyinde eğitildiği için kanonik birim cümledir; metnin tamamı taranır, ilk 512 token'la sınırlı değildir.)*  
-    2) Her cümlenin katkısı **diff = P(HAWK) − P(DOVE)**'dir — bu zaten **güven-ağırlıklıdır** (düşük güvenli cümlenin |diff|'i küçüktür, çıplak sayımdan üstündür).  
-    3) **Karar cümlesi** (faiz artış/indirim bağlamı) ekstra ağırlık alır (×{aw:.0f}); doküman sinyali bu ağırlıklı ortalamadır.  
-    4) Tek, gerekçeli bir **deadband** (±{db:.2f}) ile Şahin/Güvercin/Nötr etiketi verilir.  
-    5) Serinin kendi dağılımına göre **robust kalibrasyon** (median + MAD → robust z-score), ardından `tanh` ile **−100..+100** bandına sıkıştırma.  
-    6) **EMA (span=7)** ile yumuşatma + rejim etiketinde **histerezis** (hızlı flip'i engeller).
+       *(CentralBankRoBERTa cümle düzeyinde eğitilir; metnin tamamı taranır, ilk 512 token'la sınırlı değil.)*  
+    2) Her cümlenin katkısı **diff = P(HAWK) − P(DOVE)**'dir; bu zaten **güven-ağırlıklıdır**.  
+    3) **Saf ton sinyali** = cümle diff'lerinin ortalaması (karar-ağırlığı **yok**; ton aksiyona bulaşmaz).  
+    4) Tek, gerekçeli **deadband** (±{db:.2f}) ile Şahin/Güvercin/Nötr etiketi.  
+    5) **Robust kalibrasyon** (median+MAD → z) + `tanh` (−100..+100) + **EMA (span=7)** + **histerezis** (radio ile adım adım açılır).
 
-    **Not:** Full-text tek-parça tahmin yalnızca *referans/debug* amacıyla saklanır. Detay paneli ile bu grafik **aynı kanonik sinyali** okur; bu yüzden bir dönem için ikisi asla çelişmez.
-        """.format(aw=utils.DOC_ACTION_WEIGHT, db=utils.DOC_STANCE_DEADBAND))
+    **AKSİYON (alt panel, barlar) ve işaret şekli:**
+    - Gerçek **Δbp** metinden çıkarılır (*'from X percent to Y percent'*); yoksa **CUT/HIKE/HOLD** etiketine düşülür.  
+    - Üstteki işaret şekli aksiyonu kodlar: **▲ hike, ▼ cut, ■ hold**.
+
+    **REJİM = ton × aksiyon:** yukarıda duran bir ▼ → **🦅 Hawkish Cut**; aşağıda duran bir ▲ → **🕊️ Dovish Hike**.
+
+    **Not:** Full-text tek-parça tahmin yalnızca *referans/debug*. Detay paneli ile bu grafik **aynı kanonik tonu** okur.
+        """.format(db=utils.DOC_STANCE_DEADBAND))
 
     st.divider()
 
@@ -1476,9 +1518,12 @@ def _render_tab_roberta():
             h = float(scores.get("HAWK", 0.0))
             d = float(scores.get("DOVE", 0.0))
             n = float(scores.get("NEUT", 0.0))
-            # 'diff' ve 'stance' artık KANONİK (cümle-bazlı, karar-ağırlıklı).
+            # 'diff'/'stance' = KANONİK SAF TON. Aksiyon + rejim AYRI.
             doc_signal = float(roberta_res.get("diff", h - d))
             stance = str(roberta_res.get("stance", ""))
+            regime = str(roberta_res.get("regime", ""))
+            delta_bp = roberta_res.get("delta_bp", None)
+            action_label = str(roberta_res.get("action_label", "UNKNOWN"))
             diff_fulltext = float(roberta_res.get("diff_fulltext", h - d))
             stance_full_raw = str(roberta_res.get("stance_full_raw", ""))
             doc_diff_mean = roberta_res.get("doc_diff_mean")
@@ -1492,20 +1537,27 @@ def _render_tab_roberta():
                 if not hit.empty and "AI Score (EMA)" in hit.columns:
                     ema_score = float(hit.iloc[0]["AI Score (EMA)"])
 
-            c1, c2, c3 = st.columns(3)
-            # Kanonik duruş = grafikle AYNI kaynak (cümle-bazlı doküman sinyali)
-            c1.metric("Duruş", stance)
-            c2.metric("Doküman Sinyali", f"{doc_signal:+.3f}")
-            if ema_score is not None:
-                c3.metric("AI Score (EMA)", f"{ema_score:.1f}")
+            # Rejim öne çıksın (Hawkish Cut / Dovish Hike...)
+            st.markdown(f"### {regime if regime else '—'}")
+
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Ton (Duruş)", stance)              # iletişim tonu
+            c2.metric("Ton Sinyali", f"{doc_signal:+.3f}")
+            if delta_bp is not None:
+                c3.metric("Aksiyon (Δbp)", f"{float(delta_bp):+.0f} bp")
             else:
-                c3.metric("AI Score (EMA)", "—")
+                c3.metric("Aksiyon", action_label)
+            if ema_score is not None:
+                c4.metric("AI Score (EMA)", f"{ema_score:.1f}")
+            else:
+                c4.metric("AI Score (EMA)", "—")
 
             st.write("Full-text ham sınıf skorları (yalnızca referans):")
             st.json({"HAWK": h, "DOVE": d, "NEUT": n})
 
             st.caption(
-                "Kanonik duruş **cümle-bazlı, karar-ağırlıklı** sinyalden gelir (grafikle aynı kaynak). "
+                "**Ton** = saf cümle sinyali (iletişim); **Aksiyon** = gerçekleşen faiz kararı. "
+                "İkisi ayrı tutulur; rejim ikisinin birleşimidir. "
                 f"Referans → full-text ham diff = {diff_fulltext:+.3f} ({stance_full_raw})"
                 + (f" | cümle diff_mean = {doc_diff_mean:+.3f}" if doc_diff_mean is not None else "")
                 + (f" | net_push = {net_push:+.2f}" if net_push is not None else "")

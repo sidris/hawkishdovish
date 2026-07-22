@@ -1698,10 +1698,10 @@ with tab_roberta:
 # ==============================================================================
 # İki analiz, tek veri kaynağı (önbellekteki cümle tablosu):
 #   1. Cümle bazlı ton haritası     -> tek dokümanın ton mimarisi
-#   2. Konu/muhatap payları serisi  -> zaman içinde neyden, kime bahsedildiği
+#   2. Konu/kesim payları serisi    -> zaman içinde neyden, kimin adına bahsedildiği
 #
 # Ton etiketi     : mrince/CBRT-RoBERTa-HawkishDovish-Classifier
-# Muhatap etiketi : Moritz-Pfeifer/CentralBankRoBERTa-agent-classifier
+# İlgili Kesim etiketi : Moritz-Pfeifer/CentralBankRoBERTa-agent-classifier
 # Tema etiketi    : deterministik sözlük (model değil — bkz. utils.THEME_PATTERNS)
 # ==============================================================================
 
@@ -1734,7 +1734,7 @@ def _tone_cache_panel(df_logs):
                      use_container_width=True, hide_index=True)
 
     use_agent = st.checkbox(
-        "Muhatap sınıflandırıcısını da çalıştır (CentralBankRoBERTa agent-classifier)",
+        "İlgili kesim (ekonomik aktör) sınıflandırıcısını da çalıştır",
         value=True,
         help="İkinci bir RoBERTa (~500 MB) yükler. Konu payları serisi buna bağlıdır; "
              "kapatırsan yalnızca sözlük tabanlı tema etiketi üretilir.",
@@ -1804,7 +1804,7 @@ def _tone_sentence_map(df_sent):
 
     with cB:
         agents = ["(tümü)"] + sorted(d["agent_label"].dropna().unique().tolist())
-        agent_f = st.selectbox("Muhatap filtresi", agents, index=0, key="tm_agent")
+        agent_f = st.selectbox("İlgili Kesim filtresi", agents, index=0, key="tm_agent")
 
     d_view = d if agent_f == "(tümü)" else d[d["agent_label"] == agent_f]
     if d_view.empty:
@@ -1831,7 +1831,7 @@ def _tone_sentence_map(df_sent):
         srt = d_view.sort_values("diff", ascending=False)
         cols = ["sent_idx", "sentence", "diff", "agent_label", "theme_label"]
         names = {"sent_idx": "#", "sentence": "Cümle", "diff": "Ton",
-                 "agent_label": "Muhatap", "theme_label": "Tema"}
+                 "agent_label": "İlgili Kesim", "theme_label": "Tema"}
         cL, cR = st.columns(2)
         with cL:
             st.markdown("**🦅 En şahin 5**")
@@ -1848,18 +1848,18 @@ def _tone_topic_series(df_sent):
 
     mode = st.radio(
         "Etiket kaynağı",
-        ["Muhatap (CentralBankRoBERTa)", "Tema (sözlük)"],
+        ["İlgili Kesim (CentralBankRoBERTa)", "Tema (sözlük)"],
         horizontal=True,
         key="tp_mode",
     )
-    is_agent = mode.startswith("Muhatap")
+    is_agent = mode.startswith("İlgili Kesim")
     col = "agent_label" if is_agent else "theme_label"
     colors = utils.AGENT_COLORS if is_agent else None
 
     if is_agent and df_sent["agent_label"].fillna("Belirsiz").eq("Belirsiz").all():
         st.warning(
-            "Muhatap etiketi yok — önbellek, muhatap sınıflandırıcısı kapalıyken "
-            "üretilmiş. Yukarıdan seçeneği açıp yeniden hesaplaman gerekiyor."
+            "İlgili kesim etiketi yok — önbellek, ekonomik aktör sınıflandırıcısı "
+            "kapalıyken üretilmiş. Yukarıdan seçeneği açıp yeniden hesaplaman gerekiyor."
         )
         return
 
@@ -1892,7 +1892,7 @@ def _tone_topic_series(df_sent):
     )
     tm = utils.tone_matrix(df_sent, col)
     fig_tone = utils.chart_tone_heatmap(tm, "Dönem × konu ortalama tonu",
-                                        ylab="Muhatap" if is_agent else "Tema")
+                                        ylab="İlgili Kesim" if is_agent else "Tema")
     if fig_tone:
         st.plotly_chart(fig_tone, use_container_width=True, key=f"tone_{col}")
 
@@ -1900,7 +1900,7 @@ def _tone_topic_series(df_sent):
     if not tbl.empty:
         st.markdown("#### Tüm dönemler — konu bazında özet")
         st.dataframe(
-            tbl.rename(columns={col: ("Muhatap" if is_agent else "Tema")}).round(3),
+            tbl.rename(columns={col: ("İlgili Kesim" if is_agent else "Tema")}).round(3),
             use_container_width=True, hide_index=True,
         )
 
@@ -1953,9 +1953,18 @@ def _render_tab_tone_topics():
 Katkı `diff = P(HAWK) − P(DOVE)`; bu zaten güven-ağırlıklıdır, çıplak sayımdan üstündür.
 Dashboard'daki kanonik ton ile **aynı** hesaptır; tek fark burada cümle sırası korunur.
 
-**Muhatap** — `{utils.MODEL_AGENT}` (Pfeifer & Marohl, 2023).
-Beş makroekonomik muhatap: hanehalkı, firmalar, finansal sektör, kamu, merkez bankası.
-Bu modelin asıl katkısı "*ne iyi, kimin için*" ayrımını yapabilmesi.
+**İlgili Kesim** — `{utils.MODEL_AGENT}` (Pfeifer & Marohl, 2023).
+Beş makroekonomik aktör: hanehalkı, firmalar, finansal sektör, kamu, merkez bankası.
+
+⚠️ Bu **hedef kitle değildir**. Model "bu metin kime hitap ediyor" sorusunu değil,
+"*bu cümlenin ekonomik içeriği kimin durumuna dair*" sorusunu cevaplar. Yazarların
+kendi örneği: "ücretler beklentinin ötesinde artıyor" → ücreti **alan** hanehalkı için
+olumlu, ücreti **ödeyen** firmalar için olumsuz. Bu yüzden bir enflasyon cümlesi
+çoğunlukla `Households` çıkar (tüketici fiyatlarını ödeyen ve reel geliri aşınan taraf),
+faiz kararı cümlesi ise `Central Bank` çıkar.
+
+Etiketten emin olmak için `agent_conf` kolonuna bak; 0.60 altındaki tahminleri
+ciddiye alma.
 
 **Tema** — sözlük tabanlı, model değil. CentralBankRoBERTa ailesinde bir **konu**
 sınıflandırıcısı yok; muhatap ve duygu başlıkları var. Konu boyutunu uydurma bir model

@@ -6,10 +6,14 @@ import io
 import datetime
 import re
 import difflib
+import gc
+import hashlib
+import html as _htmllib
 from collections import Counter
 import numpy as np
+import plotly.graph_objects as go
 from dataclasses import dataclass
-from typing import List, Dict, Tuple, Any, Optional
+from typing import List, Dict, Tuple, Any, Optional, Callable, Iterable
 
 # --- 1. KÜTÜPHANE KONTROLLERİ VE GLOBAL FLAGLER ---
 HAS_ML_DEPS = False
@@ -71,6 +75,13 @@ EVDS_EXPECTATION_SERIES = {
     "İYA 12 Ay Enflasyon Beklentisi": "TP.ENFBEK.IYA12ENF",
     "HBA 12 Ay Enflasyon Beklentisi": "TP.ENFBEK.HBA12ENF",
 }
+
+# TCMB Ağırlıklı Ortalama Fonlama Maliyeti (AOFM)
+# DİKKAT: Bu politika faizi DEĞİLDİR; fiilen gerçekleşen fonlama maliyetidir.
+# 2018-2021 arasında ilan edilen faizden ciddi biçimde ayrışmıştı, 2023 sonrasında
+# üst üste bindi. Paneldeki değeri de buradan gelir: "ilan edilen faiz" ile
+# "fiilen uygulanan duruş" arasındaki farkı görünür kılar.
+EVDS_AOFM = "TP.APIFON4"
 
 # =============================================================================
 # 3. VERİTABANI İŞLEMLERİ
@@ -243,7 +254,7 @@ def _pick_evds_value_col(raw: pd.DataFrame, series_code: str):
     return candidates[0]
 
 
-def _evds_direct_request(series_code, fetch_start, fetch_end):
+def _evds_direct_request(series_code, fetch_start, fetch_end, aggregation="avg"):
     """evds paketinden sonuç gelmezse resmi web servise doğrudan istek atar."""
     if not EVDS_API_KEY:
         return pd.DataFrame()
@@ -255,7 +266,7 @@ def _evds_direct_request(series_code, fetch_start, fetch_end):
         "type": "json",
         "frequency": "5",
         "formulas": "0",
-        "aggregationTypes": "avg",
+        "aggregationTypes": aggregation,
     }
 
     urls = [
@@ -278,8 +289,15 @@ def _evds_direct_request(series_code, fetch_start, fetch_end):
     return pd.DataFrame()
 
 
-def _evds_to_monthly_level(evds_client, series_code, column_name, fetch_start, fetch_end):
-    """Verilen EVDS serisini aylık frekansta çekip Donem + değer kolonu olarak döner."""
+def _evds_to_monthly_level(evds_client, series_code, column_name, fetch_start, fetch_end,
+                           aggregation="avg"):
+    """Verilen EVDS serisini aylık frekansta çekip Donem + değer kolonu olarak döner.
+
+    aggregation: günlük serilerde ay içi toplulaştırma tipi.
+      "avg"  -> ay ortalaması (endeks/beklenti serileri için uygun)
+      "last" -> ay sonu değeri (faiz/oran serileri için uygun; ay içi faiz
+                değişimini bulanıklaştırmaz ve PPK karar tarihiyle hizalanır)
+    """
     raw = pd.DataFrame()
 
     # 1) Önce mevcut evds paketiyle dene.
@@ -288,10 +306,19 @@ def _evds_to_monthly_level(evds_client, series_code, column_name, fetch_start, f
             [series_code],
             startdate=fetch_start,
             enddate=fetch_end,
-            frequency=5
+            frequency=5,
+            aggregation_types=aggregation
         )
     except Exception:
-        raw = pd.DataFrame()
+        try:
+            raw = evds_client.get_data(
+                [series_code],
+                startdate=fetch_start,
+                enddate=fetch_end,
+                frequency=5
+            )
+        except Exception:
+            raw = pd.DataFrame()
 
     # 2) Sonuç gelmezse alt çizgili varyantı dene.
     if raw is None or raw.empty:
@@ -307,7 +334,7 @@ def _evds_to_monthly_level(evds_client, series_code, column_name, fetch_start, f
 
     # 3) Hâlâ boşsa web servise doğrudan git.
     if raw is None or raw.empty:
-        raw = _evds_direct_request(series_code, fetch_start, fetch_end)
+        raw = _evds_direct_request(series_code, fetch_start, fetch_end, aggregation=aggregation)
 
     if raw is None or raw.empty or "Tarih" not in raw.columns:
         return pd.DataFrame()
@@ -335,8 +362,10 @@ def _evds_to_monthly_level(evds_client, series_code, column_name, fetch_start, f
 @st.cache_data(ttl=600)
 def fetch_market_data_adapter(start_date, end_date):
     expectation_cols = list(EVDS_EXPECTATION_SERIES.keys())
+    # Veri gelmezse 0 basılmayacak, NaN kalacak kolonlar (yanlış sıfır çizgisi olmasın)
+    level_cols = ["AOFM", "AOFM-Faiz Farkı"]
     base_cols = ["Donem", "Aylık TÜFE", "Yıllık TÜFE", "PPK Faizi"]
-    empty_df = pd.DataFrame(columns=base_cols + expectation_cols + ["SortDate"])
+    empty_df = pd.DataFrame(columns=base_cols + expectation_cols + level_cols + ["SortDate"])
     ts_start = pd.Timestamp(start_date)
     ts_end = pd.Timestamp(end_date)
 
@@ -350,7 +379,7 @@ def fetch_market_data_adapter(start_date, end_date):
             'PPK Faizi': [0]*len(dates),
             'SortDate': dates
         })
-        for col in expectation_cols:
+        for col in expectation_cols + level_cols:
             fallback[col] = np.nan
         return fallback, "API Key Yok"
 
@@ -413,6 +442,22 @@ def fetch_market_data_adapter(start_date, end_date):
     except Exception:
         pass
 
+    # --- AOFM (TP.APIFON4): TCMB Ağırlıklı Ortalama Fonlama Maliyeti ---
+    # Günlük seri; "last" ile ay sonu değeri alınır. Ay ortalaması, ay içinde
+    # yapılan faiz değişimini bulanıklaştırır ve PPK karar tarihiyle hizalanmaz.
+    df_aofm = pd.DataFrame()
+    try:
+        from evds import evdsAPI
+        evds_client = evdsAPI(EVDS_API_KEY)
+        fetch_start_aofm = ts_start.replace(day=1).strftime("%d-%m-%Y")
+        fetch_end_aofm = ts_end.replace(day=1).strftime("%d-%m-%Y")
+        df_aofm = _evds_to_monthly_level(
+            evds_client, EVDS_AOFM, "AOFM",
+            fetch_start_aofm, fetch_end_aofm, aggregation="last"
+        )
+    except Exception:
+        pass
+
     # --- PPK Faizi: BIS ---
     df_pol = pd.DataFrame()
     try:
@@ -430,7 +475,7 @@ def fetch_market_data_adapter(start_date, end_date):
         pass
 
     # --- Birleştir ---
-    market_frames = [df for df in [df_inf, df_pol, df_exp] if df is not None and not df.empty]
+    market_frames = [df for df in [df_inf, df_pol, df_exp, df_aofm] if df is not None and not df.empty]
     master_df = pd.DataFrame()
     for frame in market_frames:
         if master_df.empty:
@@ -452,16 +497,120 @@ def fetch_market_data_adapter(start_date, end_date):
             master_df[c] = 0.0
         master_df[c] = pd.to_numeric(master_df[c], errors="coerce")
 
-    for c in expectation_cols:
+    for c in expectation_cols + level_cols:
         if c not in master_df.columns:
             master_df[c] = np.nan
         master_df[c] = pd.to_numeric(master_df[c], errors="coerce")
+
+    # Türetilmiş: fiili fonlama maliyeti ile ilan edilen politika faizi arasındaki fark.
+    # Metin tonu ile fiili duruş arasındaki tutarsızlığı yakalayan en doğrudan gösterge.
+    if "AOFM" in master_df.columns and "PPK Faizi" in master_df.columns:
+        master_df["AOFM-Faiz Farkı"] = master_df["AOFM"] - master_df["PPK Faizi"]
 
     cutoff = ts_start.strftime("%Y-%m")
     end_cutoff = ts_end.strftime("%Y-%m")
     master_df = master_df[(master_df["Donem"] >= cutoff) & (master_df["Donem"] <= end_cutoff)].copy()
     master_df["SortDate"] = pd.to_datetime(master_df["Donem"] + "-01")
     return master_df.sort_values("SortDate").reset_index(drop=True), None
+
+
+
+# =============================================================================
+# 4b. PLOTLY: LEGEND'DA KAPATILAN SERİYİ PNG'DE DE GİZLEYEN RENDER
+# =============================================================================
+
+_CLEAN_PNG_JS = """
+<script>
+(function init() {
+  var gd = document.getElementById('__DIV_ID__');
+  if (!window.Plotly || !gd || !gd.data) { return setTimeout(init, 120); }
+
+  var temizPNG = {
+    name: 'temizPNG',
+    title: 'PNG indir (kapalı seriler hariç)',
+    icon: Plotly.Icons.camera,
+    click: function (g) {
+      var gizli = [];
+      g.data.forEach(function (t, i) { if (t.visible === 'legendonly') gizli.push(i); });
+      var geriAl = function () {
+        return gizli.length ? Plotly.restyle(g, {showlegend: true}, gizli) : Promise.resolve();
+      };
+      var hazirla = gizli.length ? Plotly.restyle(g, {showlegend: false}, gizli) : Promise.resolve();
+      hazirla.then(function () {
+        return Plotly.downloadImage(g, {
+          format: 'png', width: __PW__, height: __PH__, scale: __PS__, filename: '__FNAME__'
+        });
+      }).then(geriAl).catch(geriAl);
+    }
+  };
+
+  Plotly.newPlot(gd, gd.data, gd.layout, {
+    responsive: true,
+    displaylogo: false,
+    modeBarButtonsToRemove: ['toImage', 'lasso2d', 'select2d'],
+    modeBarButtonsToAdd: [temizPNG]
+  });
+})();
+</script>
+"""
+
+
+def render_plotly_clean_png(fig,
+                            div_id: str = "ana_grafik",
+                            height: int = 660,
+                            filename: str = "analiz_paneli",
+                            png_width: int = 1800,
+                            png_height: int = 900,
+                            png_scale: int = 2):
+    """
+    Plotly grafiğini components.html içinde basar ve modebar'a "temiz PNG" butonu ekler.
+
+    SORUN
+    -----
+    Legend'a tıklayınca Plotly trace'i silmez, `visible='legendonly'` yapar.
+    Seri çizim alanından kalkar ama legend kaydı soluk halde kalır; yerleşik
+    `toImage` de o anki state'i bastığı için indirilen PNG'de kapatılmış seriler
+    görünmeye devam eder.
+
+    ÇÖZÜM
+    -----
+    `showlegend=False`, `legendonly` durumundan bağımsız olarak kaydı legend'dan
+    tamamen kaldırır. İndirme öncesi gizli trace'lere uygulanır, indirme bitince
+    geri alınır. Yerleşik kamera butonu da kaldırılır ki yanlışlıkla kirli PNG
+    indirilmesin.
+
+    NOT
+    ---
+    Bu düzeltme `st.plotly_chart` üzerinden mümkün değildir: legend tıklaması
+    Python tarafına hiç ulaşmaz. Grafik bir iframe içinde render edilir, bu yüzden
+    Streamlit temasını miras almaz — figürün kendi renkleri geçerlidir.
+    """
+    try:
+        import streamlit.components.v1 as components
+        import plotly.io as pio
+    except Exception:
+        st.plotly_chart(fig, use_container_width=True)
+        return
+
+    try:
+        html_fig = pio.to_html(
+            fig,
+            include_plotlyjs="cdn",
+            full_html=False,
+            div_id=div_id,
+            config={"displaylogo": False, "responsive": True},
+        )
+        js = (_CLEAN_PNG_JS
+              .replace("__DIV_ID__", div_id)
+              .replace("__PW__", str(int(png_width)))
+              .replace("__PH__", str(int(png_height)))
+              .replace("__PS__", str(int(png_scale)))
+              .replace("__FNAME__", str(filename)))
+        components.html(html_fig + js, height=int(height) + 40, scrolling=False)
+    except Exception:
+        # Herhangi bir sorunda eski davranışa düş
+        st.plotly_chart(fig, use_container_width=True)
+
 
 # =============================================================================
 # 4. OKUNABİLİRLİK VE FREKANS ANALİZİ
@@ -2987,3 +3136,814 @@ def summarize_sentence_roberta(df_sent: pd.DataFrame, full_text: str | None = No
         "action_sentence": action_sentence,
     }
 
+
+# =============================================================================
+# ==  CB-ROBERTA SONUÇ ÖNBELLEĞİ + CÜMLE/KONU ANALİZLERİ  =====================
+# =============================================================================
+# Neden var:
+#   Model çıktısı şimdiye kadar yalnızca st.session_state'te tutuluyordu; session
+#   ölünce kayboluyor, her yenilemede ~60 doküman x ~40 cümle yeniden modelden
+#   geçiyordu. Artık cümle düzeyi çıktı Supabase'e yazılır.
+#
+# Neyin saklandığı (ve neyin SAKLANMADIĞI):
+#   [+] Cümle düzeyi model çıktısı (H/D/N)      -> roberta_sentences
+#   [+] Doküman özeti (ton, sayım, aksiyon)     -> roberta_doc_cache (türetilmiş)
+#   [-] Kalibrasyon / EMA / histerezis          -> SAKLANMAZ
+#       Bunlar tüm serinin dağılımına bağlıdır; yeni bir PPK kaydı eklendiğinde
+#       geçmiş dönemlerin skorları da değişir. Saklanırsa sessizce yanlış geçmiş
+#       üretilir. Her yüklemede postprocess_ai_series_steps ile yeniden hesaplanır.
+#
+# Geçersiz kılma iki anahtarla:
+#   text_hash        -> metin düzenlendi mi
+#   PIPELINE_VERSION -> skorlama mantığı değişti mi
+#   İkisi de tutuyorsa model bir daha çalışmaz; biri tutmuyorsa YALNIZCA o kayıt
+#   yeniden hesaplanır.
+# =============================================================================
+
+# =============================================================================
+# 10. CB-ROBERTA ÖNBELLEĞİ — SABİTLER
+# =============================================================================
+
+#: Skorlama mantığını her değiştirdiğinde bunu bump et → önbellek komple bayatlar.
+PIPELINE_VERSION = "v1"
+
+MODEL_HD = "mrince/CBRT-RoBERTa-HawkishDovish-Classifier"
+MODEL_AGENT = "Moritz-Pfeifer/CentralBankRoBERTa-agent-classifier"
+
+TBL_SENT = "roberta_sentences"
+TBL_DOC = "roberta_doc_cache"
+
+#: Supabase tek istekte varsayılan 1000 satır döndürür — sayfalama şart.
+_PAGE = 1000
+#: Insert chunk (payload boyutu için)
+_CHUNK = 400
+
+AGENT_ORDER = ["Households", "Firms", "Financial Sector", "Government", "Central Bank"]
+
+AGENT_TR = {
+    "Households": "Hanehalkı",
+    "Firms": "Firmalar",
+    "Financial Sector": "Finansal Sektör",
+    "Government": "Kamu",
+    "Central Bank": "Merkez Bankası",
+}
+
+# Şahin = kırmızı (üst), Güvercin = mavi (alt) — ana dashboard ile aynı konvansiyon
+DIVERGING = [[0.0, "#1f4e9c"], [0.5, "#f2f2f2"], [1.0, "#c0392b"]]
+
+AGENT_COLORS = {
+    "Households": "#2e86c1",
+    "Firms": "#28b463",
+    "Financial Sector": "#8e44ad",
+    "Government": "#e67e22",
+    "Central Bank": "#c0392b",
+    "Belirsiz": "#95a5a6",
+}
+
+
+# =============================================================================
+# 11. TEMA SÖZLÜĞÜ (deterministik, model değil)
+# =============================================================================
+# Muhatap sınıflandırıcısı "kime söylüyor" sorusunu cevaplar; "neyi söylüyor"
+# sorusu için ayrı bir katman gerekiyor. Bu katman kasten sözlük tabanlıdır:
+# denetlenebilir, tekrar üretilebilir ve TCMB metinlerinin dar sözcük dağarcığında
+# kümeleme tabanlı konu modellerinden daha kararlıdır.
+
+THEME_PATTERNS: dict[str, list[str]] = {
+    "Enflasyon Görünümü": [
+        r"inflation", r"price(s)? (level|increase|pressure)", r"cpi", r"disinflation",
+        r"underlying trend", r"enflasyon", r"fiyat", r"dezenflasyon",
+    ],
+    "Talep & Aktivite": [
+        r"domestic demand", r"aggregate demand", r"economic activity", r"growth",
+        r"output", r"employment", r"labou?r market", r"consumption", r"investment",
+        r"talep", r"büyüme", r"istihdam", r"iktisadi faaliyet",
+    ],
+    "Kur & Dış Denge": [
+        r"exchange rate", r"lira", r"currency", r"current account", r"external",
+        r"export", r"import", r"reserve", r"kur", r"cari (açık|denge|işlemler)",
+        r"ihracat", r"ithalat", r"rezerv",
+    ],
+    "Kredi & Aktarım": [
+        r"credit", r"loan", r"bank(ing)? (sector|system)?", r"liquidity",
+        r"monetary transmission", r"funding", r"deposit", r"kredi", r"likidite",
+        r"mevduat", r"aktarım",
+    ],
+    "Beklentiler & İletişim": [
+        r"expectation", r"pricing behavio", r"anchor", r"forward", r"communicat",
+        r"survey", r"beklenti", r"fiyatlama davranış", r"çıpa",
+    ],
+    "Politika Duruşu": [
+        r"policy rate", r"monetary policy stance", r"tight(ening|ness)?",
+        r"easing", r"macroprudential", r"decided to", r"committee",
+        r"politika faizi", r"para politikası", r"sıkı", r"makroihtiyati",
+    ],
+    "Finansal İstikrar & Risk": [
+        r"financial stability", r"risk premium", r"volatilit", r"uncertaint",
+        r"geopolitical", r"global financial", r"finansal istikrar", r"risk primi",
+        r"belirsizlik", r"oynaklık",
+    ],
+}
+
+_THEME_COMPILED = {
+    k: [re.compile(p, re.IGNORECASE) for p in v] for k, v in THEME_PATTERNS.items()
+}
+
+THEME_ORDER = list(THEME_PATTERNS.keys()) + ["Diğer"]
+
+
+def assign_theme(sentence: str) -> str:
+    """Cümleye tek bir tema etiketi verir (en çok eşleşen tema kazanır)."""
+    s = str(sentence or "")
+    if not s.strip():
+        return "Diğer"
+    best, best_n = "Diğer", 0
+    for theme, pats in _THEME_COMPILED.items():
+        n = sum(1 for p in pats if p.search(s))
+        if n > best_n:
+            best, best_n = theme, n
+    return best
+
+
+# =============================================================================
+# 12. MUHATAP (AGENT) SINIFLANDIRICI — CentralBankRoBERTa
+# =============================================================================
+
+@st.cache_resource(show_spinner=False)
+def load_agent_pipeline():
+    """
+    Moritz-Pfeifer/CentralBankRoBERTa-agent-classifier
+
+    Not: Bu, mrince modelinden AYRI ikinci bir RoBERTa (~500 MB). Streamlit Cloud'un
+    ücretsiz katmanında iki modeli aynı anda RAM'de tutmak sınırda kalabilir; bu
+    yüzden yalnızca senkron sırasında yüklenir ve sonrasında serbest bırakılabilir
+    (`release_agent_pipeline`).
+    """
+    if not HAS_TRANSFORMERS:
+        return None
+    try:
+        from transformers import pipeline
+        return pipeline("text-classification", model=MODEL_AGENT, top_k=None)
+    except Exception as e:  # pragma: no cover
+        print(f"[agent-classifier] yüklenemedi: {e}")
+        return None
+
+
+def release_agent_pipeline() -> None:
+    """Senkron bittikten sonra RAM'i geri ver."""
+    try:
+        load_agent_pipeline.clear()
+    except Exception:
+        pass
+    gc.collect()
+
+
+_AGENT_PROBES = {
+    "Households": "Real incomes of households declined as consumer prices increased faster than wages.",
+    "Firms": "Firms reported weaker demand and scaled back their investment plans for the coming quarter.",
+    "Financial Sector": "Banks' capital ratios remain strong and credit growth in the banking sector has moderated.",
+    "Government": "The government's budget deficit widened and public debt issuance increased this year.",
+    "Central Bank": "The Committee decided to raise the policy rate and will maintain a tight monetary policy stance.",
+}
+
+
+@st.cache_resource(show_spinner=False)
+def _agent_label_map() -> dict[str, str]:
+    """
+    Ham model etiketini (LABEL_0..LABEL_4 ya da açık isim) kanonik isme eşler.
+    Önce config.id2label denenir; anlamlı değilse prob cümleleriyle otomatik çıkarım.
+    _mrince_label_map ile aynı savunmacı desen.
+    """
+    clf = load_agent_pipeline()
+    if clf is None:
+        return {}
+
+    # 1) Modelin kendi id2label'ı anlamlıysa onu kullan
+    try:
+        id2label = getattr(clf.model.config, "id2label", {}) or {}
+        vals = [str(v) for v in id2label.values()]
+        if vals and not all(v.upper().startswith("LABEL_") for v in vals):
+            out = {}
+            for v in vals:
+                key = v.strip().replace("_", " ").title()
+                key = {"Financial": "Financial Sector", "Cb": "Central Bank"}.get(key, key)
+                out[v] = key if key in AGENT_ORDER else v
+            if len(set(out.values()) & set(AGENT_ORDER)) >= 3:
+                return out
+    except Exception:
+        pass
+
+    # 2) Prob cümleleriyle otomatik eşleme
+    def _best(text: str) -> str:
+        try:
+            out = clf(text, truncation=True)
+        except Exception:
+            return ""
+        if isinstance(out, list) and out and isinstance(out[0], list):
+            out = out[0]
+        if isinstance(out, dict):
+            out = [out]
+        if not out:
+            return ""
+        return str(max(out, key=lambda x: float(x.get("score", 0.0))).get("label", "")).strip()
+
+    mapping: dict[str, str] = {}
+    for canon, probe in _AGENT_PROBES.items():
+        raw = _best(probe)
+        if raw and raw not in mapping:
+            mapping[raw] = canon
+    return mapping
+
+
+def _normalize_agent_label(raw_label: str) -> str:
+    m = _agent_label_map()
+    lbl = str(raw_label).strip()
+    if lbl in m:
+        return m[lbl]
+    low = lbl.lower()
+    for canon in AGENT_ORDER:
+        if canon.lower().split()[0] in low:
+            return canon
+    return "Belirsiz"
+
+
+# =============================================================================
+# 13. CÜMLE SKORLAMA (sıra korunarak)
+# =============================================================================
+# analyze_sentences_with_roberta çıktıyı diff'e göre SIRALAR ve 160 cümlede
+# keser. Ton haritası için cümlenin metindeki YERİ gerektiğinden burada sırayı
+# koruyan ayrı bir skorlayıcı var. Etiket normalizasyonu utils'ten devralınır,
+# böylece iki yol aynı kanonik tanımı kullanır.
+
+def _split_ordered(text: str) -> list[str]:
+    t = str(text or "").strip()
+    if not t:
+        return []
+    try:
+        sents = split_sentences_nlp(t) or []
+    except Exception:
+        sents = []
+    if not sents:
+        sents = _fallback_sentence_split(t)
+    sents = [s.strip() for s in sents if s and (len(s.split()) >= 2 or len(s) >= 20)]
+    return [s[:500] for s in sents]
+
+
+def score_sentences_ordered(text: str, with_agent: bool = True) -> pd.DataFrame:
+    """
+    Tek dokümanı cümlelere böler, sırayı koruyarak skorlar.
+
+    Kolonlar: sent_idx, sent_total, sentence, hawk, dove, neut, diff,
+              agent_label, agent_conf, theme_label
+    """
+    cols = ["sent_idx", "sent_total", "sentence", "hawk", "dove", "neut",
+            "diff", "agent_label", "agent_conf", "theme_label"]
+
+    clf = load_roberta_pipeline()
+    sents = _split_ordered(text)
+    if clf is None or not sents:
+        return pd.DataFrame(columns=cols)
+
+    agent_clf = load_agent_pipeline() if with_agent else None
+    total = len(sents)
+    rows: list[dict] = []
+    bs = 16
+
+    for i in range(0, total, bs):
+        batch = sents[i:i + bs]
+
+        try:
+            preds = clf(batch, truncation=True)
+        except Exception:
+            preds = [[] for _ in batch]
+
+        agent_preds: list = [[] for _ in batch]
+        if agent_clf is not None:
+            try:
+                agent_preds = agent_clf(batch, truncation=True)
+            except Exception:
+                agent_preds = [[] for _ in batch]
+
+        for j, sent in enumerate(batch):
+            # --- şahin/güvercin ---
+            p = preds[j] if j < len(preds) else []
+            if isinstance(p, list) and p and isinstance(p[0], list):
+                p = p[0]
+            if isinstance(p, dict):
+                p = [p]
+            sm = {"HAWK": 0.0, "DOVE": 0.0, "NEUT": 0.0}
+            for r in (p or []):
+                sm[_normalize_label_mrince(r.get("label", ""))] = float(r.get("score", 0.0))
+
+            # --- muhatap ---
+            a_label, a_conf = None, None
+            ap = agent_preds[j] if j < len(agent_preds) else []
+            if isinstance(ap, list) and ap and isinstance(ap[0], list):
+                ap = ap[0]
+            if isinstance(ap, dict):
+                ap = [ap]
+            if ap:
+                best = max(ap, key=lambda x: float(x.get("score", 0.0)))
+                a_label = _normalize_agent_label(best.get("label", ""))
+                a_conf = float(best.get("score", 0.0))
+
+            rows.append({
+                "sent_idx": i + j,
+                "sent_total": total,
+                "sentence": sent,
+                "hawk": sm["HAWK"],
+                "dove": sm["DOVE"],
+                "neut": sm["NEUT"],
+                "diff": sm["HAWK"] - sm["DOVE"],
+                "agent_label": a_label,
+                "agent_conf": a_conf,
+                "theme_label": assign_theme(sent),
+            })
+
+        gc.collect()
+
+    return pd.DataFrame(rows, columns=cols)
+
+
+# =============================================================================
+# 14. ÖNBELLEK G/Ç
+# =============================================================================
+
+def text_fingerprint(text: str) -> str:
+    """Metnin normalize edilmiş SHA-256'sı. Boşluk/biçim değişikliği hash'i bozmaz."""
+    t = re.sub(r"\s+", " ", str(text or "")).strip().lower()
+    return hashlib.sha256(t.encode("utf-8")).hexdigest()[:32]
+
+
+def _paged_select(table: str, columns: str = "*", flt: Optional[Callable] = None) -> pd.DataFrame:
+    """Supabase 1000 satır limitini sayfalayarak aşar."""
+    if not supabase:
+        return pd.DataFrame()
+    out: list[dict] = []
+    start = 0
+    while True:
+        try:
+            q = supabase.table(table).select(columns)
+            if flt is not None:
+                q = flt(q)
+            res = q.range(start, start + _PAGE - 1).execute()
+        except Exception:
+            break
+        data = getattr(res, "data", []) or []
+        out.extend(data)
+        if len(data) < _PAGE:
+            break
+        start += _PAGE
+    return pd.DataFrame(out)
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def fetch_doc_cache() -> pd.DataFrame:
+    df = _paged_select(TBL_DOC)
+    if df.empty:
+        return df
+    df["period_date"] = pd.to_datetime(df["period_date"], errors="coerce")
+    return df
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def fetch_sentences(version: str = PIPELINE_VERSION) -> pd.DataFrame:
+    """Tüm cümle önbelleğini çeker (bir PPK korpusu için birkaç bin satır)."""
+    df = _paged_select(
+        TBL_SENT,
+        flt=lambda q: q.eq("pipeline_version", version).order("period_date").order("sent_idx"),
+    )
+    if df.empty:
+        return df
+    df["period_date"] = pd.to_datetime(df["period_date"], errors="coerce")
+    df["Donem"] = df["period_date"].dt.strftime("%Y-%m")
+    for c in ("hawk", "dove", "neut", "diff", "agent_conf"):
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors="coerce")
+    for c in ("sent_idx", "sent_total"):
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors="coerce").astype("Int64")
+    df["agent_label"] = df.get("agent_label", pd.Series(dtype=object)).fillna("Belirsiz")
+    df["theme_label"] = df.get("theme_label", pd.Series(dtype=object)).fillna("Diğer")
+    return df.sort_values(["period_date", "sent_idx"]).reset_index(drop=True)
+
+
+def invalidate_cache_reads() -> None:
+    """Yazma sonrası okuma cache'lerini düşür."""
+    try:
+        fetch_doc_cache.clear()
+        fetch_sentences.clear()
+    except Exception:
+        pass
+
+
+def _write_sentences(log_id, period_date, text_hash: str, df_sent: pd.DataFrame) -> None:
+    if not supabase or df_sent is None or df_sent.empty:
+        return
+    # Aynı log için eski sürümü temizle (idempotent yeniden hesap)
+    try:
+        (supabase.table(TBL_SENT)
+         .delete()
+         .eq("log_id", int(log_id))
+         .eq("pipeline_version", PIPELINE_VERSION)
+         .execute())
+    except Exception:
+        pass
+
+    pdate = pd.Timestamp(period_date).strftime("%Y-%m-%d")
+    payload = []
+    for _, r in df_sent.iterrows():
+        payload.append({
+            "log_id": int(log_id),
+            "period_date": pdate,
+            "sent_idx": int(r["sent_idx"]),
+            "sent_total": int(r["sent_total"]),
+            "sentence": str(r["sentence"])[:2000],
+            "hawk": float(r["hawk"]),
+            "dove": float(r["dove"]),
+            "neut": float(r["neut"]),
+            "diff": float(r["diff"]),
+            "agent_label": (None if pd.isna(r["agent_label"]) else str(r["agent_label"])),
+            "agent_conf": (None if pd.isna(r["agent_conf"]) else float(r["agent_conf"])),
+            "theme_label": str(r["theme_label"]),
+            "text_hash": text_hash,
+            "pipeline_version": PIPELINE_VERSION,
+            "model_hd": MODEL_HD,
+            "model_agent": MODEL_AGENT,
+        })
+
+    for i in range(0, len(payload), _CHUNK):
+        try:
+            supabase.table(TBL_SENT).insert(payload[i:i + _CHUNK]).execute()
+        except Exception as e:  # pragma: no cover
+            print(f"[cache] cümle yazma hatası: {e}")
+
+
+def _write_doc(row: dict) -> None:
+    if not supabase:
+        return
+    try:
+        supabase.table(TBL_DOC).upsert(row, on_conflict="log_id").execute()
+    except Exception as e:  # pragma: no cover
+        print(f"[cache] doküman yazma hatası: {e}")
+
+
+# =============================================================================
+# 15. SENKRON: neyi yeniden hesaplayacağına karar ver
+# =============================================================================
+
+def diagnose(df_logs: pd.DataFrame) -> pd.DataFrame:
+    """
+    Her kayıt için önbellek durumu döndürür.
+    durum ∈ {taze, eksik, metin_degisti, surum_eskidi}
+    """
+    if df_logs is None or df_logs.empty:
+        return pd.DataFrame()
+
+    d = df_logs.copy()
+    d["period_date"] = pd.to_datetime(d["period_date"], errors="coerce")
+    d = d.dropna(subset=["period_date"])
+    d["text_content"] = d["text_content"].fillna("").astype(str)
+    d = d[d["text_content"].str.len() >= 30]
+    d["text_hash"] = d["text_content"].map(text_fingerprint)
+
+    cache = fetch_doc_cache()
+    if cache.empty:
+        d["durum"] = "eksik"
+        d["n_sentences"] = np.nan
+        return d[["id", "period_date", "source", "text_hash", "durum", "n_sentences"]]
+
+    c = cache[["log_id", "text_hash", "pipeline_version", "n_sentences"]].copy()
+    c = c.rename(columns={"text_hash": "cached_hash"})
+    m = d.merge(c, left_on="id", right_on="log_id", how="left")
+
+    def _status(r):
+        if pd.isna(r.get("log_id")):
+            return "eksik"
+        if str(r.get("pipeline_version")) != PIPELINE_VERSION:
+            return "surum_eskidi"
+        if str(r.get("cached_hash")) != str(r.get("text_hash")):
+            return "metin_degisti"
+        return "taze"
+
+    m["durum"] = m.apply(_status, axis=1)
+    return m[["id", "period_date", "source", "text_hash", "durum", "n_sentences"]]
+
+
+def sync_cache(df_logs: pd.DataFrame,
+               only_ids: Optional[Iterable] = None,
+               force: bool = False,
+               with_agent: bool = True,
+               progress_cb: Optional[Callable[[float, str], None]] = None) -> dict:
+    """
+    Bayat/eksik kayıtları hesaplayıp önbelleğe yazar.
+
+    force=True      → durumdan bağımsız hepsini yeniden hesaplar
+    only_ids        → yalnızca bu log id'leri
+    with_agent=False→ muhatap sınıflandırıcısını atlar (RAM tasarrufu)
+
+    Dönüş: {"islenen": n, "atlanan": n, "hata": n}
+    """
+    diag = diagnose(df_logs)
+    if diag.empty:
+        return {"islenen": 0, "atlanan": 0, "hata": 0}
+
+    todo = diag if force else diag[diag["durum"] != "taze"]
+    if only_ids is not None:
+        todo = todo[todo["id"].isin(list(only_ids))]
+
+    atlanan = int(len(diag) - len(todo))
+    if todo.empty:
+        return {"islenen": 0, "atlanan": atlanan, "hata": 0}
+
+    lookup = df_logs.set_index("id")["text_content"].to_dict()
+    islenen, hata = 0, 0
+    total = len(todo)
+
+    for k, (_, r) in enumerate(todo.iterrows()):
+        log_id = r["id"]
+        text = str(lookup.get(log_id, "") or "")
+        label = pd.Timestamp(r["period_date"]).strftime("%Y-%m")
+        if progress_cb:
+            progress_cb((k + 1) / total, f"{label} ({k + 1}/{total})")
+
+        try:
+            df_sent = score_sentences_ordered(text, with_agent=with_agent)
+            if df_sent.empty:
+                hata += 1
+                continue
+
+            # --- doküman düzeyi: mevcut utils mantığını AYNEN kullan ---
+            df_for_doc = df_sent.rename(columns={"sentence": "Cümle", "diff": "Diff (H-D)"}).copy()
+            df_for_doc["Duruş"] = df_for_doc["Diff (H-D)"].map(stance_3class_from_diff)
+            doc = document_signal_from_sentences(df_for_doc, full_text=text)
+
+            # full-text referans skoru (tek ekstra çağrı, debug/karşılaştırma için)
+            hp = dp = np_ = bs = np.nan
+            diff_full = np.nan
+            try:
+                clf = load_roberta_pipeline()
+                raw = clf(str(text)[:1200], truncation=True)
+                if isinstance(raw, list) and raw and isinstance(raw[0], list):
+                    raw = raw[0]
+                sm = {"HAWK": 0.0, "DOVE": 0.0, "NEUT": 0.0}
+                for x in (raw or []):
+                    sm[_normalize_label_mrince(x.get("label", ""))] = float(x.get("score", 0.0))
+                hp, dp, np_ = sm["HAWK"], sm["DOVE"], sm["NEUT"]
+                bs = max(sm.values())
+                diff_full = hp - dp
+            except Exception:
+                pass
+
+            ta = combine_tone_action(
+                doc.get("diff_mean", 0.0),
+                delta_bp=doc.get("real_delta_bp"),
+                action_label=doc.get("action"),
+            )
+
+            _write_sentences(log_id, r["period_date"], r["text_hash"], df_sent)
+            _write_doc({
+                "log_id": int(log_id),
+                "period_date": pd.Timestamp(r["period_date"]).strftime("%Y-%m-%d"),
+                "n_sentences": int(len(df_sent)),
+                "diff_mean": float(doc.get("diff_mean", 0.0)),
+                "signal": float(doc.get("signal", 0.0)),
+                "diff_fulltext": (None if pd.isna(diff_full) else float(diff_full)),
+                "hawk_p": (None if pd.isna(hp) else float(hp)),
+                "dove_p": (None if pd.isna(dp) else float(dp)),
+                "neut_p": (None if pd.isna(np_) else float(np_)),
+                "best_score": (None if pd.isna(bs) else float(bs)),
+                "stance": str(doc.get("stance", "")),
+                "hawk_n": int(doc.get("hawk_n", 0)),
+                "dove_n": int(doc.get("dove_n", 0)),
+                "neut_n": int(doc.get("neut_n", 0)),
+                "action_label": str(doc.get("action", "UNKNOWN")),
+                "real_delta_bp": (None if doc.get("real_delta_bp") is None
+                                  else float(doc["real_delta_bp"])),
+                "regime": str(ta.get("regime", "")),
+                "text_hash": str(r["text_hash"]),
+                "pipeline_version": PIPELINE_VERSION,
+                "model_hd": MODEL_HD,
+                "model_agent": MODEL_AGENT if with_agent else None,
+            })
+            islenen += 1
+        except Exception as e:  # pragma: no cover
+            print(f"[cache] {log_id} hata: {e}")
+            hata += 1
+        finally:
+            gc.collect()
+
+    invalidate_cache_reads()
+    return {"islenen": islenen, "atlanan": atlanan, "hata": hata}
+
+
+# =============================================================================
+# 16. ÖNBELLEKTEN TREND SERİSİ (model çağrısı YOK)
+# =============================================================================
+
+def trend_series_from_cache(span: int = 7, z_scale: float = 2.0, hyst: float = 25.0) -> pd.DataFrame:
+    """
+    calculate_ai_trend_series ile aynı kolon setini üretir; fark: model
+    hiç çalışmaz, her şey önbellekten okunur. Kalibrasyon/EMA/histerezis burada
+    (yani çalışma anında) hesaplanır — bunlar bilerek saklanmaz.
+    """
+    cache = fetch_doc_cache()
+    if cache.empty:
+        return pd.DataFrame()
+
+    c = cache[cache["pipeline_version"] == PIPELINE_VERSION].copy()
+    if c.empty:
+        return pd.DataFrame()
+
+    c = c.sort_values("period_date").reset_index(drop=True)
+    out = pd.DataFrame({
+        "Dönem": c["period_date"].dt.strftime("%Y-%m"),
+        "period_date": c["period_date"],
+        "Şahin Olasılık": pd.to_numeric(c.get("hawk_p"), errors="coerce"),
+        "Güvercin Olasılık": pd.to_numeric(c.get("dove_p"), errors="coerce"),
+        "Nötr Olasılık": pd.to_numeric(c.get("neut_p"), errors="coerce"),
+        "Diff (H-D)": pd.to_numeric(c["diff_mean"], errors="coerce"),
+        "Diff (Full-text)": pd.to_numeric(c.get("diff_fulltext"), errors="coerce"),
+        "Duruş": c.get("stance", "").astype(str),
+        "Delta BP": pd.to_numeric(c.get("real_delta_bp"), errors="coerce"),
+        "Aksiyon": c.get("action_label", "").astype(str),
+        "Rejim": c.get("regime", "").astype(str),
+        "Güven": pd.to_numeric(c.get("best_score"), errors="coerce"),
+    })
+    out["Aksiyon Yön"] = out["Delta BP"].map(
+        lambda x: np.nan if pd.isna(x) else (1.0 if x > 0 else (-1.0 if x < 0 else 0.0))
+    )
+    return postprocess_ai_series_steps(
+        out, diff_col="Diff (H-D)", span=span, z_scale=z_scale, hyst=hyst
+    )
+
+
+# =============================================================================
+# 17. AGREGASYONLAR
+# =============================================================================
+
+def share_timeseries(df_sent: pd.DataFrame, label_col: str) -> pd.DataFrame:
+    """Dönem × etiket → pay (%) tablosu (geniş format)."""
+    if df_sent is None or df_sent.empty:
+        return pd.DataFrame()
+    g = (df_sent.groupby(["Donem", label_col]).size().rename("n").reset_index())
+    tot = g.groupby("Donem")["n"].transform("sum")
+    g["pay"] = 100.0 * g["n"] / tot
+    return g.pivot(index="Donem", columns=label_col, values="pay").fillna(0.0).sort_index()
+
+
+def tone_matrix(df_sent: pd.DataFrame, label_col: str) -> pd.DataFrame:
+    """Dönem × etiket → ortalama diff (ton). Boş hücre = o dönem o konuya değinilmemiş."""
+    if df_sent is None or df_sent.empty:
+        return pd.DataFrame()
+    return (df_sent.groupby(["Donem", label_col])["diff"]
+            .mean().unstack(label_col).sort_index())
+
+
+def position_tone_matrix(df_sent: pd.DataFrame, bins: int = 10) -> pd.DataFrame:
+    """
+    Dönem × metin-içi göreli konum (%) → ortalama ton.
+    'Metnin neresinde şahinleşiyor' sorusunu cevaplar: giriş paragrafları mı,
+    karar cümlesi mi, kapanış taahhüdü mü.
+    """
+    if df_sent is None or df_sent.empty:
+        return pd.DataFrame()
+    d = df_sent.copy()
+    d["sent_total"] = pd.to_numeric(d["sent_total"], errors="coerce")
+    d = d[d["sent_total"] > 1]
+    if d.empty:
+        return pd.DataFrame()
+    pos = pd.to_numeric(d["sent_idx"], errors="coerce") / (d["sent_total"] - 1)
+    d["dilim"] = np.clip((pos * bins).astype(int), 0, bins - 1)
+    m = d.groupby(["Donem", "dilim"])["diff"].mean().unstack("dilim").sort_index()
+    m.columns = [f"%{int(100 * c / bins)}–{int(100 * (c + 1) / bins)}" for c in m.columns]
+    return m
+
+
+def divergence_table(df_sent: pd.DataFrame, label_col: str) -> pd.DataFrame:
+    """Etiket bazında genel ton ve hacim özeti — hangi konuda şahin, hangisinde güvercin."""
+    if df_sent is None or df_sent.empty:
+        return pd.DataFrame()
+    g = df_sent.groupby(label_col)["diff"].agg(["count", "mean", "std"]).reset_index()
+    g.columns = [label_col, "Cümle", "Ort. Ton", "Std"]
+    g["Duruş"] = g["Ort. Ton"].map(stance_3class_from_diff)
+    return g.sort_values("Ort. Ton", ascending=False).reset_index(drop=True)
+
+
+# =============================================================================
+# 18. GÖRSELLER
+# =============================================================================
+
+def _sym_limit(values) -> float:
+    v = pd.Series(values).abs().max()
+    if not np.isfinite(v) or v == 0:
+        return 0.5
+    return float(min(1.0, max(0.15, v)))
+
+
+def chart_share_area(df_share: pd.DataFrame, title: str, colors: Optional[dict] = None):
+    """Yığılmış alan grafiği — pay (%) zaman serisi."""
+    if df_share is None or df_share.empty:
+        return None
+    fig = go.Figure()
+    for col in df_share.columns:
+        fig.add_trace(go.Scatter(
+            x=df_share.index, y=df_share[col], name=str(col),
+            mode="lines", stackgroup="one", groupnorm="percent",
+            line=dict(width=0.5, color=(colors or {}).get(col)),
+            hovertemplate="%{x}<br>" + str(col) + ": %{y:.1f}%<extra></extra>",
+        ))
+    fig.update_layout(
+        title=title, height=430, hovermode="x unified",
+        yaxis=dict(title="Cümle payı (%)", range=[0, 100], ticksuffix="%"),
+        xaxis=dict(title=""),
+        legend=dict(orientation="h", yanchor="top", y=-0.15, xanchor="center", x=0.5),
+        margin=dict(t=50, b=40),
+    )
+    return fig
+
+
+def chart_tone_heatmap(df_matrix: pd.DataFrame, title: str, ylab: str = ""):
+    """Dönem × etiket ton ısı haritası (kırmızı = şahin, mavi = güvercin)."""
+    if df_matrix is None or df_matrix.empty:
+        return None
+    z = df_matrix.T.values.astype(float)
+    lim = _sym_limit(df_matrix.values.ravel())
+    fig = go.Figure(go.Heatmap(
+        z=z,
+        x=list(df_matrix.index),
+        y=[str(c) for c in df_matrix.columns],
+        colorscale=DIVERGING, zmid=0, zmin=-lim, zmax=lim,
+        hovertemplate="%{x} · %{y}<br>ton: %{z:.3f}<extra></extra>",
+        colorbar=dict(title="Ton<br>(H−D)", thickness=12),
+        hoverongaps=False,
+    ))
+    fig.update_layout(
+        title=title, height=max(320, 40 * len(df_matrix.columns) + 140),
+        xaxis=dict(title=""), yaxis=dict(title=ylab, autorange="reversed"),
+        margin=dict(t=50, b=40, l=10),
+    )
+    return fig
+
+
+def chart_sentence_strip(df_one: pd.DataFrame, title: str = "Cümle sırasına göre ton"):
+    """Tek dokümanın cümle cümle ton profili (bar). Metnin ton mimarisi burada görünür."""
+    if df_one is None or df_one.empty:
+        return None
+    d = df_one.sort_values("sent_idx")
+    diffs = pd.to_numeric(d["diff"], errors="coerce").fillna(0.0)
+    colors = ["#c0392b" if v >= 0 else "#1f4e9c" for v in diffs]
+    wrapped = d["sentence"].astype(str).str.slice(0, 160).str.replace(r"(.{60})", r"\1<br>", regex=True)
+    fig = go.Figure(go.Bar(
+        x=d["sent_idx"], y=diffs, marker=dict(color=colors),
+        customdata=np.stack([wrapped, d["agent_label"].astype(str), d["theme_label"].astype(str)], axis=-1),
+        hovertemplate="#%{x} · ton %{y:.3f}<br>%{customdata[1]} · %{customdata[2]}<br>%{customdata[0]}<extra></extra>",
+    ))
+    fig.add_hline(y=0, line=dict(color="black", width=1))
+    fig.update_layout(
+        title=title, height=300, bargap=0.15,
+        xaxis=dict(title="Cümle sırası"), yaxis=dict(title="Ton (H−D)"),
+        margin=dict(t=50, b=40),
+    )
+    return fig
+
+
+def _tone_rgba(diff: float) -> str:
+    d = float(np.clip(diff, -1.0, 1.0))
+    a = 0.08 + 0.55 * abs(d)
+    return f"rgba(192,57,43,{a:.3f})" if d >= 0 else f"rgba(31,78,156,{a:.3f})"
+
+
+def sentence_heatmap_html(df_one: pd.DataFrame,
+                          show_agent: bool = True,
+                          max_height: int = 520) -> str:
+    """
+    Dokümanı okunabilir biçimde, her cümle tonuna göre renklenmiş olarak döndürür.
+    Kırmızı = şahin, mavi = güvercin, renksiz = nötr. Üzerine gelince olasılıklar.
+    """
+    if df_one is None or df_one.empty:
+        return "<p><i>Bu dönem için önbellekte cümle yok.</i></p>"
+
+    parts: list[str] = []
+    for _, r in df_one.sort_values("sent_idx").iterrows():
+        diff = float(r.get("diff", 0.0) or 0.0)
+        sent = _htmllib.escape(str(r.get("sentence", "")))
+        tip = (f"#{int(r['sent_idx'])} · ton {diff:+.3f} · "
+               f"H {float(r.get('hawk', 0)):.2f} / D {float(r.get('dove', 0)):.2f} / "
+               f"N {float(r.get('neut', 0)):.2f}")
+        badge = ""
+        if show_agent and r.get("agent_label"):
+            badge = (f"<sup style='font-size:.62em;opacity:.65;white-space:nowrap;'>"
+                     f"&nbsp;{_htmllib.escape(str(r['agent_label']))}</sup>")
+        parts.append(
+            f"<span title='{_htmllib.escape(tip)}' "
+            f"style='background:{_tone_rgba(diff)};padding:2px 3px;border-radius:3px;'>"
+            f"{sent}{badge}</span>"
+        )
+
+    body = " ".join(parts)
+    return (
+        f"<div style='max-height:{max_height}px;overflow-y:auto;line-height:2.05;"
+        f"font-size:0.94rem;padding:14px 16px;border:1px solid rgba(128,128,128,.28);"
+        f"border-radius:8px;'>{body}</div>"
+    )

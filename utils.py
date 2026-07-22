@@ -3165,7 +3165,9 @@ def summarize_sentence_roberta(df_sent: pd.DataFrame, full_text: str | None = No
 # =============================================================================
 
 #: Skorlama mantığını her değiştirdiğinde bunu bump et → önbellek komple bayatlar.
-PIPELINE_VERSION = "v1"
+#: v2: tema sözlüğü düzeltildi (bkz. THEME_PATTERNS "Kredi & Aktarım" ve
+#:     _DECISION_OVERRIDE). v1 satırları tabloda kalır ama okunmaz.
+PIPELINE_VERSION = "v2"
 
 MODEL_HD = "mrince/CBRT-RoBERTa-HawkishDovish-Classifier"
 MODEL_AGENT = "Moritz-Pfeifer/CentralBankRoBERTa-agent-classifier"
@@ -3204,8 +3206,8 @@ AGENT_COLORS = {
 # =============================================================================
 # 11. TEMA SÖZLÜĞÜ (deterministik, model değil)
 # =============================================================================
-# Muhatap sınıflandırıcısı "kime söylüyor" sorusunu cevaplar; "neyi söylüyor"
-# sorusu için ayrı bir katman gerekiyor. Bu katman kasten sözlük tabanlıdır:
+# İlgili Kesim sınıflandırıcısı "bu cümle kimin durumuna dair" sorusunu cevaplar;
+# "neyi söylüyor" sorusu için ayrı bir katman gerekiyor. Bu katman kasten sözlük tabanlıdır:
 # denetlenebilir, tekrar üretilebilir ve TCMB metinlerinin dar sözcük dağarcığında
 # kümeleme tabanlı konu modellerinden daha kararlıdır.
 
@@ -3225,9 +3227,14 @@ THEME_PATTERNS: dict[str, list[str]] = {
         r"ihracat", r"ithalat", r"rezerv",
     ],
     "Kredi & Aktarım": [
-        r"credit", r"loan", r"bank(ing)? (sector|system)?", r"liquidity",
-        r"monetary transmission", r"funding", r"deposit", r"kredi", r"likidite",
-        r"mevduat", r"aktarım",
+        # DİKKAT: burada "bank" tek başına ARANMAZ. Önceki sürümde
+        # r"bank(ing)? (sector|system)?" kalıbı, parantezler opsiyonel olduğu için
+        # çıplak "Bank" kelimesine de eşleşiyordu; "Central Bank" ifadesi hemen her
+        # TCMB cümlesinde geçtiği için faiz kararı cümleleri yanlışlıkla bu temaya
+        # düşüyordu.
+        r"\bcredit\b", r"\bloans?\b", r"\bbanks\b", r"\bbanking (sector|system)\b",
+        r"\bliquidity\b", r"monetary transmission", r"\bfunding\b", r"\bdeposits?\b",
+        r"kredi", r"likidite", r"mevduat", r"aktarım",
     ],
     "Beklentiler & İletişim": [
         r"expectation", r"pricing behavio", r"anchor", r"forward", r"communicat",
@@ -3251,12 +3258,32 @@ _THEME_COMPILED = {
 
 THEME_ORDER = list(THEME_PATTERNS.keys()) + ["Diğer"]
 
+# Karar cümlesi önceliği.
+# Faiz kararını bildiren cümle, içinde başka temalara ait kelimeler geçse bile
+# ("Central Bank", "deposit rate", "overnight lending") her zaman politika duruşudur.
+# Sayım yarışına sokmak yerine deterministik olarak öne alınır.
+_DECISION_OVERRIDE = re.compile(
+    r"(decided to|has decided|"
+    r"\b(policy|lending|borrowing|repo|deposit)\s+rate\b[^.]{0,80}\b(from|to)\b\s*\d|"
+    r"politika faizini|faiz(i|ini)?\s+(artır|indir|sabit))",
+    re.IGNORECASE,
+)
+
 
 def assign_theme(sentence: str) -> str:
-    """Cümleye tek bir tema etiketi verir (en çok eşleşen tema kazanır)."""
+    """
+    Cümleye tek bir tema etiketi verir.
+
+    Sıra:
+      1) Karar cümlesi mi? -> doğrudan "Politika Duruşu"
+      2) Değilse en çok kalıp eşleşen tema kazanır
+      3) Hiç eşleşme yoksa "Diğer"
+    """
     s = str(sentence or "")
     if not s.strip():
         return "Diğer"
+    if _DECISION_OVERRIDE.search(s):
+        return "Politika Duruşu"
     best, best_n = "Diğer", 0
     for theme, pats in _THEME_COMPILED.items():
         n = sum(1 for p in pats if p.search(s))
@@ -3266,13 +3293,26 @@ def assign_theme(sentence: str) -> str:
 
 
 # =============================================================================
-# 12. MUHATAP (AGENT) SINIFLANDIRICI — CentralBankRoBERTa
+# 12. İLGİLİ KESİM (ECONOMIC AGENT) SINIFLANDIRICISI — CentralBankRoBERTa
 # =============================================================================
 
 @st.cache_resource(show_spinner=False)
 def load_agent_pipeline():
     """
     Moritz-Pfeifer/CentralBankRoBERTa-agent-classifier
+
+    NE ÖLÇER: "Bu cümlenin ekonomik içeriği kimin durumuna dair?"
+    NE ÖLÇMEZ: "Bu metin kime hitap ediyor / hedef kitlesi kim?"
+
+    Model, Pfeifer & Marohl (2023) tarafından "ne, kimin için iyi" mantığıyla
+    eğitilmiştir. Kendi verdikleri örnek: "ücretler beklentinin ötesinde artıyor"
+    cümlesi, ücreti ALAN hanehalkı için olumlu, ücreti ÖDEYEN firmalar için
+    olumsuzdur. Dolayısıyla bir enflasyon cümlesi çoğunlukla "Households" çıkar:
+    tüketici fiyatlarını ödeyen ve reel geliri aşınan taraf hanehalkıdır. Faiz
+    kararı ve duruş taahhüdü cümleleri ise "Central Bank" çıkar.
+
+    Bu yüzden panelde bu boyut "İlgili Kesim" olarak adlandırılır; "muhatap"
+    (hedef kitle) anlamına GELMEZ.
 
     Not: Bu, mrince modelinden AYRI ikinci bir RoBERTa (~500 MB). Streamlit Cloud'un
     ücretsiz katmanında iki modeli aynı anda RAM'de tutmak sınırda kalabilir; bu
@@ -3435,7 +3475,7 @@ def score_sentences_ordered(text: str, with_agent: bool = True) -> pd.DataFrame:
             for r in (p or []):
                 sm[_normalize_label_mrince(r.get("label", ""))] = float(r.get("score", 0.0))
 
-            # --- muhatap ---
+            # --- ilgili kesim (ekonomik aktör) ---
             a_label, a_conf = None, None
             ap = agent_preds[j] if j < len(agent_preds) else []
             if isinstance(ap, list) and ap and isinstance(ap[0], list):
@@ -3640,7 +3680,7 @@ def sync_cache(df_logs: pd.DataFrame,
 
     force=True      → durumdan bağımsız hepsini yeniden hesaplar
     only_ids        → yalnızca bu log id'leri
-    with_agent=False→ muhatap sınıflandırıcısını atlar (RAM tasarrufu)
+    with_agent=False→ ilgili kesim sınıflandırıcısını atlar (RAM tasarrufu)
 
     Dönüş: {"islenen": n, "atlanan": n, "hata": n}
     """

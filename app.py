@@ -73,7 +73,7 @@ with c_head1: st.title("🦅 Şahin/Güvercin Paneli")
 with c_head2: 
     if st.button("Çıkış"): st.session_state['logged_in'] = False; st.rerun()
 
-tab1, tab2, tab3, tab4, tab_textdata, tab6, tab7, tab_roberta, tab_imp = st.tabs([
+tab1, tab2, tab3, tab4, tab_textdata, tab6, tab7, tab_roberta, tab_tone, tab_imp = st.tabs([
     "📈 Dashboard",
     "📝 Veri Girişi",
     "📊 Veriler",
@@ -82,6 +82,7 @@ tab1, tab2, tab3, tab4, tab_textdata, tab6, tab7, tab_roberta, tab_imp = st.tabs
     "☁️ WordCloud",
     "📜 ABG (2019)",
     "🧠 CB-RoBERTa",
+    "🗺️ Ton Haritası & Konular",
     "📅 Haberler"
 ])
 
@@ -216,6 +217,27 @@ with tab1:
         if 'Aylık TÜFE' in merged.columns: fig.add_trace(go.Scatter(x=merged['period_date'], y=merged['Aylık TÜFE'], name="Aylık TÜFE (%)", line=dict(color='crimson', dash='dash', width=1), yaxis="y"))
         if 'PPK Faizi' in merged.columns: fig.add_trace(go.Scatter(x=merged['period_date'], y=merged['PPK Faizi'], name="Faiz (%)", line=dict(color='orange', dash='dot'), yaxis="y"))
 
+        # --- AOFM (TP.APIFON4) ---
+        # Politika faizi değil, fiilen gerçekleşen fonlama maliyeti. İkisini birlikte
+        # görmenin anlamı: ilan edilen faiz ile fiili duruş arasındaki ayrışma.
+        if 'AOFM' in merged.columns and merged['AOFM'].notna().any():
+            fig.add_trace(go.Scatter(
+                x=merged['period_date'], y=merged['AOFM'],
+                name="AOFM (%)",
+                line=dict(color='darkgoldenrod', dash='solid', width=2),
+                yaxis="y"
+            ))
+
+        # Türetilmiş fark serisi. Varsayılan olarak KAPALI gelir; legend'dan açılır.
+        if 'AOFM-Faiz Farkı' in merged.columns and merged['AOFM-Faiz Farkı'].notna().any():
+            fig.add_trace(go.Scatter(
+                x=merged['period_date'], y=merged['AOFM-Faiz Farkı'],
+                name="AOFM − Faiz (puan)",
+                line=dict(color='saddlebrown', dash='dashdot', width=1.5),
+                visible='legendonly',
+                yaxis="y"
+            ))
+
         expectation_styles = {
             "PKA 12 Ay Enflasyon Beklentisi": dict(color='purple', dash='solid', width=2),
             "İYA 12 Ay Enflasyon Beklentisi": dict(color='mediumpurple', dash='dash', width=2),
@@ -280,8 +302,19 @@ with tab1:
             yaxis2=dict(visible=False, overlaying="y", side="right"),
             yaxis3=dict(title="Kelime", overlaying="y", side="right", showgrid=False, visible=False, range=[0, merged['word_count'].max() * 2])
         )
-        st.plotly_chart(fig, use_container_width=True)
-        
+        # st.plotly_chart yerine temiz-PNG render:
+        # Legend'da kapatılan seri (visible='legendonly') yerleşik "toImage" ile
+        # indirilen görselde soluk halde görünmeye devam ediyordu. Bu render,
+        # modebar'a indirme öncesi o kayıtları legend'dan tamamen kaldıran
+        # özel bir kamera butonu ekler. Ayrıntı: utils.render_plotly_clean_png
+        utils.render_plotly_clean_png(
+            fig,
+            div_id="dash_ana_grafik",
+            height=620,
+            filename="merkez_bankasi_analiz_paneli",
+            png_width=1900, png_height=950, png_scale=2,
+        )
+
        # --- YENİ EKLENEN AI TREND GRAFİĞİ (GÜVENLİ VERSİYON) ---
         st.markdown("---")
         st.subheader("🤖 Yapay Zeka (RoBERTa) Trendi")
@@ -305,7 +338,11 @@ with tab1:
                     with st.spinner("AI Modeli tüm geçmişi tarıyor... Lütfen bekleyin..."):
                         df_all_data = utils.fetch_all_data()
                         # Hesaplamayı yap ve kaydet
-                        res_df = utils.calculate_ai_trend_series(df_all_data)
+                        # Önce önbellek: model hiç çalışmadan seri kurulur.
+                        res_df = utils.trend_series_from_cache()
+                        if res_df is None or res_df.empty:
+                            # Önbellek boş (ilk kurulum) -> tam tarama
+                            res_df = utils.calculate_ai_trend_series(df_all_data)
                         
                         if res_df.empty:
                             st.error("Analiz sonucunda hiç veri dönmedi! (Utils dosyasındaki Debug çıktılarına bakın)")
@@ -1446,7 +1483,10 @@ def _render_tab_roberta():
         if st.button("🚀 Tüm Geçmişi Analiz Et", type="primary", key="btn_ai_run_all"):
             with st.spinner("Model tüm geçmişi tarıyor..."):
                 df_all_rob = utils.fetch_all_data()
-                res_df = utils.calculate_ai_trend_series(df_all_rob)
+                # Önce önbellek: model hiç çalışmadan seri kurulur.
+                res_df = utils.trend_series_from_cache()
+                if res_df is None or res_df.empty:
+                    res_df = utils.calculate_ai_trend_series(df_all_rob)
 
             if res_df is None or res_df.empty:
                 st.error("Analiz sonucu boş geldi. (DB boş olabilir veya model hata vermiş olabilir)")
@@ -1651,3 +1691,282 @@ def _render_tab_roberta():
 
 with tab_roberta:
     _render_tab_roberta()
+
+
+# ==============================================================================
+# TAB: TON HARİTASI & KONULAR
+# ==============================================================================
+# İki analiz, tek veri kaynağı (önbellekteki cümle tablosu):
+#   1. Cümle bazlı ton haritası     -> tek dokümanın ton mimarisi
+#   2. Konu/muhatap payları serisi  -> zaman içinde neyden, kime bahsedildiği
+#
+# Ton etiketi     : mrince/CBRT-RoBERTa-HawkishDovish-Classifier
+# Muhatap etiketi : Moritz-Pfeifer/CentralBankRoBERTa-agent-classifier
+# Tema etiketi    : deterministik sözlük (model değil — bkz. utils.THEME_PATTERNS)
+# ==============================================================================
+
+
+def _tone_cache_panel(df_logs):
+    st.subheader("🗃️ Model Önbelleği")
+
+    diag = utils.diagnose(df_logs)
+    if diag.empty:
+        st.info("Veritabanında analiz edilecek metin yok.")
+        return
+
+    counts = diag["durum"].value_counts().to_dict()
+    taze = counts.get("taze", 0)
+    bayat = len(diag) - taze
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Kayıt", len(diag))
+    c2.metric("Taze", taze)
+    c3.metric("Eksik", counts.get("eksik", 0))
+    c4.metric("Bayat", counts.get("metin_degisti", 0) + counts.get("surum_eskidi", 0))
+
+    with st.expander("Kayıt bazında durum", expanded=False):
+        show = diag.copy()
+        show["Dönem"] = pd.to_datetime(show["period_date"]).dt.strftime("%Y-%m")
+        show = show[["Dönem", "source", "durum", "n_sentences"]].rename(
+            columns={"source": "Kaynak", "durum": "Durum", "n_sentences": "Cümle"}
+        )
+        st.dataframe(show.sort_values("Dönem", ascending=False),
+                     use_container_width=True, hide_index=True)
+
+    use_agent = st.checkbox(
+        "Muhatap sınıflandırıcısını da çalıştır (CentralBankRoBERTa agent-classifier)",
+        value=True,
+        help="İkinci bir RoBERTa (~500 MB) yükler. Konu payları serisi buna bağlıdır; "
+             "kapatırsan yalnızca sözlük tabanlı tema etiketi üretilir.",
+        key="rc_use_agent",
+    )
+
+    b1, b2, _ = st.columns([1.5, 1.5, 3])
+    with b1:
+        if st.button(f"⚡ Eksik/bayat {bayat} kaydı hesapla",
+                     type="primary", disabled=(bayat == 0), key="rc_sync"):
+            _tone_run_sync(df_logs, force=False, with_agent=use_agent)
+    with b2:
+        if st.button("♻️ Tümünü yeniden hesapla", key="rc_force"):
+            _tone_run_sync(df_logs, force=True, with_agent=use_agent)
+
+    st.caption(
+        f"Sürüm `{utils.PIPELINE_VERSION}` · Skorlama mantığını değiştirdiğinde "
+        "`utils.PIPELINE_VERSION` değerini bump et; tüm kayıtlar otomatik bayatlar. "
+        "Metni düzenlersen o kaydın hash'i değişir ve yalnızca o kayıt yeniden hesaplanır."
+    )
+
+
+def _tone_run_sync(df_logs, force, with_agent):
+    if not utils.HAS_TRANSFORMERS:
+        st.error("transformers/torch yüklü değil.")
+        return
+    if not utils.supabase:
+        st.error("Supabase bağlantısı yok — önbellek yazılamaz.")
+        return
+
+    pb = st.progress(0.0)
+    lbl = st.empty()
+
+    def _cb(frac, text):
+        pb.progress(min(1.0, frac))
+        lbl.caption(f"Hesaplanıyor: {text}")
+
+    with st.spinner("Model çalışıyor..."):
+        res = utils.sync_cache(df_logs, force=force, with_agent=with_agent, progress_cb=_cb)
+
+    if with_agent:
+        utils.release_agent_pipeline()
+
+    pb.empty()
+    lbl.empty()
+    st.success(f"Tamamlandı — işlenen {res['islenen']}, atlanan {res['atlanan']}, hata {res['hata']}")
+    st.rerun()
+
+
+def _tone_sentence_map(df_sent):
+    st.subheader("🧭 Cümle Bazlı Ton Haritası")
+    st.caption(
+        "Metin, modelin cümle düzeyi çıktısına göre renklendirilir. Kırmızı = şahin, "
+        "mavi = güvercin, renksiz = nötr; renk yoğunluğu |P(HAWK) − P(DOVE)| ile "
+        "orantılıdır. Cümlenin üzerine gelince ham olasılıklar görünür."
+    )
+
+    donems = sorted(df_sent["Donem"].dropna().unique().tolist(), reverse=True)
+    if not donems:
+        st.info("Önbellekte cümle yok.")
+        return
+
+    cA, cB = st.columns([1, 2])
+    with cA:
+        sel = st.selectbox("Dönem", donems, index=0, key="tm_period")
+    d = df_sent[df_sent["Donem"] == sel].copy()
+
+    with cB:
+        agents = ["(tümü)"] + sorted(d["agent_label"].dropna().unique().tolist())
+        agent_f = st.selectbox("Muhatap filtresi", agents, index=0, key="tm_agent")
+
+    d_view = d if agent_f == "(tümü)" else d[d["agent_label"] == agent_f]
+    if d_view.empty:
+        st.info("Bu filtreyle cümle kalmadı.")
+        return
+
+    diffs = pd.to_numeric(d_view["diff"], errors="coerce")
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Cümle", len(d_view))
+    m2.metric("Ortalama ton", f"{diffs.mean():+.3f}")
+    m3.metric("🦅 Şahin cümle", int((diffs >= utils.DOC_STANCE_DEADBAND).sum()))
+    m4.metric("🕊️ Güvercin cümle", int((diffs <= -utils.DOC_STANCE_DEADBAND).sum()))
+
+    fig_strip = utils.chart_sentence_strip(d_view, title=f"{sel} — cümle sırasına göre ton")
+    if fig_strip:
+        st.plotly_chart(fig_strip, use_container_width=True, key=f"strip_{sel}")
+
+    st.markdown(
+        utils.sentence_heatmap_html(d_view, show_agent=(agent_f == "(tümü)")),
+        unsafe_allow_html=True,
+    )
+
+    with st.expander("En uçtaki cümleler", expanded=False):
+        srt = d_view.sort_values("diff", ascending=False)
+        cols = ["sent_idx", "sentence", "diff", "agent_label", "theme_label"]
+        names = {"sent_idx": "#", "sentence": "Cümle", "diff": "Ton",
+                 "agent_label": "Muhatap", "theme_label": "Tema"}
+        cL, cR = st.columns(2)
+        with cL:
+            st.markdown("**🦅 En şahin 5**")
+            st.dataframe(srt.head(5)[cols].rename(columns=names),
+                         use_container_width=True, hide_index=True)
+        with cR:
+            st.markdown("**🕊️ En güvercin 5**")
+            st.dataframe(srt.tail(5)[cols].rename(columns=names),
+                         use_container_width=True, hide_index=True)
+
+
+def _tone_topic_series(df_sent):
+    st.subheader("📊 Konu Payları Zaman Serisi")
+
+    mode = st.radio(
+        "Etiket kaynağı",
+        ["Muhatap (CentralBankRoBERTa)", "Tema (sözlük)"],
+        horizontal=True,
+        key="tp_mode",
+    )
+    is_agent = mode.startswith("Muhatap")
+    col = "agent_label" if is_agent else "theme_label"
+    colors = utils.AGENT_COLORS if is_agent else None
+
+    if is_agent and df_sent["agent_label"].fillna("Belirsiz").eq("Belirsiz").all():
+        st.warning(
+            "Muhatap etiketi yok — önbellek, muhatap sınıflandırıcısı kapalıyken "
+            "üretilmiş. Yukarıdan seçeneği açıp yeniden hesaplaman gerekiyor."
+        )
+        return
+
+    st.caption(
+        "Payların toplamı her dönemde %100'dür; yükseklik değil **kompozisyon** okunur. "
+        "Bir konunun payındaki artış, o toplantıda dikkatin oraya kaydığı anlamına gelir."
+        if is_agent else
+        "Tema etiketi sözlük tabanlıdır (deterministik, denetlenebilir); ton etiketi modelden gelir."
+    )
+
+    share = utils.share_timeseries(df_sent, col)
+    if share.empty:
+        st.info("Yeterli veri yok.")
+        return
+
+    if is_agent:
+        order = [c for c in utils.AGENT_ORDER if c in share.columns]
+        order += [c for c in share.columns if c not in order]
+        share = share[order]
+
+    fig_share = utils.chart_share_area(share, "Cümle payları (%)", colors=colors)
+    if fig_share:
+        st.plotly_chart(fig_share, use_container_width=True, key=f"share_{col}")
+
+    st.markdown("#### 🌡️ Konu × Ton")
+    st.caption(
+        "Asıl bilgi burada: pay bir konuya **ne kadar** yer ayrıldığını, bu ısı haritası ise "
+        "o konu hakkında **nasıl** konuşulduğunu gösterir. Aynı dönemde bir konuda şahin, "
+        "başka bir konuda güvercin olmak — agregat ton endeksinin sildiği ayrım."
+    )
+    tm = utils.tone_matrix(df_sent, col)
+    fig_tone = utils.chart_tone_heatmap(tm, "Dönem × konu ortalama tonu",
+                                        ylab="Muhatap" if is_agent else "Tema")
+    if fig_tone:
+        st.plotly_chart(fig_tone, use_container_width=True, key=f"tone_{col}")
+
+    tbl = utils.divergence_table(df_sent, col)
+    if not tbl.empty:
+        st.markdown("#### Tüm dönemler — konu bazında özet")
+        st.dataframe(
+            tbl.rename(columns={col: ("Muhatap" if is_agent else "Tema")}).round(3),
+            use_container_width=True, hide_index=True,
+        )
+
+
+def _tone_position_map(df_sent):
+    st.subheader("📐 Metnin Neresinde Şahinleşiyor?")
+    st.caption(
+        "Her metin göreli konuma göre 10 dilime bölünür (%0 = ilk cümle, %100 = son cümle) "
+        "ve dilim ortalaması alınır. Karar cümlesinin ve kapanış taahhüdünün tonu, giriş "
+        "paragraflarındaki görünüm anlatısından sistematik olarak ayrışıyorsa burada görünür."
+    )
+    pm = utils.position_tone_matrix(df_sent, bins=10)
+    fig_pos = utils.chart_tone_heatmap(pm, "Dönem × metin içi konum", ylab="Metin içi konum")
+    if fig_pos:
+        st.plotly_chart(fig_pos, use_container_width=True, key="posmap")
+    else:
+        st.info("Yeterli veri yok.")
+
+
+def _render_tab_tone_topics():
+    st.header("🗺️ Ton Haritası & Konular")
+
+    if not utils.supabase:
+        st.error("Supabase bağlantısı yok.")
+        return
+
+    df_logs = utils.fetch_all_data()
+    if df_logs is None or df_logs.empty:
+        st.info("Veritabanında kayıt yok.")
+        return
+
+    _tone_cache_panel(df_logs)
+    st.divider()
+
+    df_sent = utils.fetch_sentences()
+    if df_sent is None or df_sent.empty:
+        st.info("Önbellek boş. Yukarıdaki hesaplama butonunu bir kez çalıştır — "
+                "sonrasında bu sekme model çalıştırmadan açılır.")
+        return
+
+    _tone_sentence_map(df_sent)
+    st.divider()
+    _tone_topic_series(df_sent)
+    st.divider()
+    _tone_position_map(df_sent)
+
+    with st.expander("ℹ️ Etiketler nereden geliyor?", expanded=False):
+        st.markdown(f"""
+**Ton (şahin/güvercin)** — `{utils.MODEL_HD}`, cümle düzeyinde.
+Katkı `diff = P(HAWK) − P(DOVE)`; bu zaten güven-ağırlıklıdır, çıplak sayımdan üstündür.
+Dashboard'daki kanonik ton ile **aynı** hesaptır; tek fark burada cümle sırası korunur.
+
+**Muhatap** — `{utils.MODEL_AGENT}` (Pfeifer & Marohl, 2023).
+Beş makroekonomik muhatap: hanehalkı, firmalar, finansal sektör, kamu, merkez bankası.
+Bu modelin asıl katkısı "*ne iyi, kimin için*" ayrımını yapabilmesi.
+
+**Tema** — sözlük tabanlı, model değil. CentralBankRoBERTa ailesinde bir **konu**
+sınıflandırıcısı yok; muhatap ve duygu başlıkları var. Konu boyutunu uydurma bir model
+çıktısı gibi sunmak yerine deterministik ve denetlenebilir bir sözlük katmanı kullanıldı.
+Sözlüğü `utils.THEME_PATTERNS` içinden genişletebilirsin.
+
+**Önbellek** — model çıktısı cümle düzeyinde `roberta_sentences` tablosuna yazılır.
+Kalibrasyon / EMA / histerezis **saklanmaz**: bunlar tüm serinin dağılımına bağlıdır,
+yeni bir kayıt geçmiş skorları da değiştirir. Bu yüzden her yüklemede yeniden hesaplanır.
+        """)
+
+
+with tab_tone:
+    _render_tab_tone_topics()

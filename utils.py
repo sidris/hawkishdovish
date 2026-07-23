@@ -3791,6 +3791,28 @@ def diagnose(df_logs: pd.DataFrame) -> pd.DataFrame:
     return m[["id", "period_date", "source", "text_hash", "durum", "n_sentences"]]
 
 
+def missing_periods(df_logs: pd.DataFrame) -> list:
+    """
+    Önbellekte taze karşılığı OLMAYAN kayıtların dönemleri ("YYYY-MM" listesi).
+
+    Yeni bir PPK kaydı eklendiğinde önbellek otomatik güncellenmez — model
+    çalıştırmak pahalı olduğu için bu bilinçli bir tercih. Ama sessizce eksik
+    kalması kötü: grafik hiçbir uyarı vermeden bir önceki döneme kadar çizilir.
+    Bu fonksiyon o boşluğu görünür kılar.
+    """
+    try:
+        diag = diagnose(df_logs)
+    except Exception:
+        return []
+    if diag is None or diag.empty:
+        return []
+    bad = diag[diag["durum"] != "taze"]
+    if bad.empty:
+        return []
+    return sorted(pd.to_datetime(bad["period_date"], errors="coerce")
+                  .dropna().dt.strftime("%Y-%m").unique().tolist())
+
+
 def sync_cache(df_logs: pd.DataFrame,
                only_ids: Optional[Iterable] = None,
                force: bool = False,
@@ -3912,9 +3934,20 @@ def trend_series_from_cache(span: int = 7, z_scale: float = 2.0, hyst: float = 2
     if cache.empty:
         return pd.DataFrame()
 
-    c = cache[cache["pipeline_version"] == PIPELINE_VERSION].copy()
+    # DİKKAT: burada tek bir sürüme eşitlik ARANMAZ. fetch_sentences ve diagnose
+    # COMPATIBLE_VERSIONS kullanırken burası yalnızca PIPELINE_VERSION'a bakıyordu;
+    # önbellek eski sürümde yazılmışsa seri sessizce boş dönüyor ya da satır
+    # kaybediyordu.
+    c = cache[cache["pipeline_version"].isin(COMPATIBLE_VERSIONS)].copy()
     if c.empty:
         return pd.DataFrame()
+
+    # Aynı kayıt birden çok sürümde varsa en yenisini tut
+    order = {v: i for i, v in enumerate(COMPATIBLE_VERSIONS)}
+    c["_vrank"] = c["pipeline_version"].map(order).fillna(-1)
+    c = (c.sort_values("_vrank")
+           .drop_duplicates(subset=["log_id"], keep="last")
+           .drop(columns=["_vrank"]))
 
     c = c.sort_values("period_date").reset_index(drop=True)
     out = pd.DataFrame({

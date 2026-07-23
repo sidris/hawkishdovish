@@ -556,8 +556,15 @@ _CLEAN_PNG_JS = """
   function baskiKopyasi(gizli) {
     var f = JSON.parse(JSON.stringify(PRISTINE));
 
-    // Legend'da kapatılmış serileri kaydıyla birlikte kaldır
-    gizli.forEach(function (i) { if (f.data[i]) { f.data[i].showlegend = false; } });
+    // GÖRÜNÜRLÜK DURUMUNU AKTAR.
+    // PRISTINE, sayfa ilk yüklendiğindeki figür tanımıdır; kullanıcının legend
+    // tıklamalarını BİLMEZ. Yalnızca showlegend=false uygulamak legend kaydını
+    // siler ama ÇİZGİ çizilmeye devam eder. visible=false ise seriyi hem çizim
+    // alanından hem legend'dan tamamen kaldırır (legendonly ile aynı şekilde
+    // eksen aralığına da katılmaz).
+    gizli.forEach(function (i) {
+      if (f.data[i]) { f.data[i].visible = false; f.data[i].showlegend = false; }
+    });
 
     var L = f.layout || (f.layout = {});
     L.font = L.font || {};                 L.font.size = 20;

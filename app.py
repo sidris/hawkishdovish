@@ -125,8 +125,28 @@ with tab1:
         
         merged = merged.sort_values("period_date")
 
-                # --- AI SCORE (mrince) merge ---
-        ai_df = st.session_state.get("ai_trend_df")
+        # --- CB-RoBERTa serisi: ÖNCE CANLI ÖNBELLEK ---------------------------
+        # Eskiden yalnızca st.session_state["ai_trend_df"] okunuyordu. Bu, kullanıcı
+        # "Analizi Başlat" butonuna en son ne zaman bastıysa O ANIN FOTOĞRAFIDIR:
+        # yeni bir PPK kaydı eklendiğinde dashboard onu göstermez, hiçbir uyarı
+        # vermeden bir önceki döneme kadar çizmeye devam ederdi. Artık seri her
+        # yüklemede veritabanı önbelleğinden okunur; oturum kopyası yalnızca
+        # önbellek boşsa (ilk kurulum) devreye girer.
+        ai_df = utils.trend_series_from_cache()
+        if ai_df is None or ai_df.empty:
+            ai_df = st.session_state.get("ai_trend_df")
+
+        _eksik = utils.missing_periods(df_logs)
+        if _eksik:
+            st.warning(
+                f"⚠️ **{len(_eksik)} kayıt CB-RoBERTa önbelleğinde yok veya bayat** "
+                f"({', '.join(_eksik[-6:])}{' …' if len(_eksik) > 6 else ''}). "
+                "Bu dönemler için yapay zeka serisi çizilmiyor. "
+                "«🗺️ Ton Haritası & Konular» sekmesindeki *Eksik/bayat kaydı hesapla* "
+                "butonuna basınca tamamlanır. Sözlük tabanlı ABG serisi bundan etkilenmez."
+            )
+
+        # --- AI SCORE (mrince) merge ---
         if ai_df is not None and not ai_df.empty:
             ai_tmp = ai_df.copy()
         
@@ -148,7 +168,7 @@ with tab1:
 
 
         
-        ai_df = st.session_state.get("ai_trend_df")
+        # (ai_df yukarıda canlı önbellekten kuruldu — tekrar okunmaz)
         if ai_df is not None and not ai_df.empty:
             ai_tmp = ai_df.copy()
         
@@ -294,10 +314,17 @@ with tab1:
                     links_list = [l.strip() for l in ev['links'].split('\n') if l.strip()]
                     event_links_display.append({"Tarih": ev_date, "Linkler": links_list})
 
+        # Legend yerleşimi: seri sayısı 16'ya çıktığı için yatay legend 2-3 satıra
+        # sarıyor ve çizim alanına giriyordu. Yükseklik ve ALT MARGIN birlikte
+        # büyütülmeli — yalnızca height artırmak legend'ı aşağı itmez, çünkü legend
+        # konumu çizim alanına göre orantılıdır.
         fig.update_layout(
-            title="Merkez Bankası Analiz Paneli", hovermode="x unified", height=600,
+            title="Merkez Bankası Analiz Paneli", hovermode="x unified", height=800,
             shapes=layout_shapes, annotations=layout_annotations, showlegend=True,
-            legend=dict(orientation="h", yanchor="top", y=-0.15, xanchor="center", x=0.5),
+            margin=dict(t=60, b=210, l=60, r=40),
+            legend=dict(orientation="h", yanchor="top", y=-0.12, xanchor="center", x=0.5,
+                        font=dict(size=11), itemsizing="constant",
+                        bgcolor="rgba(255,255,255,0.6)", borderwidth=0),
             yaxis=dict(title="Skor & Oranlar", range=[-150, 150], zeroline=False),
             yaxis2=dict(visible=False, overlaying="y", side="right"),
             yaxis3=dict(title="Kelime", overlaying="y", side="right", showgrid=False, visible=False, range=[0, merged['word_count'].max() * 2])
@@ -310,9 +337,9 @@ with tab1:
         utils.render_plotly_clean_png(
             fig,
             div_id="dash_ana_grafik",
-            height=620,
+            height=820,
             filename="merkez_bankasi_analiz_paneli",
-            png_width=1900, png_height=950, png_scale=2,
+            png_width=1900, png_height=1080, png_scale=2,
         )
 
        # --- YENİ EKLENEN AI TREND GRAFİĞİ (GÜVENLİ VERSİYON) ---
@@ -1487,6 +1514,14 @@ def _render_tab_roberta():
                 res_df = utils.trend_series_from_cache()
                 if res_df is None or res_df.empty:
                     res_df = utils.calculate_ai_trend_series(df_all_rob)
+                else:
+                    _eksik_rob = utils.missing_periods(df_all_rob)
+                    if _eksik_rob:
+                        st.warning(
+                            f"⚠️ Şu dönemler önbellekte yok veya bayat, seriye dahil "
+                            f"edilmedi: {', '.join(_eksik_rob)}. «🗺️ Ton Haritası & "
+                            "Konular» sekmesinden hesaplayabilirsin."
+                        )
 
             if res_df is None or res_df.empty:
                 st.error("Analiz sonucu boş geldi. (DB boş olabilir veya model hata vermiş olabilir)")

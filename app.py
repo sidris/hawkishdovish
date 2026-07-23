@@ -322,9 +322,14 @@ with tab1:
             title="Merkez Bankası Analiz Paneli", hovermode="x unified", height=800,
             shapes=layout_shapes, annotations=layout_annotations, showlegend=True,
             margin=dict(t=60, b=210, l=60, r=40),
-            legend=dict(orientation="h", yanchor="top", y=-0.12, xanchor="center", x=0.5,
-                        font=dict(size=11), itemsizing="constant",
-                        bgcolor="rgba(255,255,255,0.6)", borderwidth=0),
+            # entrywidthmode="fraction" + entrywidth: her legend girdisi legend
+            # genişliğinin sabit bir oranını kaplar, böylece sarma DETERMİNİSTİKtir
+            # ve container genişliğinin ne zaman ölçüldüğüne bağlı kalmaz.
+            # 0.20 -> satır başına 5 girdi; 16 seri = 4 satır.
+            legend=dict(orientation="h", yanchor="top", y=-0.10, xanchor="center", x=0.5,
+                        font=dict(size=11),
+                        entrywidthmode="fraction", entrywidth=0.20,
+                        tracegroupgap=4),
             yaxis=dict(title="Skor & Oranlar", range=[-150, 150], zeroline=False),
             yaxis2=dict(visible=False, overlaying="y", side="right"),
             yaxis3=dict(title="Kelime", overlaying="y", side="right", showgrid=False, visible=False, range=[0, merged['word_count'].max() * 2])

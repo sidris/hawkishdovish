@@ -523,35 +523,55 @@ _CLEAN_PNG_JS = """
 <script>
 (function init() {
   var gd = document.getElementById('__DIV_ID__');
-  if (!window.Plotly || !gd || !gd.data) { return setTimeout(init, 120); }
+  var btn = document.getElementById('__DIV_ID___btn');
+  if (!window.Plotly || !gd || !gd.data || !btn) { return setTimeout(init, 120); }
 
-  var temizPNG = {
-    name: 'temizPNG',
-    title: 'PNG indir (kapalı seriler hariç)',
-    icon: Plotly.Icons.camera,
-    click: function (g) {
-      var gizli = [];
-      g.data.forEach(function (t, i) { if (t.visible === 'legendonly') gizli.push(i); });
-      var geriAl = function () {
-        return gizli.length ? Plotly.restyle(g, {showlegend: true}, gizli) : Promise.resolve();
-      };
-      var hazirla = gizli.length ? Plotly.restyle(g, {showlegend: false}, gizli) : Promise.resolve();
-      hazirla.then(function () {
-        return Plotly.downloadImage(g, {
-          format: 'png', width: __PW__, height: __PH__, scale: __PS__, filename: '__FNAME__'
-        });
-      }).then(geriAl).catch(geriAl);
-    }
-  };
+  // --- 1) YENİDEN BOYUTLANDIRMA ---------------------------------------------
+  // Streamlit grafiği bir iframe içine koyar. Script çalıştığı anda iframe'in
+  // genişliği çoğu zaman nihai genişliği DEĞİLDİR; Plotly legend'ı o dar ölçüye
+  // göre yerleştirir, iframe sonradan genişler ve legend bir daha akmaz — tüm
+  // girdiler tek satırda üst üste biner. ResizeObserver bunu düzeltir.
+  var rt = null;
+  var ro = new ResizeObserver(function () {
+    clearTimeout(rt);
+    rt = setTimeout(function () { try { Plotly.Plots.resize(gd); } catch (e) {} }, 60);
+  });
+  ro.observe(gd);
+  window.addEventListener('load', function () {
+    try { Plotly.Plots.resize(gd); } catch (e) {}
+  });
 
-  Plotly.newPlot(gd, gd.data, gd.layout, {
-    responsive: true,
-    displaylogo: false,
-    modeBarButtonsToRemove: ['toImage', 'lasso2d', 'select2d'],
-    modeBarButtonsToAdd: [temizPNG]
+  // --- 2) TEMİZ PNG ----------------------------------------------------------
+  // Legend'a tıklayınca Plotly trace'i silmez, visible='legendonly' yapar; kayıt
+  // legend'da soluk halde kalır ve yerleşik indirme o hali basar. showlegend=false
+  // kaydı tamamen kaldırır — indirme öncesi uygulanır, sonra geri alınır.
+  btn.addEventListener('click', function () {
+    var gizli = [];
+    gd.data.forEach(function (t, i) { if (t.visible === 'legendonly') gizli.push(i); });
+    var geriAl = function () {
+      return gizli.length ? Plotly.restyle(gd, {showlegend: true}, gizli) : Promise.resolve();
+    };
+    var hazirla = gizli.length ? Plotly.restyle(gd, {showlegend: false}, gizli) : Promise.resolve();
+    btn.disabled = true;
+    hazirla.then(function () {
+      return Plotly.downloadImage(gd, {
+        format: 'png', width: __PW__, height: __PH__, scale: __PS__, filename: '__FNAME__'
+      });
+    }).then(geriAl).catch(geriAl).then(function () { btn.disabled = false; });
   });
 })();
 </script>
+"""
+
+_CLEAN_PNG_BTN = """
+<div style="text-align:right;margin:0 0 4px 0;">
+  <button id="__DIV_ID___btn" style="
+      font-size:12px;padding:4px 10px;cursor:pointer;
+      border:1px solid rgba(128,128,128,.45);border-radius:6px;
+      background:transparent;color:inherit;font-family:inherit;">
+    ⬇ PNG indir (kapalı seriler hariç)
+  </button>
+</div>
 """
 
 
@@ -563,27 +583,29 @@ def render_plotly_clean_png(fig,
                             png_height: int = 900,
                             png_scale: int = 2):
     """
-    Plotly grafiğini components.html içinde basar ve modebar'a "temiz PNG" butonu ekler.
+    Plotly grafiğini basar ve yanına "kapalı serileri dışlayan" PNG indirme
+    butonu koyar.
 
-    SORUN
-    -----
-    Legend'a tıklayınca Plotly trace'i silmez, `visible='legendonly'` yapar.
-    Seri çizim alanından kalkar ama legend kaydı soluk halde kalır; yerleşik
-    `toImage` de o anki state'i bastığı için indirilen PNG'de kapatılmış seriler
-    görünmeye devam eder.
+    ÇÖZÜLEN SORUN
+    -------------
+    Legend'a tıklayınca Plotly trace'i silmez, `visible='legendonly'` yapar. Seri
+    çizim alanından kalkar ama legend kaydı soluk halde kalır; yerleşik `toImage`
+    o anki state'i bastığı için indirilen PNG'de kapatılmış seriler görünmeye
+    devam eder. `showlegend=False` ise kaydı legend'dan tamamen kaldırır.
 
-    ÇÖZÜM
-    -----
-    `showlegend=False`, `legendonly` durumundan bağımsız olarak kaydı legend'dan
-    tamamen kaldırır. İndirme öncesi gizli trace'lere uygulanır, indirme bitince
-    geri alınır. Yerleşik kamera butonu da kaldırılır ki yanlışlıkla kirli PNG
-    indirilmesin.
+    TASARIM NOTU — NEDEN MODEBAR BUTONU DEĞİL
+    -----------------------------------------
+    Modebar'a özel buton eklemek `Plotly.newPlot`'un config'ini değiştirmeyi
+    gerektirir; bu da grafiği İKİNCİ KEZ çizdirmek demektir. İkinci çizim,
+    hesaplanmış (kirli) bir layout nesnesiyle yapıldığı için legend akışını
+    bozuyor ve 16 serilik grafikte tüm legend girdileri tek satırda üst üste
+    biniyordu. Bu yüzden grafik yalnızca BİR KEZ çizilir, indirme işi normal bir
+    HTML butonuna verilir. Yerleşik kamera butonu config'ten kaldırılır ki
+    yanlışlıkla kirli PNG indirilmesin.
 
-    NOT
-    ---
-    Bu düzeltme `st.plotly_chart` üzerinden mümkün değildir: legend tıklaması
-    Python tarafına hiç ulaşmaz. Grafik bir iframe içinde render edilir, bu yüzden
-    Streamlit temasını miras almaz — figürün kendi renkleri geçerlidir.
+    NOT: Bu düzeltme `st.plotly_chart` üzerinden mümkün değildir — legend
+    tıklaması Python tarafına hiç ulaşmaz. Grafik iframe içinde render edilir,
+    bu yüzden Streamlit temasını miras almaz; figürün kendi renkleri geçerlidir.
     """
     try:
         import streamlit.components.v1 as components
@@ -598,15 +620,20 @@ def render_plotly_clean_png(fig,
             include_plotlyjs="cdn",
             full_html=False,
             div_id=div_id,
-            config={"displaylogo": False, "responsive": True},
+            config={
+                "displaylogo": False,
+                "responsive": True,
+                "modeBarButtonsToRemove": ["toImage", "lasso2d", "select2d"],
+            },
         )
+        btn = _CLEAN_PNG_BTN.replace("__DIV_ID__", div_id)
         js = (_CLEAN_PNG_JS
               .replace("__DIV_ID__", div_id)
               .replace("__PW__", str(int(png_width)))
               .replace("__PH__", str(int(png_height)))
               .replace("__PS__", str(int(png_scale)))
               .replace("__FNAME__", str(filename)))
-        components.html(html_fig + js, height=int(height) + 40, scrolling=False)
+        components.html(btn + html_fig + js, height=int(height) + 60, scrolling=False)
     except Exception:
         # Herhangi bir sorunda eski davranışa düş
         st.plotly_chart(fig, use_container_width=True)

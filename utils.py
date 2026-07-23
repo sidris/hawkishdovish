@@ -3164,10 +3164,19 @@ def summarize_sentence_roberta(df_sent: pd.DataFrame, full_text: str | None = No
 # 10. CB-ROBERTA ÖNBELLEĞİ — SABİTLER
 # =============================================================================
 
-#: Skorlama mantığını her değiştirdiğinde bunu bump et → önbellek komple bayatlar.
-#: v2: tema sözlüğü düzeltildi (bkz. THEME_PATTERNS "Kredi & Aktarım" ve
-#:     _DECISION_OVERRIDE). v1 satırları tabloda kalır ama okunmaz.
+#: Yazma sürümü. Yalnızca MODEL çıktısını etkileyen bir değişiklikte bump et
+#: (model değişimi, cümle bölme mantığı, olasılık normalizasyonu).
+#:
+#: DİKKAT: Tema sözlüğünü değiştirmek artık bump GEREKTİRMEZ. Tema etiketi
+#: okuma anında `sentence` metninden yeniden hesaplanır (bkz. fetch_sentences),
+#: veritabanındaki `theme_label` kolonu yok sayılır. Böylece sözlük düzeltmeleri
+#: anında yansır ve pahalı model taraması tekrarlanmaz.
 PIPELINE_VERSION = "v2"
+
+#: Model çıktısı birbiriyle AYNI olan sürümler. Bunların hepsi "taze" sayılır ve
+#: birlikte okunur. v1 ile v2 arasındaki tek fark tema sözlüğüydü; tema artık
+#: okuma anında hesaplandığı için ikisi eşdeğerdir.
+COMPATIBLE_VERSIONS = ("v1", "v2")
 
 MODEL_HD = "mrince/CBRT-RoBERTa-HawkishDovish-Classifier"
 MODEL_AGENT = "Moritz-Pfeifer/CentralBankRoBERTa-agent-classifier"
@@ -3211,20 +3220,31 @@ AGENT_COLORS = {
 # denetlenebilir, tekrar üretilebilir ve TCMB metinlerinin dar sözcük dağarcığında
 # kümeleme tabanlı konu modellerinden daha kararlıdır.
 
+# Kalıplar kasten DAR tutulur. Jenerik kelimeler (committee, price, bank, growth)
+# TCMB metninde her yerde geçtiği için sözlüğü işe yaramaz hale getiriyordu:
+# her cümle her temaya eşleşiyor, kazananı da rastgele bir sayım farkı belirliyordu.
 THEME_PATTERNS: dict[str, list[str]] = {
     "Enflasyon Görünümü": [
-        r"inflation", r"price(s)? (level|increase|pressure)", r"cpi", r"disinflation",
-        r"underlying trend", r"enflasyon", r"fiyat", r"dezenflasyon",
+        # "price" tek başına ARANMAZ: "price stability" politika hedefi,
+        # "pricing behavior" beklenti temasıdır.
+        r"\binflation\b", r"\bdisinflation\b", r"\bcpi\b", r"consumer prices",
+        r"price (level|increase|pressure|development)", r"underlying trend",
+        r"enflasyon", r"dezenflasyon", r"fiyat(lar|ları|ında)\b",
+        r"fiyat (artış|gelişme|baskı)",
     ],
     "Talep & Aktivite": [
-        r"domestic demand", r"aggregate demand", r"economic activity", r"growth",
-        r"output", r"employment", r"labou?r market", r"consumption", r"investment",
-        r"talep", r"büyüme", r"istihdam", r"iktisadi faaliyet",
+        # "credit growth" / "loan growth" kredi temasıdır, talep değil.
+        r"domestic demand", r"aggregate demand", r"economic activity",
+        r"(?<!credit\s)(?<!loan\s)\bgrowth\b", r"output gap", r"\bemployment\b",
+        r"labou?r market", r"\bconsumption\b", r"\binvestment\b",
+        r"\btalep\b", r"\bbüyüme\b", r"istihdam", r"iktisadi faaliyet",
     ],
     "Kur & Dış Denge": [
-        r"exchange rate", r"lira", r"currency", r"current account", r"external",
-        r"export", r"import", r"reserve", r"kur", r"cari (açık|denge|işlemler)",
-        r"ihracat", r"ithalat", r"rezerv",
+        # "import" -> "important" eşleşmesini engellemek için kelime sınırı şart.
+        r"exchange rate", r"\blira\b", r"\bcurrency\b", r"current account",
+        r"external (demand|balance|financ)", r"\bexports?\b", r"\bimports?\b",
+        r"\breserves?\b", r"döviz kur\w*", r"\bkur(u|un)?\b",
+        r"cari (açık|denge|işlemler)", r"ihracat", r"ithalat", r"rezerv",
     ],
     "Kredi & Aktarım": [
         # DİKKAT: burada "bank" tek başına ARANMAZ. Önceki sürümde
@@ -3237,13 +3257,22 @@ THEME_PATTERNS: dict[str, list[str]] = {
         r"kredi", r"likidite", r"mevduat", r"aktarım",
     ],
     "Beklentiler & İletişim": [
-        r"expectation", r"pricing behavio", r"anchor", r"forward", r"communicat",
-        r"survey", r"beklenti", r"fiyatlama davranış", r"çıpa",
+        # "forward" tek başına ARANMAZ ("going forward", "brought forward").
+        r"expectation", r"pricing behavio", r"\banchor\w*", r"forward guidance",
+        r"communicat\w+", r"\bsurvey\b",
+        # Karar çerçevesi/iletişim ilkesi cümleleri ("predictable, data-driven and
+        # transparent framework") aksi halde hiçbir temaya düşmüyordu.
+        r"\bpredictab\w+", r"data-driven", r"\btransparen\w+", r"\bframework\b",
+        r"beklenti", r"fiyatlama davranış", r"çıpa", r"öngörülebilir", r"şeffaf",
     ],
     "Politika Duruşu": [
-        r"policy rate", r"monetary policy stance", r"tight(ening|ness)?",
-        r"easing", r"macroprudential", r"decided to", r"committee",
-        r"politika faizi", r"para politikası", r"sıkı", r"makroihtiyati",
+        # "committee" ARANMAZ: konuşan tarafı gösterir, konuyu değil — neredeyse
+        # her cümlede geçtiği için tüm cümleleri bu temaya çekiyordu.
+        r"policy rate", r"monetary policy stance", r"monetary tightness",
+        r"\btighten(ing|ed)?\b", r"\beasing\b", r"macroprudential",
+        r"price stability", r"decided to", r"meeting-by-meeting", r"step size",
+        r"politika faizi", r"para politikası", r"\bsıkı(laş\w*|lık)?\b",
+        r"makroihtiyati", r"fiyat istikrar\w*",
     ],
     "Finansal İstikrar & Risk": [
         r"financial stability", r"risk premium", r"volatilit", r"uncertaint",
@@ -3263,33 +3292,82 @@ THEME_ORDER = list(THEME_PATTERNS.keys()) + ["Diğer"]
 # ("Central Bank", "deposit rate", "overnight lending") her zaman politika duruşudur.
 # Sayım yarışına sokmak yerine deterministik olarak öne alınır.
 _DECISION_OVERRIDE = re.compile(
-    r"(decided to|has decided|"
-    r"\b(policy|lending|borrowing|repo|deposit)\s+rate\b[^.]{0,80}\b(from|to)\b\s*\d|"
-    r"politika faizini|faiz(i|ini)?\s+(artır|indir|sabit))",
+    r"("
+    r"decided to|has decided|"
+    # "...lending rate ... at/to/from 40 percent" — sabit tutma kararı da karardır
+    r"\b(policy|lending|borrowing|repo|deposit|funding)\s+rate[s]?\b[^.]{0,120}"
+    r"\b(from|to|at)\b\s*\d|"
+    r"\b(maintained|kept|raised|lowered|reduced|increased|cut)\b[^.]{0,60}\brate[s]?\b|"
+    r"politika faizini|faiz(i|ini|ler)?\s*(oranını)?\s*(artır|indir|düşür|yükselt|sabit)"
+    r")",
     re.IGNORECASE,
 )
 
 
+def theme_hits(sentence: str) -> dict[str, int]:
+    """Cümlede her temanın kaç kalıbının eşleştiğini döndürür (denetim için)."""
+    s = str(sentence or "")
+    if not s.strip():
+        return {}
+    return {t: c for t, c in
+            ((th, sum(1 for p in pats if p.search(s)))
+             for th, pats in _THEME_COMPILED.items())
+            if c > 0}
+
+
+def assign_themes(sentence: str) -> list[str]:
+    """
+    ÇOK ETİKETLİ tema ataması: cümlenin değindiği TÜM temaları döndürür.
+
+    Neden tek etiket yetmiyor:
+      "The tight monetary policy stance ... until price stability is achieved ...
+       through demand, exchange rate, and expectation channels."
+    Bu cümle aynı anda politika duruşu, talep, kur ve beklenti hakkındadır. Tek
+    etiket zorunluluğunda üçü siliniyor ve kazananı sözlükteki YAZIM SIRASI
+    belirliyordu (2-2 beraberlikte ilk yazılan kazanır) — yani etiket, cümlenin
+    anlamına değil benim dosyadaki satır sıramla belirleniyordu. Nesnel değil.
+
+    Çok etikette paylar toplamı %100'ü aşar; okuma da değişir:
+      tek etiket -> "metnin yüzde kaçı bu konuya AYRILDI"   (kompozisyon)
+      çok etiket -> "cümlelerin yüzde kaçı bu konuya DEĞİNDİ" (kapsam)
+
+    İstisna: saf karar cümlesi ("faizi %40.5'ten %39.5'e indirdi") yalnızca
+    politika duruşudur, orada çoklu etiket anlamsızdır.
+    """
+    s = str(sentence or "")
+    if not s.strip():
+        return ["Diğer"]
+    if _DECISION_OVERRIDE.search(s):
+        return ["Politika Duruşu"]
+    hits = theme_hits(s)
+    return sorted(hits.keys()) if hits else ["Diğer"]
+
+
 def assign_theme(sentence: str) -> str:
     """
-    Cümleye tek bir tema etiketi verir.
+    TEK etiket ataması (kompozisyon görünümü için).
 
     Sıra:
       1) Karar cümlesi mi? -> doğrudan "Politika Duruşu"
       2) Değilse en çok kalıp eşleşen tema kazanır
-      3) Hiç eşleşme yoksa "Diğer"
+      3) Beraberlikte THEME_ORDER sırası belirler — bu KEYFİDİR, bu yüzden
+         analizde çok etiketli görünüm tercih edilmelidir.
+      4) Hiç eşleşme yoksa "Diğer"
     """
     s = str(sentence or "")
     if not s.strip():
         return "Diğer"
     if _DECISION_OVERRIDE.search(s):
         return "Politika Duruşu"
-    best, best_n = "Diğer", 0
-    for theme, pats in _THEME_COMPILED.items():
-        n = sum(1 for p in pats if p.search(s))
-        if n > best_n:
-            best, best_n = theme, n
-    return best
+    hits = theme_hits(s)
+    if not hits:
+        return "Diğer"
+    mx = max(hits.values())
+    tied = [t for t, c in hits.items() if c == mx]
+    for t in THEME_ORDER:
+        if t in tied:
+            return t
+    return tied[0]
 
 
 # =============================================================================
@@ -3547,14 +3625,39 @@ def fetch_doc_cache() -> pd.DataFrame:
 
 
 @st.cache_data(ttl=300, show_spinner=False)
-def fetch_sentences(version: str = PIPELINE_VERSION) -> pd.DataFrame:
-    """Tüm cümle önbelleğini çeker (bir PPK korpusu için birkaç bin satır)."""
+def fetch_sentences(version: str = None) -> pd.DataFrame:
+    """
+    Cümle önbelleğini çeker.
+
+    İki tasarım kararı:
+
+    1) SÜRÜM BİRLEŞTİRME — COMPATIBLE_VERSIONS içindeki tüm sürümler okunur ve
+       (log_id, sent_idx) başına en yeni sürüm tutulur. Böylece v1 ile v2 satırları
+       karışık durursa panel boş görünmez.
+
+    2) TEMA OKUMA ANINDA HESAPLANIR — veritabanındaki `theme_label` kolonu YOK
+       SAYILIR; etiket, saklanan `sentence` metninden yeniden üretilir. Sonuç:
+       sözlükteki her düzeltme anında yansır, pahalı model taraması tekrarlanmaz
+       ve veritabanı şeması hiç değişmez. `theme_labels` kolonu çok etiketli
+       görünüm için liste olarak eklenir.
+    """
+    versions = COMPATIBLE_VERSIONS if version is None else (version,)
     df = _paged_select(
         TBL_SENT,
-        flt=lambda q: q.eq("pipeline_version", version).order("period_date").order("sent_idx"),
+        flt=lambda q: q.in_("pipeline_version", list(versions))
+                       .order("period_date").order("sent_idx"),
     )
     if df.empty:
         return df
+
+    # Aynı cümlenin birden çok sürümü varsa en yenisini tut
+    if "pipeline_version" in df.columns:
+        order = {v: i for i, v in enumerate(COMPATIBLE_VERSIONS)}
+        df["_vrank"] = df["pipeline_version"].map(order).fillna(-1)
+        df = (df.sort_values("_vrank")
+                .drop_duplicates(subset=["log_id", "sent_idx"], keep="last")
+                .drop(columns=["_vrank"]))
+
     df["period_date"] = pd.to_datetime(df["period_date"], errors="coerce")
     df["Donem"] = df["period_date"].dt.strftime("%Y-%m")
     for c in ("hawk", "dove", "neut", "diff", "agent_conf"):
@@ -3564,8 +3667,26 @@ def fetch_sentences(version: str = PIPELINE_VERSION) -> pd.DataFrame:
         if c in df.columns:
             df[c] = pd.to_numeric(df[c], errors="coerce").astype("Int64")
     df["agent_label"] = df.get("agent_label", pd.Series(dtype=object)).fillna("Belirsiz")
-    df["theme_label"] = df.get("theme_label", pd.Series(dtype=object)).fillna("Diğer")
+
+    # Tema: saklanan değeri değil, güncel sözlüğü kullan
+    sents = df["sentence"].astype(str)
+    df["theme_labels"] = sents.map(assign_themes)
+    df["theme_label"] = sents.map(assign_theme)
+
     return df.sort_values(["period_date", "sent_idx"]).reset_index(drop=True)
+
+
+def explode_themes(df_sent: pd.DataFrame) -> pd.DataFrame:
+    """
+    Çok etiketli görünüm için uzun format: bir cümle, değindiği her tema için
+    ayrı satır. Toplam satır sayısı cümle sayısından fazladır — bu beklenen
+    davranıştır, "pay" yerine "kapsam" okunur.
+    """
+    if df_sent is None or df_sent.empty or "theme_labels" not in df_sent.columns:
+        return pd.DataFrame()
+    d = df_sent.explode("theme_labels").copy()
+    d["theme_label"] = d["theme_labels"].astype(str)
+    return d.drop(columns=["theme_labels"])
 
 
 def invalidate_cache_reads() -> None:
@@ -3660,7 +3781,7 @@ def diagnose(df_logs: pd.DataFrame) -> pd.DataFrame:
     def _status(r):
         if pd.isna(r.get("log_id")):
             return "eksik"
-        if str(r.get("pipeline_version")) != PIPELINE_VERSION:
+        if str(r.get("pipeline_version")) not in COMPATIBLE_VERSIONS:
             return "surum_eskidi"
         if str(r.get("cached_hash")) != str(r.get("text_hash")):
             return "metin_degisti"
@@ -3823,7 +3944,10 @@ def trend_series_from_cache(span: int = 7, z_scale: float = 2.0, hyst: float = 2
 # =============================================================================
 
 def share_timeseries(df_sent: pd.DataFrame, label_col: str) -> pd.DataFrame:
-    """Dönem × etiket → pay (%) tablosu (geniş format)."""
+    """
+    Dönem × etiket → pay (%). TEK etiketli veri için: sütun toplamı %100'dür,
+    yani KOMPOZİSYON okunur ("metnin yüzde kaçı bu konuya ayrıldı").
+    """
     if df_sent is None or df_sent.empty:
         return pd.DataFrame()
     g = (df_sent.groupby(["Donem", label_col]).size().rename("n").reset_index())
@@ -3832,40 +3956,129 @@ def share_timeseries(df_sent: pd.DataFrame, label_col: str) -> pd.DataFrame:
     return g.pivot(index="Donem", columns=label_col, values="pay").fillna(0.0).sort_index()
 
 
-def tone_matrix(df_sent: pd.DataFrame, label_col: str) -> pd.DataFrame:
-    """Dönem × etiket → ortalama diff (ton). Boş hücre = o dönem o konuya değinilmemiş."""
-    if df_sent is None or df_sent.empty:
+def coverage_timeseries(df_long: pd.DataFrame, df_sent: pd.DataFrame,
+                        label_col: str = "theme_label") -> pd.DataFrame:
+    """
+    Dönem × etiket → KAPSAM (%): o dönemde cümlelerin yüzde kaçı bu konuya değindi.
+
+    Payda, dönemdeki ÖZGÜN cümle sayısıdır (uzun formdaki satır sayısı değil),
+    bu yüzden değerler %0–100 arasındadır ama sütun toplamı %100'ü aşabilir —
+    bir cümle birden çok konuya değinebildiği için bu beklenen davranıştır.
+    """
+    if df_long is None or df_long.empty or df_sent is None or df_sent.empty:
         return pd.DataFrame()
-    return (df_sent.groupby(["Donem", label_col])["diff"]
-            .mean().unstack(label_col).sort_index())
+    denom = df_sent.groupby("Donem").size()
+    g = (df_long.drop_duplicates(subset=["Donem", "log_id", "sent_idx", label_col])
+                .groupby(["Donem", label_col]).size().rename("n").reset_index())
+    g["pay"] = 100.0 * g["n"] / g["Donem"].map(denom)
+    return g.pivot(index="Donem", columns=label_col, values="pay").fillna(0.0).sort_index()
 
 
-def position_tone_matrix(df_sent: pd.DataFrame, bins: int = 10) -> pd.DataFrame:
+def tone_matrix(df_sent: pd.DataFrame, label_col: str, min_n: int = 1):
     """
-    Dönem × metin-içi göreli konum (%) → ortalama ton.
-    'Metnin neresinde şahinleşiyor' sorusunu cevaplar: giriş paragrafları mı,
-    karar cümlesi mi, kapanış taahhüdü mü.
+    Dönem × etiket → ortalama ton, ve aynı boyutta cümle sayısı matrisi.
+
+    min_n: bu sayıdan az cümleye dayanan hücreler NaN yapılır. Tek cümleye
+    dayanan bir "ortalama" aslında tek bir model tahminidir; renklendirildiğinde
+    on cümlelik bir ortalamayla görsel olarak eşit ağırlıkta görünür ve okuyucuyu
+    sistematik biçimde yanıltır. PPK metni ~13 cümle olduğu için bu risk yüksektir.
+
+    Dönüş: (ton_matrisi, sayı_matrisi)
     """
     if df_sent is None or df_sent.empty:
-        return pd.DataFrame()
+        return pd.DataFrame(), pd.DataFrame()
+    g = df_sent.groupby(["Donem", label_col])["diff"].agg(["mean", "count"])
+    m = g["mean"].unstack(label_col).sort_index()
+    c = g["count"].unstack(label_col).sort_index().fillna(0).astype(int)
+    if min_n > 1:
+        m = m.where(c >= min_n)
+    return m, c
+
+
+def center_matrix(df_matrix: pd.DataFrame) -> pd.DataFrame:
+    """
+    Her sütundan (etiketten) kendi ortalamasını çıkarır: "sapma modu".
+
+    Neden gerekli: bazı temaların tonu sözcük dağarcığı yüzünden sistematik olarak
+    kayıktır — enflasyon dili modelde şahin, likidite/destek dili güvercin tınlar.
+    Bu taban çizgisi bir bulgu değil, model artefaktıdır. Merkezlendiğinde geriye
+    yalnızca zaman içindeki HAREKET kalır; yorumlanabilir olan da odur.
+    """
+    if df_matrix is None or df_matrix.empty:
+        return df_matrix
+    return df_matrix.sub(df_matrix.mean(axis=0), axis=1)
+
+
+def position_tone_matrix(df_sent: pd.DataFrame, bins: int = 3,
+                         drop_decision: bool = False, min_n: int = 1):
+    """
+    Dönem × metin-içi göreli konum → ortalama ton.
+
+    bins varsayılanı 3'tür (giriş / gövde / kapanış). TCMB'nin İngilizce PPK metni
+    ~13 cümledir; 10 dilimde hücre başına ~1,3 cümle düşer, yani ortalama alma
+    diye bir şey olmaz ve grafik tek tek model tahminlerinin yeniden dizilmiş
+    hali haline gelir. 3 dilimde hücre başına ~4 cümle düşer.
+
+    drop_decision=True: karar cümlelerini (faiz kararını bildiren) hariç tutar ve
+    konumu kalan cümleler üzerinden YENİDEN hesaplar. Böylece "faiz kararı bir yana,
+    çerçeve metni ne diyor" sorusu cevaplanır — ilk satırın faiz yönünü izlemesi
+    sorunu ortadan kalkar.
+
+    Dönüş: (ton_matrisi, sayı_matrisi)
+    """
+    if df_sent is None or df_sent.empty:
+        return pd.DataFrame(), pd.DataFrame()
     d = df_sent.copy()
+
+    if drop_decision:
+        mask = d["sentence"].astype(str).map(lambda s: bool(_DECISION_OVERRIDE.search(s)))
+        d = d[~mask].copy()
+        if d.empty:
+            return pd.DataFrame(), pd.DataFrame()
+        # Konumu kalan cümleler üzerinden yeniden numaralandır
+        d = d.sort_values(["Donem", "sent_idx"])
+        d["sent_idx"] = d.groupby("Donem").cumcount()
+        d["sent_total"] = d.groupby("Donem")["sent_idx"].transform("size")
+
     d["sent_total"] = pd.to_numeric(d["sent_total"], errors="coerce")
     d = d[d["sent_total"] > 1]
     if d.empty:
-        return pd.DataFrame()
+        return pd.DataFrame(), pd.DataFrame()
+
     pos = pd.to_numeric(d["sent_idx"], errors="coerce") / (d["sent_total"] - 1)
     d["dilim"] = np.clip((pos * bins).astype(int), 0, bins - 1)
-    m = d.groupby(["Donem", "dilim"])["diff"].mean().unstack("dilim").sort_index()
-    m.columns = [f"%{int(100 * c / bins)}–{int(100 * (c + 1) / bins)}" for c in m.columns]
-    return m
+    g = d.groupby(["Donem", "dilim"])["diff"].agg(["mean", "count"])
+    m = g["mean"].unstack("dilim").sort_index()
+    c = g["count"].unstack("dilim").sort_index().fillna(0).astype(int)
+    if min_n > 1:
+        m = m.where(c >= min_n)
+
+    if bins == 3:
+        names = {0: "Giriş", 1: "Gövde", 2: "Kapanış"}
+        cols = [names.get(x, str(x)) for x in m.columns]
+    else:
+        cols = [f"%{int(100 * x / bins)}–{int(100 * (x + 1) / bins)}" for x in m.columns]
+    m.columns = cols
+    c.columns = cols
+    return m, c
 
 
 def divergence_table(df_sent: pd.DataFrame, label_col: str) -> pd.DataFrame:
-    """Etiket bazında genel ton ve hacim özeti — hangi konuda şahin, hangisinde güvercin."""
+    """
+    Etiket bazında ton ve hacim özeti.
+
+    "Dönem" sütunu, etiketin kaç FARKLI dönemde göründüğünü verir: tek bir dönemde
+    yoğunlaşmış bir etiketin genel ortalaması zaman serisi olarak yorumlanamaz.
+    Model tahmini olan etiketlerde ortalama güven de gösterilir; 0.60 altındaki
+    sınıfları ciddiye almamak gerekir.
+    """
     if df_sent is None or df_sent.empty:
         return pd.DataFrame()
-    g = df_sent.groupby(label_col)["diff"].agg(["count", "mean", "std"]).reset_index()
-    g.columns = [label_col, "Cümle", "Ort. Ton", "Std"]
+    agg = {"Cümle": ("diff", "count"), "Ort. Ton": ("diff", "mean"),
+           "Std": ("diff", "std"), "Dönem": ("Donem", "nunique")}
+    if label_col == "agent_label" and "agent_conf" in df_sent.columns:
+        agg["Ort. Güven"] = ("agent_conf", "mean")
+    g = df_sent.groupby(label_col).agg(**agg).reset_index()
     g["Duruş"] = g["Ort. Ton"].map(stance_3class_from_diff)
     return g.sort_values("Ort. Ton", ascending=False).reset_index(drop=True)
 
@@ -3903,25 +4116,81 @@ def chart_share_area(df_share: pd.DataFrame, title: str, colors: Optional[dict] 
     return fig
 
 
-def chart_tone_heatmap(df_matrix: pd.DataFrame, title: str, ylab: str = ""):
-    """Dönem × etiket ton ısı haritası (kırmızı = şahin, mavi = güvercin)."""
+def chart_tone_heatmap(df_matrix: pd.DataFrame, title: str, ylab: str = "",
+                       counts: Optional[pd.DataFrame] = None,
+                       centered: bool = False):
+    """
+    Dönem × etiket ton ısı haritası.
+
+    Boşluk/nötr ayrımı: nötr hücreler artık BEYAZ, veri olmayan hücreler ise
+    grafiğin GRİ zeminidir. Önceki sürümde renk skalasının ortası da açık gri
+    olduğu için "o dönem bu konuya değinilmedi" ile "değinildi ama tonu nötr"
+    görsel olarak ayırt edilemiyordu — bu, ısı haritasında en sık yapılan okuma
+    hatasıdır.
+
+    counts verilirse her hücrenin kaç cümleye dayandığı hover'da görünür.
+    """
     if df_matrix is None or df_matrix.empty:
         return None
+
     z = df_matrix.T.values.astype(float)
     lim = _sym_limit(df_matrix.values.ravel())
+
+    # Nötr = beyaz (zeminin grisinden ayrışsın)
+    scale = [[0.0, "#1f4e9c"], [0.5, "#ffffff"], [1.0, "#c0392b"]]
+
+    hover = "%{x} · %{y}<br>ton: %{z:.3f}"
+    cdata = None
+    if counts is not None and not counts.empty:
+        aligned = counts.reindex(index=df_matrix.index, columns=df_matrix.columns)
+        cdata = aligned.T.values
+        hover += "<br>%{customdata} cümle"
+    hover += "<extra></extra>"
+
     fig = go.Figure(go.Heatmap(
         z=z,
         x=list(df_matrix.index),
         y=[str(c) for c in df_matrix.columns],
-        colorscale=DIVERGING, zmid=0, zmin=-lim, zmax=lim,
-        hovertemplate="%{x} · %{y}<br>ton: %{z:.3f}<extra></extra>",
-        colorbar=dict(title="Ton<br>(H−D)", thickness=12),
+        customdata=cdata,
+        colorscale=scale, zmid=0, zmin=-lim, zmax=lim,
+        hovertemplate=hover,
+        colorbar=dict(title=("Sapma<br>(ton − ort.)" if centered else "Ton<br>(H−D)"),
+                      thickness=12),
         hoverongaps=False,
+        xgap=1, ygap=1,
     ))
     fig.update_layout(
         title=title, height=max(320, 40 * len(df_matrix.columns) + 140),
         xaxis=dict(title=""), yaxis=dict(title=ylab, autorange="reversed"),
         margin=dict(t=50, b=40, l=10),
+        plot_bgcolor="#d9dade",   # veri YOK -> gri zemin
+    )
+    return fig
+
+
+def chart_share_lines(df_share: pd.DataFrame, title: str,
+                      colors: Optional[dict] = None, ylab: str = "Kapsam (%)"):
+    """
+    Çok etiketli kapsam serisi için çizgi grafiği.
+
+    Yığılmış alan kullanılmaz: çok etiketli veride sütun toplamı %100'ü aştığı
+    için yığma matematiksel olarak yanlış olur ve payları olduğundan küçük gösterir.
+    """
+    if df_share is None or df_share.empty:
+        return None
+    fig = go.Figure()
+    for col in df_share.columns:
+        fig.add_trace(go.Scatter(
+            x=df_share.index, y=df_share[col], name=str(col), mode="lines",
+            line=dict(width=2, color=(colors or {}).get(col)),
+            hovertemplate="%{x}<br>" + str(col) + ": %{y:.0f}%<extra></extra>",
+        ))
+    fig.update_layout(
+        title=title, height=430, hovermode="x unified",
+        yaxis=dict(title=ylab, ticksuffix="%", rangemode="tozero"),
+        xaxis=dict(title=""),
+        legend=dict(orientation="h", yanchor="top", y=-0.15, xanchor="center", x=0.5),
+        margin=dict(t=50, b=40),
     )
     return fig
 
@@ -3932,7 +4201,12 @@ def chart_sentence_strip(df_one: pd.DataFrame, title: str = "Cümle sırasına g
         return None
     d = df_one.sort_values("sent_idx")
     diffs = pd.to_numeric(d["diff"], errors="coerce").fillna(0.0)
-    colors = ["#c0392b" if v >= 0 else "#1f4e9c" for v in diffs]
+    # Renkler metin haritasıyla ve metriklerle aynı eşiği kullanır: nötr bant gri.
+    colors = [
+        "#c0392b" if v >= DOC_STANCE_DEADBAND
+        else ("#1f4e9c" if v <= -DOC_STANCE_DEADBAND else "#b8bcc0")
+        for v in diffs
+    ]
     wrapped = d["sentence"].astype(str).str.slice(0, 160).str.replace(r"(.{60})", r"\1<br>", regex=True)
     fig = go.Figure(go.Bar(
         x=d["sent_idx"], y=diffs, marker=dict(color=colors),
@@ -3948,10 +4222,35 @@ def chart_sentence_strip(df_one: pd.DataFrame, title: str = "Cümle sırasına g
     return fig
 
 
-def _tone_rgba(diff: float) -> str:
+def _tone_rgba(diff: float, deadband: float = None) -> str:
+    """
+    Cümle tonunu arka plan rengine çevirir.
+
+    ÖNEMLİ: Renk eşiği, metriklerin kullandığı DOC_STANCE_DEADBAND ile AYNIDIR.
+    Önceki sürümde renk sıfır noktasında dönüyordu (d >= 0 -> kırmızı) ama sayım
+    0.10 eşiğini kullanıyordu. Bu iki ayrı sınır iki yönlü uyuşmazlık üretiyordu:
+
+      * 0.00 <= diff < 0.10  -> soluk KIRMIZI görünüyor ama NÖTR sayılıyordu
+                                (gözle fazla şahin sayarsın)
+      * diff = 0.10 (tam eşik) -> alfa 0.135, yani neredeyse görünmez beyaz;
+                                sayılıyor ama gözle seçilemiyordu
+                                (gözle eksik şahin sayarsın)
+
+    Artık: nötr bant düz gri, eşiği geçen her cümle en az 0.25 alfa ile
+    kesinlikle görünür. Yani metrikteki sayı ile ekranda saydığın renk birebir
+    tutar.
+    """
+    db = DOC_STANCE_DEADBAND if deadband is None else float(deadband)
     d = float(np.clip(diff, -1.0, 1.0))
-    a = 0.08 + 0.55 * abs(d)
-    return f"rgba(192,57,43,{a:.3f})" if d >= 0 else f"rgba(31,78,156,{a:.3f})"
+
+    # Nötr bant: renk yok, düz gri. "Değinilmiş ama yön yok" demek.
+    if abs(d) < db:
+        return "rgba(128,128,128,0.10)"
+
+    # Eşiği geçenler: [db, 1] araligi -> [0.25, 0.65] alfa
+    t = (abs(d) - db) / max(1e-9, 1.0 - db)
+    a = 0.25 + 0.40 * min(1.0, t)
+    return f"rgba(192,57,43,{a:.3f})" if d > 0 else f"rgba(31,78,156,{a:.3f})"
 
 
 def sentence_heatmap_html(df_one: pd.DataFrame,
@@ -3982,8 +4281,29 @@ def sentence_heatmap_html(df_one: pd.DataFrame,
         )
 
     body = " ".join(parts)
+
+    # Küçük renk anahtarı — ekrandaki rengin hangi eşiğe karşılık geldiğini gösterir,
+    # böylece metriklerdeki sayı ile gözle sayım arasında şüphe kalmaz.
+    db = DOC_STANCE_DEADBAND
+    legend = (
+        "<div style='margin-top:8px;font-size:.78rem;opacity:.72;"
+        "display:flex;gap:14px;flex-wrap:wrap;align-items:center;'>"
+        f"<span><span style='background:{_tone_rgba(1.0)};padding:1px 10px;"
+        "border-radius:3px;'>&nbsp;</span> şahin (ton &ge; "
+        f"{db:.2f})</span>"
+        f"<span><span style='background:{_tone_rgba(0.0)};padding:1px 10px;"
+        "border-radius:3px;'>&nbsp;</span> nötr (|ton| &lt; "
+        f"{db:.2f})</span>"
+        f"<span><span style='background:{_tone_rgba(-1.0)};padding:1px 10px;"
+        "border-radius:3px;'>&nbsp;</span> güvercin (ton &le; -"
+        f"{db:.2f})</span>"
+        "<span style='opacity:.8;'>Renk yoğunluğu |ton| ile artar. "
+        "Cümlenin üzerine gelince ham skor görünür.</span>"
+        "</div>"
+    )
+
     return (
         f"<div style='max-height:{max_height}px;overflow-y:auto;line-height:2.05;"
         f"font-size:0.94rem;padding:14px 16px;border:1px solid rgba(128,128,128,.28);"
-        f"border-radius:8px;'>{body}</div>"
+        f"border-radius:8px;'>{body}</div>{legend}"
     )

@@ -344,7 +344,9 @@ with tab1:
             div_id="dash_ana_grafik",
             height=820,
             filename="merkez_bankasi_analiz_paneli",
-            png_width=1900, png_height=1080, png_scale=2,
+            # Belge için: dar genişlik + büyük yazı. Geniş export (1900) yazıyı
+            # oransal olarak küçültüp Word'de okunmaz hale getiriyordu.
+            png_width=1400, png_height=1200, png_scale=2,
         )
 
        # --- YENİ EKLENEN AI TREND GRAFİĞİ (GÜVENLİ VERSİYON) ---

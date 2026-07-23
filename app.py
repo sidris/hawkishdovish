@@ -1787,9 +1787,11 @@ def _tone_run_sync(df_logs, force, with_agent):
 def _tone_sentence_map(df_sent):
     st.subheader("🧭 Cümle Bazlı Ton Haritası")
     st.caption(
-        "Metin, modelin cümle düzeyi çıktısına göre renklendirilir. Kırmızı = şahin, "
-        "mavi = güvercin, renksiz = nötr; renk yoğunluğu |P(HAWK) − P(DOVE)| ile "
-        "orantılıdır. Cümlenin üzerine gelince ham olasılıklar görünür."
+        f"Metin, modelin cümle düzeyi çıktısına göre renklendirilir. Kırmızı = şahin "
+        f"(ton ≥ {utils.DOC_STANCE_DEADBAND:.2f}), mavi = güvercin "
+        f"(ton ≤ −{utils.DOC_STANCE_DEADBAND:.2f}), gri = nötr bant. Renk eşiği "
+        "yukarıdaki sayaçlarla **aynı** eşiktir; ekranda saydığın renk ile metrikteki "
+        "sayı birebir tutar. Cümlenin üzerine gelince ham olasılıklar görünür."
     )
 
     donems = sorted(df_sent["Donem"].dropna().unique().tolist(), reverse=True)
@@ -1812,11 +1814,18 @@ def _tone_sentence_map(df_sent):
         return
 
     diffs = pd.to_numeric(d_view["diff"], errors="coerce")
-    m1, m2, m3, m4 = st.columns(4)
+    n_hawk = int((diffs >= utils.DOC_STANCE_DEADBAND).sum())
+    n_dove = int((diffs <= -utils.DOC_STANCE_DEADBAND).sum())
+    n_neut = int(len(d_view) - n_hawk - n_dove)
+
+    # Nötr de gösterilir ki üç sayı toplamı cümle sayısını versin; aksi halde
+    # "8 şahin var ama ekranda 7 görüyorum" tipi belirsizlik doğuyor.
+    m1, m2, m3, m4, m5 = st.columns(5)
     m1.metric("Cümle", len(d_view))
     m2.metric("Ortalama ton", f"{diffs.mean():+.3f}")
-    m3.metric("🦅 Şahin cümle", int((diffs >= utils.DOC_STANCE_DEADBAND).sum()))
-    m4.metric("🕊️ Güvercin cümle", int((diffs <= -utils.DOC_STANCE_DEADBAND).sum()))
+    m3.metric("🦅 Şahin", n_hawk)
+    m4.metric("⚪ Nötr", n_neut)
+    m5.metric("🕊️ Güvercin", n_dove)
 
     fig_strip = utils.chart_sentence_strip(d_view, title=f"{sel} — cümle sırasına göre ton")
     if fig_strip:
@@ -1846,12 +1855,14 @@ def _tone_sentence_map(df_sent):
 def _tone_topic_series(df_sent):
     st.subheader("📊 Konu Payları Zaman Serisi")
 
-    mode = st.radio(
-        "Etiket kaynağı",
-        ["İlgili Kesim (CentralBankRoBERTa)", "Tema (sözlük)"],
-        horizontal=True,
-        key="tp_mode",
-    )
+    c1, c2 = st.columns([2, 1])
+    with c1:
+        mode = st.radio(
+            "Etiket kaynağı",
+            ["İlgili Kesim (CentralBankRoBERTa)", "Tema (sözlük)"],
+            horizontal=True,
+            key="tp_mode",
+        )
     is_agent = mode.startswith("İlgili Kesim")
     col = "agent_label" if is_agent else "theme_label"
     colors = utils.AGENT_COLORS if is_agent else None
@@ -1863,14 +1874,55 @@ def _tone_topic_series(df_sent):
         )
         return
 
-    st.caption(
-        "Payların toplamı her dönemde %100'dür; yükseklik değil **kompozisyon** okunur. "
-        "Bir konunun payındaki artış, o toplantıda dikkatin oraya kaydığı anlamına gelir."
-        if is_agent else
-        "Tema etiketi sözlük tabanlıdır (deterministik, denetlenebilir); ton etiketi modelden gelir."
-    )
+    # --- Etiketleme modu: tek etiket (kompozisyon) vs çok etiket (kapsam) ------
+    multi = False
+    if not is_agent:
+        with c2:
+            multi = st.toggle(
+                "Çok etiketli", value=True, key="tp_multi",
+                help="Bir cümle birden çok konuya değinebilir. Kapalıyken cümle "
+                     "başına tek etiket verilir ve beraberlikte kazananı sözlükteki "
+                     "yazım sırası belirler — bu keyfîdir.",
+            )
 
-    share = utils.share_timeseries(df_sent, col)
+    # --- Güven filtresi (yalnızca model etiketi için) --------------------------
+    df_use = df_sent
+    if is_agent and "agent_conf" in df_sent.columns:
+        with c2:
+            min_conf = st.slider("Min. güven", 0.0, 0.95, 0.0, 0.05, key="tp_conf",
+                                 help="Model tahmininin altında kaldığı cümleleri "
+                                      "analizden çıkarır.")
+        if min_conf > 0:
+            df_use = df_sent[pd.to_numeric(df_sent["agent_conf"],
+                                           errors="coerce").fillna(0) >= min_conf]
+            atilan = len(df_sent) - len(df_use)
+            if atilan:
+                st.caption(f"Güven filtresi {atilan} cümleyi ({atilan/len(df_sent):.0%}) dışarıda bıraktı.")
+        if df_use.empty:
+            st.info("Filtre sonrası cümle kalmadı.")
+            return
+
+    # --- Pay / kapsam serisi ---------------------------------------------------
+    df_long = df_use
+    if multi:
+        df_long = utils.explode_themes(df_use)
+        share = utils.coverage_timeseries(df_long, df_use, col)
+        st.caption(
+            "**Kapsam** okunur: bir dönemde cümlelerin yüzde kaçı o konuya değindi. "
+            "Bir cümle birden çok konuya değinebildiği için sütun toplamı %100'ü aşar — "
+            "beklenen davranış budur. PPK metni ~13 cümle olduğundan bir cümle ≈ 8 puan; "
+            "**8 puandan küçük hareketler kuantizasyon gürültüsüdür**, yorumlanmamalıdır."
+        )
+    else:
+        share = utils.share_timeseries(df_use, col)
+        st.caption(
+            "**Kompozisyon** okunur: payların toplamı her dönemde %100'dür. Dikkat — "
+            "kompozisyonda bir konunun payı, kendisi hiç değişmeden de düşebilir "
+            "(başka bir konu büyüdüğü için). Mutlak hacim için dashboard'daki "
+            "Metin Uzunluğu serisiyle birlikte oku. Bir cümle ≈ 8 puan; **8 puandan "
+            "küçük hareketler gürültüdür**."
+        )
+
     if share.empty:
         st.info("Yeterli veri yok.")
         return
@@ -1880,25 +1932,69 @@ def _tone_topic_series(df_sent):
         order += [c for c in share.columns if c not in order]
         share = share[order]
 
-    fig_share = utils.chart_share_area(share, "Cümle payları (%)", colors=colors)
+    if multi:
+        fig_share = utils.chart_share_lines(share, "Konu kapsamı (%)", colors=colors)
+    else:
+        fig_share = utils.chart_share_area(share, "Cümle payları (%)", colors=colors)
     if fig_share:
-        st.plotly_chart(fig_share, use_container_width=True, key=f"share_{col}")
+        st.plotly_chart(fig_share, use_container_width=True, key=f"share_{col}_{multi}")
 
+    # --- Konu × Ton -----------------------------------------------------------
     st.markdown("#### 🌡️ Konu × Ton")
-    st.caption(
-        "Asıl bilgi burada: pay bir konuya **ne kadar** yer ayrıldığını, bu ısı haritası ise "
-        "o konu hakkında **nasıl** konuşulduğunu gösterir. Aynı dönemde bir konuda şahin, "
-        "başka bir konuda güvercin olmak — agregat ton endeksinin sildiği ayrım."
-    )
-    tm = utils.tone_matrix(df_sent, col)
-    fig_tone = utils.chart_tone_heatmap(tm, "Dönem × konu ortalama tonu",
-                                        ylab="İlgili Kesim" if is_agent else "Tema")
-    if fig_tone:
-        st.plotly_chart(fig_tone, use_container_width=True, key=f"tone_{col}")
 
-    tbl = utils.divergence_table(df_sent, col)
+    h1, h2 = st.columns([1, 1])
+    with h1:
+        min_n = st.slider(
+            "Hücre başına en az cümle", 1, 6, 3, key="tp_minn",
+            help="Bu sayının altındaki hücreler gizlenir. Tek cümleye dayanan bir "
+                 "'ortalama' aslında tek bir model tahminidir; on cümlelik bir "
+                 "ortalamayla aynı görsel ağırlıkta görünmesi yanıltıcıdır.",
+        )
+    with h2:
+        centered = st.toggle(
+            "Sapma modu", value=True, key="tp_center",
+            help="Her konudan kendi ortalamasını çıkarır. Bazı konuların tonu sözcük "
+                 "dağarcığı yüzünden sistematik olarak kayıktır (enflasyon dili şahin, "
+                 "likidite dili güvercin tınlar) — bu bir bulgu değil, model artefaktıdır. "
+                 "Merkezlendiğinde geriye yalnızca zaman içindeki hareket kalır.",
+        )
+
+    tm, tc = utils.tone_matrix(df_long, col, min_n=min_n)
+    if tm.empty:
+        st.info("Yeterli veri yok.")
+        return
+
+    gizli = int(tm.isna().sum().sum() - (tc.reindex_like(tm) == 0).sum().sum())
+    if centered:
+        tm = utils.center_matrix(tm)
+
+    st.caption(
+        "Pay bir konuya **ne kadar** yer ayrıldığını, bu ısı haritası ise o konu "
+        "hakkında **nasıl** konuşulduğunu gösterir — agregat ton endeksinin sildiği ayrım. "
+        "Beyaz = nötr, **gri zemin = veri yok veya eşik altı**. "
+        + (f"Bu ayarda {gizli} hücre az cümle nedeniyle gizlendi. " if gizli > 0 else "")
+        + ("Değerler sapmadır: 0 = o konunun kendi ortalaması."
+           if centered else "Değerler ham tondur; satırlar arası SEVİYE karşılaştırması "
+                            "yapma, sözcük dağarcığı kaynaklı kayıklık içerir.")
+    )
+
+    fig_tone = utils.chart_tone_heatmap(
+        tm, "Dönem × konu " + ("ton sapması" if centered else "ortalama tonu"),
+        ylab="İlgili Kesim" if is_agent else "Tema",
+        counts=tc, centered=centered,
+    )
+    if fig_tone:
+        st.plotly_chart(fig_tone, use_container_width=True, key=f"tone_{col}_{centered}")
+
+    tbl = utils.divergence_table(df_long, col)
     if not tbl.empty:
         st.markdown("#### Tüm dönemler — konu bazında özet")
+        st.caption(
+            "«Dönem» sütunu etiketin kaç farklı dönemde göründüğünü verir: tek bir "
+            "döneme yığılmış bir etiketin genel ortalaması zaman serisi olarak "
+            "yorumlanamaz."
+            + (" «Ort. Güven» 0.60 altındaysa o sınıfı ciddiye alma." if is_agent else "")
+        )
         st.dataframe(
             tbl.rename(columns={col: ("İlgili Kesim" if is_agent else "Tema")}).round(3),
             use_container_width=True, hide_index=True,
@@ -1907,17 +2003,45 @@ def _tone_topic_series(df_sent):
 
 def _tone_position_map(df_sent):
     st.subheader("📐 Metnin Neresinde Şahinleşiyor?")
+
+    p1, p2, p3 = st.columns([1, 1.3, 1])
+    with p1:
+        bins = st.select_slider("Dilim", options=[3, 5, 10], value=3, key="pm_bins")
+    with p2:
+        drop_dec = st.toggle(
+            "Karar cümlesini hariç tut", value=True, key="pm_drop",
+            help="Metnin ilk cümlesi her zaman faiz kararıdır ve model faiz indirimini "
+                 "güvercin okur. Yani ilk dilim tonu değil, faizin YÖNÜNÜ izler. "
+                 "Hariç tutulduğunda 'karar bir yana, çerçeve metni ne diyor' sorusu "
+                 "cevaplanır.",
+        )
+    with p3:
+        min_n = st.slider("Min. cümle", 1, 5, 2, key="pm_minn")
+
+    ort = len(df_sent) / max(1, df_sent["Donem"].nunique())
+    per_cell = ort / bins
     st.caption(
-        "Her metin göreli konuma göre 10 dilime bölünür (%0 = ilk cümle, %100 = son cümle) "
-        "ve dilim ortalaması alınır. Karar cümlesinin ve kapanış taahhüdünün tonu, giriş "
-        "paragraflarındaki görünüm anlatısından sistematik olarak ayrışıyorsa burada görünür."
+        f"Her metin göreli konuma göre {bins} dilime bölünür ve dilim ortalaması alınır. "
+        f"Bu korpusta metin başına ortalama {ort:.0f} cümle var → **hücre başına "
+        f"≈{per_cell:.1f} cümle**. "
+        + ("Bu, ortalama almaya yeterli değil; grafik tek tek model tahminlerinin "
+           "yeniden dizilmiş hali olur ve gürültü sönümlenmez."
+           if per_cell < 2.5 else
+           "Aranan şey DİKEY bir örüntüdür: bir sütunda üst dilimlerin alt dilimlerden "
+           "sistematik farklı olması. Yatay örüntüyü zaten dashboard'daki agregat seri gösterir.")
     )
-    pm = utils.position_tone_matrix(df_sent, bins=10)
-    fig_pos = utils.chart_tone_heatmap(pm, "Dönem × metin içi konum", ylab="Metin içi konum")
-    if fig_pos:
-        st.plotly_chart(fig_pos, use_container_width=True, key="posmap")
-    else:
+
+    pm, pc = utils.position_tone_matrix(df_sent, bins=bins,
+                                        drop_decision=drop_dec, min_n=min_n)
+    if pm.empty:
         st.info("Yeterli veri yok.")
+        return
+
+    fig_pos = utils.chart_tone_heatmap(
+        pm, "Dönem × metin içi konum" + (" (karar cümlesi hariç)" if drop_dec else ""),
+        ylab="Metin içi konum", counts=pc,
+    )
+    st.plotly_chart(fig_pos, use_container_width=True, key=f"posmap_{bins}_{drop_dec}")
 
 
 def _render_tab_tone_topics():
@@ -1966,10 +2090,17 @@ faiz kararı cümlesi ise `Central Bank` çıkar.
 Etiketten emin olmak için `agent_conf` kolonuna bak; 0.60 altındaki tahminleri
 ciddiye alma.
 
-**Tema** — sözlük tabanlı, model değil. CentralBankRoBERTa ailesinde bir **konu**
-sınıflandırıcısı yok; muhatap ve duygu başlıkları var. Konu boyutunu uydurma bir model
-çıktısı gibi sunmak yerine deterministik ve denetlenebilir bir sözlük katmanı kullanıldı.
-Sözlüğü `utils.THEME_PATTERNS` içinden genişletebilirsin.
+**Tema** — sözlük tabanlı, **model değil**. CentralBankRoBERTa ailesinde bir konu
+sınıflandırıcısı yok; ilgili kesim ve duygu başlıkları var. Konu boyutunu uydurma bir
+model çıktısı gibi sunmak yerine deterministik ve denetlenebilir bir sözlük katmanı
+kullanıldı. Sözlüğü `utils.THEME_PATTERNS` içinden genişletebilirsin.
+
+Tema etiketi **okuma anında** `sentence` metninden yeniden hesaplanır; veritabanındaki
+`theme_label` kolonu yok sayılır. Yani sözlükteki her düzeltme anında yansır, model
+taraması tekrarlanmaz, veritabanı şeması hiç değişmez.
+
+⚖️ Güvenilirlik sırası: **ton** ve **ilgili kesim** gerçek model tahminleridir;
+**tema** benim yazdığım kurallardır. Sunumda bu ayrımı koru.
 
 **Önbellek** — model çıktısı cümle düzeyinde `roberta_sentences` tablosuna yazılır.
 Kalibrasyon / EMA / histerezis **saklanmaz**: bunlar tüm serinin dağılımına bağlıdır,

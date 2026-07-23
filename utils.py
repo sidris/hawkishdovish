@@ -522,15 +522,20 @@ def fetch_market_data_adapter(start_date, end_date):
 _CLEAN_PNG_JS = """
 <script>
 (function init() {
-  var gd = document.getElementById('__DIV_ID__');
+  var gd  = document.getElementById('__DIV_ID__');
   var btn = document.getElementById('__DIV_ID___btn');
   if (!window.Plotly || !gd || !gd.data || !btn) { return setTimeout(init, 120); }
 
+  // Ekranda çizilenden bağımsız, BOZULMAMIŞ figür tanımı. Baskı kopyası bundan
+  // türetilir; gd.layout kullanılsaydı Plotly'nin hesapladığı iç alanlar da
+  // kopyaya sızardı.
+  var PRISTINE = __FIGJSON__;
+
   // --- 1) YENİDEN BOYUTLANDIRMA ---------------------------------------------
-  // Streamlit grafiği bir iframe içine koyar. Script çalıştığı anda iframe'in
-  // genişliği çoğu zaman nihai genişliği DEĞİLDİR; Plotly legend'ı o dar ölçüye
-  // göre yerleştirir, iframe sonradan genişler ve legend bir daha akmaz — tüm
-  // girdiler tek satırda üst üste biner. ResizeObserver bunu düzeltir.
+  // Streamlit grafiği iframe'e koyar. Script çalıştığı anda iframe'in genişliği
+  // çoğu zaman nihai genişliği DEĞİLDİR; Plotly legend'ı o dar ölçüye göre
+  // yerleştirir, iframe sonradan genişler ve legend bir daha akmaz — tüm girdiler
+  // tek satırda üst üste biner. ResizeObserver bunu düzeltir.
   var rt = null;
   var ro = new ResizeObserver(function () {
     clearTimeout(rt);
@@ -541,23 +546,83 @@ _CLEAN_PNG_JS = """
     try { Plotly.Plots.resize(gd); } catch (e) {}
   });
 
-  // --- 2) TEMİZ PNG ----------------------------------------------------------
-  // Legend'a tıklayınca Plotly trace'i silmez, visible='legendonly' yapar; kayıt
-  // legend'da soluk halde kalır ve yerleşik indirme o hali basar. showlegend=false
-  // kaydı tamamen kaldırır — indirme öncesi uygulanır, sonra geri alınır.
+  // --- 2) BASKI PROFİLİ ------------------------------------------------------
+  // Word/PowerPoint görseli sayfa genişliğine ölçekler. Okunabilirliği belirleyen
+  // şey mutlak piksel değil, YAZI BOYUTUNUN GÖRSEL GENİŞLİĞİNE ORANIdır.
+  // 11px yazı / 1900px genişlik = %0.58 -> 16cm sayfada ~2.6pt, okunmaz.
+  // Bu profil oranı ~%1.6'ya çıkarır (16cm sayfada ~7pt).
+  // Not: 'scale' artırmak İŞE YARAMAZ — o yalnızca çözünürlüğü çoğaltır, oranı
+  // değiştirmez. Oranı büyütmek için genişliği düşürüp yazıyı büyütmek gerekir.
+  function baskiKopyasi(gizli) {
+    var f = JSON.parse(JSON.stringify(PRISTINE));
+
+    // Legend'da kapatılmış serileri kaydıyla birlikte kaldır
+    gizli.forEach(function (i) { if (f.data[i]) { f.data[i].showlegend = false; } });
+
+    var L = f.layout || (f.layout = {});
+    L.font = L.font || {};                 L.font.size = 20;
+    L.title = L.title || {};
+    L.title.font = L.title.font || {};     L.title.font.size = 28;
+
+    L.legend = L.legend || {};
+    L.legend.font = L.legend.font || {};   L.legend.font.size = 22;
+    L.legend.entrywidthmode = 'fraction';
+    L.legend.entrywidth = 0.33;            // baskıda satır başına 3 girdi
+    L.legend.y = -0.07;
+    L.legend.orientation = 'h';
+    L.legend.xanchor = 'center';           L.legend.x = 0.5;
+    L.legend.yanchor = 'top';
+
+    L.margin = L.margin || {};
+    L.margin.t = 90; L.margin.b = 330; L.margin.l = 100; L.margin.r = 50;
+
+    ['xaxis', 'yaxis', 'xaxis2', 'yaxis2'].forEach(function (ax) {
+      if (!L[ax]) { return; }
+      L[ax].tickfont = L[ax].tickfont || {}; L[ax].tickfont.size = 19;
+      if (L[ax].title) {
+        L[ax].title.font = L[ax].title.font || {};
+        L[ax].title.font.size = 21;
+      }
+    });
+
+    // Vali isimleri, ŞAHİN/GÜVERCİN etiketleri, "Haber" bağlantıları
+    (L.annotations || []).forEach(function (an) {
+      an.font = an.font || {};
+      an.font.size = Math.max(16, Math.round((an.font.size || 12) * 1.6));
+    });
+
+    delete L.width; delete L.height;
+    return f;
+  }
+
   btn.addEventListener('click', function () {
     var gizli = [];
-    gd.data.forEach(function (t, i) { if (t.visible === 'legendonly') gizli.push(i); });
-    var geriAl = function () {
-      return gizli.length ? Plotly.restyle(gd, {showlegend: true}, gizli) : Promise.resolve();
-    };
-    var hazirla = gizli.length ? Plotly.restyle(gd, {showlegend: false}, gizli) : Promise.resolve();
+    gd.data.forEach(function (t, i) { if (t.visible === 'legendonly') { gizli.push(i); } });
+
+    var f = baskiKopyasi(gizli);
+
+    // Ekrandaki grafiğe hiç dokunulmaz: baskı kopyası ekran dışında ayrı bir
+    // div'e çizilir. Böylece titreme olmaz ve "geri alma" adımı hiç gerekmez.
+    var off = document.createElement('div');
+    off.style.cssText = 'position:absolute;left:-99999px;top:0;width:__PW__px;height:__PH__px;';
+    document.body.appendChild(off);
+
     btn.disabled = true;
-    hazirla.then(function () {
-      return Plotly.downloadImage(gd, {
-        format: 'png', width: __PW__, height: __PH__, scale: __PS__, filename: '__FNAME__'
-      });
-    }).then(geriAl).catch(geriAl).then(function () { btn.disabled = false; });
+    var temizle = function () {
+      try { Plotly.purge(off); } catch (e) {}
+      if (off.parentNode) { off.parentNode.removeChild(off); }
+      btn.disabled = false;
+    };
+
+    Plotly.newPlot(off, f.data, f.layout, {staticPlot: true})
+      .then(function () {
+        return Plotly.downloadImage(off, {
+          format: 'png', width: __PW__, height: __PH__, scale: __PS__,
+          filename: '__FNAME__'
+        });
+      })
+      .then(temizle)
+      .catch(temizle);
   });
 })();
 </script>
@@ -569,7 +634,7 @@ _CLEAN_PNG_BTN = """
       font-size:12px;padding:4px 10px;cursor:pointer;
       border:1px solid rgba(128,128,128,.45);border-radius:6px;
       background:transparent;color:inherit;font-family:inherit;">
-    ⬇ PNG indir (kapalı seriler hariç)
+    ⬇ PNG indir (belge için — büyük yazı, kapalı seriler hariç)
   </button>
 </div>
 """
@@ -579,33 +644,39 @@ def render_plotly_clean_png(fig,
                             div_id: str = "ana_grafik",
                             height: int = 660,
                             filename: str = "analiz_paneli",
-                            png_width: int = 1800,
-                            png_height: int = 900,
+                            png_width: int = 1400,
+                            png_height: int = 1200,
                             png_scale: int = 2):
     """
-    Plotly grafiğini basar ve yanına "kapalı serileri dışlayan" PNG indirme
-    butonu koyar.
+    Plotly grafiğini basar ve yanına belge-dostu PNG indirme butonu koyar.
 
-    ÇÖZÜLEN SORUN
-    -------------
-    Legend'a tıklayınca Plotly trace'i silmez, `visible='legendonly'` yapar. Seri
-    çizim alanından kalkar ama legend kaydı soluk halde kalır; yerleşik `toImage`
-    o anki state'i bastığı için indirilen PNG'de kapatılmış seriler görünmeye
-    devam eder. `showlegend=False` ise kaydı legend'dan tamamen kaldırır.
+    ÇÖZÜLEN İKİ SORUN
+    -----------------
+    1) Legend'a tıklayınca Plotly trace'i silmez, `visible='legendonly'` yapar.
+       Seri çizim alanından kalkar ama legend kaydı soluk halde kalır ve yerleşik
+       `toImage` o hali basar. Baskı kopyasında `showlegend=False` uygulanarak
+       kayıt tamamen kaldırılır.
+
+    2) Word/PowerPoint görseli sayfa genişliğine ölçekler; okunabilirliği belirleyen
+       şey mutlak piksel değil, yazı boyutunun görsel genişliğine ORANIdır. Ekran
+       ayarıyla (11px / 1900px) bu oran %0.58'dir ve 16cm'lik bir sayfada ~2.6pt'ye
+       düşer — okunmaz. İndirmede ayrı bir "baskı profili" uygulanır: genişlik
+       düşürülür, yazılar büyütülür, oran ~%1.6'ya çıkar (~7pt).
+       DİKKAT: `png_scale` artırmak bu sorunu ÇÖZMEZ; o yalnızca çözünürlüğü
+       çoğaltır, oranı değiştirmez.
 
     TASARIM NOTU — NEDEN MODEBAR BUTONU DEĞİL
     -----------------------------------------
-    Modebar'a özel buton eklemek `Plotly.newPlot`'un config'ini değiştirmeyi
-    gerektirir; bu da grafiği İKİNCİ KEZ çizdirmek demektir. İkinci çizim,
-    hesaplanmış (kirli) bir layout nesnesiyle yapıldığı için legend akışını
-    bozuyor ve 16 serilik grafikte tüm legend girdileri tek satırda üst üste
-    biniyordu. Bu yüzden grafik yalnızca BİR KEZ çizilir, indirme işi normal bir
-    HTML butonuna verilir. Yerleşik kamera butonu config'ten kaldırılır ki
-    yanlışlıkla kirli PNG indirilmesin.
+    Modebar'a özel buton eklemek `Plotly.newPlot` config'ini değiştirmeyi, yani
+    grafiği İKİNCİ KEZ çizdirmeyi gerektirir. İkinci çizim, birinciden kalma
+    hesaplanmış layout nesnesiyle yapıldığı için legend akışını bozuyor ve 16
+    serilik grafikte tüm legend girdileri tek satırda üst üste biniyordu. Bu yüzden
+    grafik yalnızca BİR KEZ çizilir; indirme, ekran dışına çizilen ayrı bir kopyayla
+    yapılır ve ekrandaki grafiğe hiç dokunulmaz.
 
-    NOT: Bu düzeltme `st.plotly_chart` üzerinden mümkün değildir — legend
-    tıklaması Python tarafına hiç ulaşmaz. Grafik iframe içinde render edilir,
-    bu yüzden Streamlit temasını miras almaz; figürün kendi renkleri geçerlidir.
+    NOT: Bu düzeltme `st.plotly_chart` üzerinden mümkün değildir — legend tıklaması
+    Python tarafına hiç ulaşmaz. Grafik iframe içinde render edilir, bu yüzden
+    Streamlit temasını miras almaz; figürün kendi renkleri geçerlidir.
     """
     try:
         import streamlit.components.v1 as components
@@ -626,8 +697,10 @@ def render_plotly_clean_png(fig,
                 "modeBarButtonsToRemove": ["toImage", "lasso2d", "select2d"],
             },
         )
+        fig_json = pio.to_json(fig).replace("</script", "<\\/script")
         btn = _CLEAN_PNG_BTN.replace("__DIV_ID__", div_id)
         js = (_CLEAN_PNG_JS
+              .replace("__FIGJSON__", fig_json)
               .replace("__DIV_ID__", div_id)
               .replace("__PW__", str(int(png_width)))
               .replace("__PH__", str(int(png_height)))
@@ -635,7 +708,6 @@ def render_plotly_clean_png(fig,
               .replace("__FNAME__", str(filename)))
         components.html(btn + html_fig + js, height=int(height) + 60, scrolling=False)
     except Exception:
-        # Herhangi bir sorunda eski davranışa düş
         st.plotly_chart(fig, use_container_width=True)
 
 

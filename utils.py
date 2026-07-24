@@ -1036,6 +1036,12 @@ def select_non_overlapping_terms(tokens, term_infos):
     selected.sort(key=lambda x: x["start"])
     return selected
 
+#: ABG endeksinde küçük örneklem yumuşatma sabiti.
+#: Payda (hawk+dove+K) olur. Büyütürsen seri daha çok nötre yaslanır, küçültürsen
+#: ham orana yaklaşır. 0 verirsen klasik ABG tanımına dönersin.
+ABG_SHRINK_K = 5.0
+
+
 def analyze_hawk_dove(text: str, DICT: dict, window_words: int = 7, dedupe_within_term_window: bool = True, nearest_only: bool = False):
     text_n = normalize_text(text)
     sentences = split_sentences_nlp(text_n)
@@ -1106,13 +1112,30 @@ def analyze_hawk_dove(text: str, DICT: dict, window_words: int = 7, dedupe_withi
     hawk_total = sum(v["hawk"] for v in topic_counts.values())
     dove_total = sum(v["dove"] for v in topic_counts.values())
     denom = hawk_total + dove_total
-    net_hawkishness = 1.0 if denom == 0 else (1.0 + (hawk_total - dove_total) / denom)
+
+    # --- HAM ORAN (referans) ---------------------------------------------------
+    # Klasik ABG tanımı. Sorunu: ORAN ölçer, MİKTAR ölçmez.
+    #   1 şahin + 0 güvercin  -> 2.00
+    #  20 şahin + 0 güvercin  -> 2.00   (aynı!)
+    #   0 şahin + 1 güvercin  -> 0.00
+    # Sözlüğün az kelime yakaladığı kısa metinlerde endeks doğrudan uçlara yapışır
+    # ve seri, iletişim tonundaki değişimi değil ölçüm hassasiyeti kaybını gösterir.
+    net_raw = 1.0 if denom == 0 else (1.0 + (hawk_total - dove_total) / denom)
+
+    # --- YUMUŞATILMIŞ ENDEKS (kanonik) ----------------------------------------
+    # Paydaya sabit bir K eklenir (Laplace tarzı büzülme): eşleşme sayısı azaldıkça
+    # endeks nötre (1.0) çekilir, arttıkça ham orana yakınsar. Böylece "2.00" değeri
+    # yalnızca çok sayıda şahin eşleşmesi olan metinlerde görülebilir.
+    #   K=5:  1 şahin/0 güvercin -> 1.17   |  20 şahin/2 güvercin -> 1.67
+    net_hawkishness = 1.0 + (hawk_total - dove_total) / (denom + ABG_SHRINK_K)
 
     return {
        "topic_counts": topic_counts,
        "matches": matches,
        "match_details": matches,
        "net_hawkishness": net_hawkishness,
+       "net_hawkishness_raw": net_raw,
+       "n_match": denom,
        "hawk_count": hawk_total,
        "dove_count": dove_total
     }
@@ -1162,7 +1185,13 @@ def calculate_abg_scores(df):
         rows.append({
             "period_date": row.get("period_date"),
             "Donem": donem,
-            "abg_index": res['net_hawkishness']
+            "abg_index": res['net_hawkishness'],
+            # Güvenilirlik teşhisi için: endeks kaç kelime eşleşmesine dayanıyor?
+            # Az eşleşmeli dönemlerde endeks yorumlanmamalıdır.
+            "abg_index_raw": res.get('net_hawkishness_raw', res['net_hawkishness']),
+            "n_match": res.get('n_match', 0),
+            "hawk_count": res.get('hawk_count', 0),
+            "dove_count": res.get('dove_count', 0),
         })
     return pd.DataFrame(rows)
 
@@ -3919,6 +3948,43 @@ def diagnose(df_logs: pd.DataFrame) -> pd.DataFrame:
 
     m["durum"] = m.apply(_status, axis=1)
     return m[["id", "period_date", "source", "text_hash", "durum", "n_sentences"]]
+
+
+def top_sentences(donem: str, k: int = 5, df_sent: Optional[pd.DataFrame] = None):
+    """
+    Bir dönemin en şahin ve en güvercin k cümlesini döndürür.
+
+    "Endeksteki bu hareket hangi ifadelerden geldi?" sorusunun doğrudan cevabı.
+    Model ÇALIŞTIRILMAZ — her şey cümle önbelleğinden okunur, dolayısıyla
+    dashboard'da gecikmesiz kullanılabilir.
+
+    Dönüş: (sahin_df, guvercin_df, ozet_dict)
+    """
+    if df_sent is None:
+        df_sent = fetch_sentences()
+    if df_sent is None or df_sent.empty:
+        return pd.DataFrame(), pd.DataFrame(), {}
+
+    d = df_sent[df_sent["Donem"] == str(donem)].copy()
+    if d.empty:
+        return pd.DataFrame(), pd.DataFrame(), {}
+
+    d["diff"] = pd.to_numeric(d["diff"], errors="coerce")
+    d = d.dropna(subset=["diff"]).sort_values("diff", ascending=False)
+
+    cols = [c for c in ["sent_idx", "sentence", "diff", "agent_label", "theme_label"]
+            if c in d.columns]
+    sahin = d[d["diff"] >= DOC_STANCE_DEADBAND].head(k)[cols]
+    guvercin = d[d["diff"] <= -DOC_STANCE_DEADBAND].sort_values("diff").head(k)[cols]
+
+    ozet = {
+        "n": int(len(d)),
+        "ort": float(d["diff"].mean()),
+        "n_hawk": int((d["diff"] >= DOC_STANCE_DEADBAND).sum()),
+        "n_dove": int((d["diff"] <= -DOC_STANCE_DEADBAND).sum()),
+    }
+    ozet["n_neut"] = ozet["n"] - ozet["n_hawk"] - ozet["n_dove"]
+    return sahin, guvercin, ozet
 
 
 def missing_periods(df_logs: pd.DataFrame) -> list:

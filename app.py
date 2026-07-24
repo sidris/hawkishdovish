@@ -4,7 +4,47 @@ import datetime
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import altair as alt
-import utils 
+import utils
+
+# =============================================================================
+# SÜRÜM UYUMLULUK KATMANI
+# =============================================================================
+# app.py ve utils.py birlikte deploy edilmezse (ör. yalnızca app.py push edilirse)
+# yeni eklenen utils fonksiyonları bulunamaz ve uygulama AttributeError ile komple
+# çöker. Aşağıdaki sarmalayıcılar bu durumda uygulamayı ayakta tutar: utils'te
+# fonksiyon varsa onu kullanır, yoksa aynı işi yerelde yapar.
+
+ABG_SHRINK_K = getattr(utils, "ABG_SHRINK_K", 0.0)
+
+
+def _top_sentences(donem, k=5, df_sent=None):
+    """utils.top_sentences varsa onu kullan; yoksa aynı hesabı burada yap."""
+    fn = getattr(utils, "top_sentences", None)
+    if callable(fn):
+        return fn(donem, k=k, df_sent=df_sent)
+
+    if df_sent is None:
+        df_sent = utils.fetch_sentences()
+    if df_sent is None or df_sent.empty:
+        return pd.DataFrame(), pd.DataFrame(), {}
+
+    db = getattr(utils, "DOC_STANCE_DEADBAND", 0.10)
+    d = df_sent[df_sent["Donem"] == str(donem)].copy()
+    if d.empty:
+        return pd.DataFrame(), pd.DataFrame(), {}
+    d["diff"] = pd.to_numeric(d["diff"], errors="coerce")
+    d = d.dropna(subset=["diff"]).sort_values("diff", ascending=False)
+
+    cols = [c for c in ["sent_idx", "sentence", "diff", "agent_label", "theme_label"]
+            if c in d.columns]
+    sahin = d[d["diff"] >= db].head(k)[cols]
+    guvercin = d[d["diff"] <= -db].sort_values("diff").head(k)[cols]
+    ozet = {"n": int(len(d)), "ort": float(d["diff"].mean()),
+            "n_hawk": int((d["diff"] >= db).sum()),
+            "n_dove": int((d["diff"] <= -db).sum())}
+    ozet["n_neut"] = ozet["n"] - ozet["n_hawk"] - ozet["n_dove"]
+    return sahin, guvercin, ozet
+
 import uuid
 import numpy as np
 
@@ -409,8 +449,8 @@ with tab1:
             with _c2:
                 _k = st.slider("Kaç cümle", 3, 10, 5, key="dash_sent_k")
 
-            _sahin, _guvercin, _ozet = utils.top_sentences(_sel, k=_k,
-                                                           df_sent=_df_sent_dash)
+            _sahin, _guvercin, _ozet = _top_sentences(_sel, k=_k,
+                                                      df_sent=_df_sent_dash)
             if _ozet:
                 _m1, _m2, _m3, _m4, _m5 = st.columns(5)
                 _m1.metric("Cümle", _ozet["n"])
@@ -1449,6 +1489,12 @@ with tab7:
                  "yorumlanmamalıdır.",
         )
         abg_df = abg_df.copy()
+        # Eski utils bu kolonları döndürmüyor -> güvenli varsayılanlar
+        for _c, _v in [("n_match", 0), ("hawk_count", 0), ("dove_count", 0)]:
+            if _c not in abg_df.columns:
+                abg_df[_c] = _v
+        if "abg_index_raw" not in abg_df.columns:
+            abg_df["abg_index_raw"] = abg_df["abg_index"]
         abg_df["guvenilir"] = abg_df["n_match"] >= min_n
 
         fig_abg = make_subplots(
@@ -1519,7 +1565,7 @@ with tab7:
 
         zayif = int((~abg_df["guvenilir"]).sum())
         st.caption(
-            f"Endeks `1 + (şahin−güvercin) / (şahin+güvercin+{utils.ABG_SHRINK_K:g})` "
+            f"Endeks `1 + (şahin−güvercin) / (şahin+güvercin+{ABG_SHRINK_K:g})` "
             "olarak hesaplanır. Paydadaki sabit, **az eşleşmeli dönemleri nötre çeker**: "
             "klasik ABG tanımında tek bir şahin eşleşmesi de yirmi eşleşme de 2.00 "
             "değerini üretiyor, bu yüzden kısa metinlerde seri uçlara yapışıyordu. "

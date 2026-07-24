@@ -1553,7 +1553,10 @@ with tab7:
         fig_abg.add_hline(y=min_n, line=dict(color="crimson", dash="dot", width=1),
                           row=2, col=1)
 
-        fig_abg.update_yaxes(title_text="Hawkishness Index (0 – 2)",
+        # Not: K>0 iken endeks 0 ve 2 uçlarına ulaşamaz (tavan 1+n/(n+K), taban
+        # 1-n/(n+K)). Eksen 0-2'de sabit tutuluyor ki dönemler birbirine göre
+        # okunabilsin; başlıktaki "tahmin" ibaresi ham oran olmadığını belirtir.
+        fig_abg.update_yaxes(title_text="Şahinlik Endeksi (tahmin, 0 – 2)",
                              range=[0, 2], row=1, col=1)
         fig_abg.update_yaxes(title_text="adet", rangemode="tozero", row=2, col=1)
         fig_abg.update_layout(
@@ -1566,9 +1569,13 @@ with tab7:
         zayif = int((~abg_df["guvenilir"]).sum())
         st.caption(
             f"Endeks `1 + (şahin−güvercin) / (şahin+güvercin+{ABG_SHRINK_K:g})` "
-            "olarak hesaplanır. Paydadaki sabit, **az eşleşmeli dönemleri nötre çeker**: "
-            "klasik ABG tanımında tek bir şahin eşleşmesi de yirmi eşleşme de 2.00 "
-            "değerini üretiyor, bu yüzden kısa metinlerde seri uçlara yapışıyordu. "
+            "olarak hesaplanır. Paydadaki sabit **Laplace düzeltmesidir**: her metne "
+            "bir sahte şahin ve bir sahte güvercin eşleşmesi eklemeye denktir (düzgün "
+            "öncül). Simetrik olduğu için yönü saptırmaz, yalnızca **kanıt azaldıkça "
+            "tahmini nötre çeker**. Gerekçesi şu: klasik ABG tanımında tek bir şahin "
+            "eşleşmesi de yirmi eşleşme de 2.00 değerini üretiyor, bu yüzden kısa "
+            "metinlerde seri uçlara yapışıyordu. Düzeltmeyle 11 şahin/0 güvercin 1.85, "
+            "3 şahin/0 güvercin 1.60 veriyor — eşleşme miktarı endekse yansıyor. "
             + (f"Bu eşikte **{zayif} dönem** güvenilirlik sınırının altında "
                "(içi boş işaret) — o noktalar yorumlanmamalıdır." if zayif else
                "Bu eşikte tüm dönemler güvenilirlik sınırının üstünde.")

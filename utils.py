@@ -4258,7 +4258,7 @@ def _sym_limit(values) -> float:
 
 
 def chart_share_area(df_share: pd.DataFrame, title: str, colors: Optional[dict] = None,
-                     styles: Optional[dict] = None):
+                     styles: Optional[dict] = None, highlight: Optional[str] = None):
     """
     Yığılmış alan grafiği — pay (%) zaman serisi.
 
@@ -4272,11 +4272,15 @@ def chart_share_area(df_share: pd.DataFrame, title: str, colors: Optional[dict] 
         cl, _ = _style_of(styles, col)
         if cl is None:
             cl = (colors or {}).get(col)
+        fill = _rgba_from_hex(cl, 0.78)
+        line_c = cl
+        if highlight and col != highlight:
+            fill, line_c = "rgba(150,150,155,0.22)", "rgba(150,150,155,0.5)"
         fig.add_trace(go.Scatter(
             x=df_share.index, y=df_share[col], name=str(col),
             mode="lines", stackgroup="one", groupnorm="percent",
-            line=dict(width=0.5, color=cl),
-            fillcolor=_rgba_from_hex(cl, 0.78),
+            line=dict(width=(1.6 if (highlight and col == highlight) else 0.5), color=line_c),
+            fillcolor=fill,
             hovertemplate="%{x}<br>" + str(col) + ": %{y:.1f}%<extra></extra>",
         ))
     fig.update_layout(
@@ -4360,10 +4364,15 @@ def _rgba_from_hex(hx: Optional[str], alpha: float) -> Optional[str]:
     return f"rgba({r},{g},{b},{alpha})"
 
 
+#: Vurgu modunda arka plana itilen serilerin rengi.
+FADE = "rgba(150,150,155,0.30)"
+
+
 def chart_share_lines(df_share: pd.DataFrame, title: str,
                       colors: Optional[dict] = None, ylab: str = "Kapsam (%)",
                       styles: Optional[dict] = None,
-                      order: Optional[list] = None):
+                      order: Optional[list] = None,
+                      highlight: Optional[str] = None):
     """
     Çok etiketli kapsam serisi için çizgi grafiği.
 
@@ -4381,13 +4390,24 @@ def chart_share_lines(df_share: pd.DataFrame, title: str,
     cols += [c for c in df_share.columns if c not in cols]
 
     fig = go.Figure()
+    # Vurgulanan seri en sona eklenir ki diğerlerinin ÜSTÜNDE çizilsin.
+    if highlight in cols:
+        cols = [c for c in cols if c != highlight] + [highlight]
+
     for col in cols:
         cl, dash = _style_of(styles, col)
         if cl is None:
             cl = (colors or {}).get(col)
+        w = 2.4
+        if highlight:
+            if col == highlight:
+                w, dash = 4.0, "solid"
+            else:
+                cl, w, dash = FADE, 1.2, "solid"
         fig.add_trace(go.Scatter(
             x=df_share.index, y=df_share[col], name=str(col), mode="lines",
-            line=dict(width=2.4, color=cl, dash=dash),
+            line=dict(width=w, color=cl, dash=dash),
+            opacity=1.0,
             hovertemplate="%{x}<br>" + str(col) + ": %{y:.0f}%<extra></extra>",
         ))
     fig.update_layout(

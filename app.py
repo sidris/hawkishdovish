@@ -1532,14 +1532,14 @@ with tab7:
         # Yön etiketleri: hakemin istediği "yukarı/aşağı oklu kutu"
         fig_abg.add_annotation(
             xref="paper", x=0.012, y=1.88, yref="y1", showarrow=False,
-            text="▲ ŞAHİN — sıkılaştırıcı dil", align="left",
+            text="▲ ŞAHİN", align="left",
             font=dict(color="#c0392b", size=13),
             bgcolor="rgba(192,57,43,0.10)", bordercolor="#c0392b", borderwidth=1,
             borderpad=6,
         )
         fig_abg.add_annotation(
             xref="paper", x=0.012, y=0.12, yref="y1", showarrow=False,
-            text="▼ GÜVERCİN — gevşetici dil", align="left",
+            text="▼ GÜVERCİN", align="left",
             font=dict(color="#1f4e9c", size=13),
             bgcolor="rgba(31,78,156,0.10)", bordercolor="#1f4e9c", borderwidth=1,
             borderpad=6,

@@ -1981,27 +1981,44 @@ def _tone_topic_series(df_sent):
         order = share.mean().sort_values(ascending=False).index.tolist()
     share = share[[c for c in order if c in share.columns]]
 
-    if multi:
+    # --- Görünüm ve vurgu ------------------------------------------------------
+    # Yığılmış alan yalnızca TEK etiketli veride meşrudur (paylar %100'e tamamlanır).
+    # Çok etiketlide sütun toplamı %100'ü aştığı için yığma matematiksel olarak yanlıştır.
+    secenekler = (["Küçük paneller", "Çizgi"] if multi
+                  else ["Yığılmış alan", "Küçük paneller", "Çizgi"])
+    v1, v2 = st.columns([1.6, 1])
+    with v1:
         gorunum = st.radio(
-            "Görünüm", ["Çizgi", "Küçük paneller"], horizontal=True, key="tp_view",
-            help="Sekiz seri üst üste bindiğinde takip zorlaşır. Küçük paneller her "
-                 "konuyu kendi mini grafiğine ayırır; y ekseni ortak tutulduğu için "
-                 "karşılaştırma geçerli kalır.",
+            "Görünüm", secenekler, horizontal=True, key="tp_view",
+            help="Yığılmış alanda yalnızca EN ALTTAKİ bandın düz bir tabanı vardır; "
+                 "üsttekiler dalgalı bir taban üzerinde durduğu için kalınlıkları "
+                 "gözle ölçülemez. 5 bantta katlanılabilir, 8 bantta okunmaz hale "
+                 "gelir. Küçük paneller her konuyu ortak y ekseniyle ayırır.",
         )
-        if gorunum == "Küçük paneller":
-            fig_share = utils.chart_share_facets(
-                share, "Konu kapsamı (%) — konu başına panel",
-                styles=styles, ncols=3, order=order)
-        else:
-            fig_share = utils.chart_share_lines(
-                share, "Konu kapsamı (%)", colors=colors, styles=styles, order=order)
-    else:
-        gorunum = "Çizgi"
+    with v2:
+        _hl = st.selectbox("Öne çıkar", ["(yok)"] + list(share.columns), key="tp_hl",
+                           help="Seçilen seri kalın ve renkli, diğerleri soluk gri "
+                                "çizilir. Bağlamı kaybetmeden tek bir konuyu takip "
+                                "etmenin en doğrudan yolu.")
+    vurgu = None if _hl == "(yok)" else _hl
+
+    if gorunum == "Küçük paneller":
+        fig_share = utils.chart_share_facets(
+            share, ("Konu kapsamı (%)" if multi else "Cümle payları (%)") + " — konu başına panel",
+            styles=styles, ncols=3, order=order,
+            ylab=("Kapsam (%)" if multi else "Pay (%)"))
+    elif gorunum == "Yığılmış alan":
         fig_share = utils.chart_share_area(
-            share, "Cümle payları (%)", colors=colors, styles=styles)
+            share, "Cümle payları (%)", colors=colors, styles=styles, highlight=vurgu)
+    else:
+        fig_share = utils.chart_share_lines(
+            share, ("Konu kapsamı (%)" if multi else "Cümle payları (%)"),
+            colors=colors, styles=styles, order=order, highlight=vurgu,
+            ylab=("Kapsam (%)" if multi else "Pay (%)"))
+
     if fig_share:
         st.plotly_chart(fig_share, use_container_width=True,
-                        key=f"share_{col}_{multi}_{gorunum}")
+                        key=f"share_{col}_{multi}_{gorunum}_{_hl}")
 
     # --- Konu × Ton -----------------------------------------------------------
     st.markdown("#### 🌡️ Konu × Ton")

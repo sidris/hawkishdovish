@@ -3317,6 +3317,30 @@ AGENT_COLORS = {
     "Belirsiz": "#95a5a6",
 }
 
+# Çizgi grafiklerinde ton benzeri renkler (iki turuncu, iki yeşil) birbirine
+# karışıyordu. Çözüm iki katmanlı: (1) hue'ları ayır, (2) YAKIN hue'lara FARKLI
+# çizgi deseni ver. Böylece renk körlüğünde veya siyah-beyaz baskıda bile ayrışır.
+# Biçim: {etiket: (renk, dash)}
+AGENT_STYLE = {
+    "Households":       ("#2e86c1", "solid"),
+    "Firms":            ("#1e8449", "dash"),
+    "Financial Sector": ("#7d3c98", "solid"),
+    "Government":       ("#e67e22", "dot"),
+    "Central Bank":     ("#c0392b", "solid"),
+    "Belirsiz":         ("#8a8f98", "dashdot"),
+}
+
+THEME_STYLE = {
+    "Enflasyon Görünümü":       ("#c0392b", "solid"),    # kırmızı, düz
+    "Talep & Aktivite":         ("#e67e22", "dash"),     # turuncu, kesikli
+    "Politika Duruşu":          ("#1f4e9c", "solid"),    # lacivert, düz
+    "Kredi & Aktarım":          ("#0f9b8e", "solid"),    # turkuaz, düz
+    "Kur & Dış Denge":          ("#2e8b57", "dot"),      # yeşil, noktalı
+    "Beklentiler & İletişim":   ("#7d3c98", "dash"),     # mor, kesikli
+    "Finansal İstikrar & Risk": ("#d4508f", "dot"),      # pembe, noktalı
+    "Diğer":                    ("#8a8f98", "dashdot"),  # gri, karışık
+}
+
 
 # =============================================================================
 # 11. TEMA SÖZLÜĞÜ (deterministik, model değil)
@@ -4233,24 +4257,36 @@ def _sym_limit(values) -> float:
     return float(min(1.0, max(0.15, v)))
 
 
-def chart_share_area(df_share: pd.DataFrame, title: str, colors: Optional[dict] = None):
-    """Yığılmış alan grafiği — pay (%) zaman serisi."""
+def chart_share_area(df_share: pd.DataFrame, title: str, colors: Optional[dict] = None,
+                     styles: Optional[dict] = None):
+    """
+    Yığılmış alan grafiği — pay (%) zaman serisi.
+
+    Yığma YALNIZCA tek etiketli (kompozisyon) veride meşrudur: orada paylar
+    toplamı tanımı gereği %100'dür ve yığın gerçek bir bütünü böler.
+    """
     if df_share is None or df_share.empty:
         return None
     fig = go.Figure()
     for col in df_share.columns:
+        cl, _ = _style_of(styles, col)
+        if cl is None:
+            cl = (colors or {}).get(col)
         fig.add_trace(go.Scatter(
             x=df_share.index, y=df_share[col], name=str(col),
             mode="lines", stackgroup="one", groupnorm="percent",
-            line=dict(width=0.5, color=(colors or {}).get(col)),
+            line=dict(width=0.5, color=cl),
+            fillcolor=_rgba_from_hex(cl, 0.78),
             hovertemplate="%{x}<br>" + str(col) + ": %{y:.1f}%<extra></extra>",
         ))
     fig.update_layout(
-        title=title, height=430, hovermode="x unified",
+        title=title, height=470, hovermode="x unified",
         yaxis=dict(title="Cümle payı (%)", range=[0, 100], ticksuffix="%"),
         xaxis=dict(title=""),
-        legend=dict(orientation="h", yanchor="top", y=-0.15, xanchor="center", x=0.5),
-        margin=dict(t=50, b=40),
+        legend=dict(orientation="h", yanchor="top", y=-0.16, xanchor="center", x=0.5,
+                    font=dict(size=13), entrywidthmode="fraction", entrywidth=0.25,
+                    itemwidth=40),
+        margin=dict(t=55, b=110),
     )
     return fig
 
@@ -4307,30 +4343,114 @@ def chart_tone_heatmap(df_matrix: pd.DataFrame, title: str, ylab: str = "",
     return fig
 
 
+def _style_of(styles: Optional[dict], key) -> tuple:
+    """{etiket: (renk, dash)} sözlüğünden güvenli okuma."""
+    v = (styles or {}).get(key)
+    if isinstance(v, (tuple, list)) and len(v) >= 2:
+        return v[0], v[1]
+    if isinstance(v, str):          # yalnızca renk verilmişse
+        return v, "solid"
+    return None, "solid"
+
+
+def _rgba_from_hex(hx: Optional[str], alpha: float) -> Optional[str]:
+    if not hx or not str(hx).startswith("#") or len(hx) != 7:
+        return None
+    r, g, b = int(hx[1:3], 16), int(hx[3:5], 16), int(hx[5:7], 16)
+    return f"rgba({r},{g},{b},{alpha})"
+
+
 def chart_share_lines(df_share: pd.DataFrame, title: str,
-                      colors: Optional[dict] = None, ylab: str = "Kapsam (%)"):
+                      colors: Optional[dict] = None, ylab: str = "Kapsam (%)",
+                      styles: Optional[dict] = None,
+                      order: Optional[list] = None):
     """
     Çok etiketli kapsam serisi için çizgi grafiği.
 
-    Yığılmış alan kullanılmaz: çok etiketli veride sütun toplamı %100'ü aştığı
-    için yığma matematiksel olarak yanlış olur ve payları olduğundan küçük gösterir.
+    YIĞMA KULLANILMAZ. Çok etiketli veride sütun toplamı %100'ü aşar; yığmak
+    matematiksel olarak yanlış olur ve her serinin gerçek yüksekliğini
+    altındakilerin toplamı kadar kaydırarak okumayı bozar. Yığma yalnızca TEK
+    etiketli (kompozisyon) veride meşrudur — bkz. chart_share_area.
+
+    styles: {etiket: (renk, dash)}. Yakın hue'lara farklı çizgi deseni verilir;
+    böylece renk körlüğünde ve siyah-beyaz baskıda da ayrışır.
     """
     if df_share is None or df_share.empty:
         return None
+    cols = [c for c in (order or list(df_share.columns)) if c in df_share.columns]
+    cols += [c for c in df_share.columns if c not in cols]
+
     fig = go.Figure()
-    for col in df_share.columns:
+    for col in cols:
+        cl, dash = _style_of(styles, col)
+        if cl is None:
+            cl = (colors or {}).get(col)
         fig.add_trace(go.Scatter(
             x=df_share.index, y=df_share[col], name=str(col), mode="lines",
-            line=dict(width=2, color=(colors or {}).get(col)),
+            line=dict(width=2.4, color=cl, dash=dash),
             hovertemplate="%{x}<br>" + str(col) + ": %{y:.0f}%<extra></extra>",
         ))
     fig.update_layout(
-        title=title, height=430, hovermode="x unified",
+        title=title, height=470, hovermode="x unified",
         yaxis=dict(title=ylab, ticksuffix="%", rangemode="tozero"),
         xaxis=dict(title=""),
-        legend=dict(orientation="h", yanchor="top", y=-0.15, xanchor="center", x=0.5),
-        margin=dict(t=50, b=40),
+        legend=dict(orientation="h", yanchor="top", y=-0.16, xanchor="center", x=0.5,
+                    font=dict(size=13), entrywidthmode="fraction", entrywidth=0.25,
+                    itemwidth=40),
+        margin=dict(t=55, b=110),
     )
+    return fig
+
+
+def chart_share_facets(df_share: pd.DataFrame, title: str = "",
+                       styles: Optional[dict] = None, ncols: int = 3,
+                       order: Optional[list] = None, ylab: str = "Kapsam (%)"):
+    """
+    Küçük paneller (small multiples): her konu kendi mini grafiğinde.
+
+    Sekiz çizgiyi üst üste bindirmek yerine ayırmak, "hangi çizgi hangisi"
+    sorusunu tamamen ortadan kaldırır. Y ekseni tüm panellerde ORTAK tutulur —
+    aksi halde her panel kendi ölçeğine yayılır ve küçük bir konu büyük bir konu
+    kadar önemliymiş gibi görünür. Karşılaştırma bu ortak eksen sayesinde geçerlidir.
+    """
+    if df_share is None or df_share.empty:
+        return None
+    try:
+        from plotly.subplots import make_subplots
+    except Exception:
+        return chart_share_lines(df_share, title, styles=styles, order=order, ylab=ylab)
+
+    cols = [c for c in (order or list(df_share.columns)) if c in df_share.columns]
+    cols += [c for c in df_share.columns if c not in cols]
+    nrows = int(np.ceil(len(cols) / ncols))
+
+    fig = make_subplots(rows=nrows, cols=ncols, shared_yaxes=True,
+                        subplot_titles=[str(c) for c in cols],
+                        vertical_spacing=0.16 / max(1, nrows - 1) if nrows > 1 else 0.1,
+                        horizontal_spacing=0.045)
+
+    vals = pd.to_numeric(df_share.stack(), errors="coerce")
+    ymax = float(np.nanmax(vals)) * 1.10 if len(vals) else 100.0
+
+    for k, col in enumerate(cols):
+        r, c = k // ncols + 1, k % ncols + 1
+        cl, dash = _style_of(styles, col)
+        fig.add_trace(go.Scatter(
+            x=df_share.index, y=df_share[col], name=str(col), mode="lines",
+            line=dict(width=2.2, color=cl, dash=dash), showlegend=False,
+            fill="tozeroy", fillcolor=_rgba_from_hex(cl, 0.14),
+            hovertemplate="%{x}: %{y:.0f}%<extra>" + str(col) + "</extra>",
+        ), row=r, col=c)
+        fig.update_yaxes(range=[0, ymax], ticksuffix="%", row=r, col=c,
+                         tickfont=dict(size=10), showgrid=True, gridcolor="rgba(128,128,128,.18)")
+        fig.update_xaxes(nticks=5, tickfont=dict(size=10), row=r, col=c)
+
+    fig.update_layout(
+        title=title, height=210 * nrows + 90, showlegend=False,
+        margin=dict(t=80, b=45, l=55, r=25),
+    )
+    for ann in fig.layout.annotations:
+        ann.font.size = 13
     return fig
 
 

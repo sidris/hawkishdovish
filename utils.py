@@ -4444,9 +4444,22 @@ def chart_share_facets(df_share: pd.DataFrame, title: str = "",
     cols += [c for c in df_share.columns if c not in cols]
     nrows = int(np.ceil(len(cols) / ncols))
 
+    # Her SÜTUNUN en alttaki dolu satırı: x ekseni etiketleri yalnızca orada
+    # gösterilir. Aksi halde her satırın altındaki yıl etiketleri, bir alt satırın
+    # BAŞLIĞININ hemen üstüne düşer; başlık iki metin arasında sıkışır ve hangi
+    # panele ait olduğu belirsizleşir.
+    son_satir = {}
+    for k in range(len(cols)):
+        son_satir[k % ncols + 1] = k // ncols + 1
+
+    # Dikey boşluk cömert tutulur. Dar boşlukta başlık, ALTINDAKİ panelden çok
+    # ÜSTÜNDEKİNE yakın durur ve gözle yanlış panele bağlanır — 8 panelde
+    # "3 grafiğin adı yok" hissini yaratan şey buydu.
+    vsp = min(0.13, 0.85 / max(1, nrows - 1)) if nrows > 1 else 0.10
+
     fig = make_subplots(rows=nrows, cols=ncols, shared_yaxes=True,
-                        subplot_titles=[str(c) for c in cols],
-                        vertical_spacing=0.16 / max(1, nrows - 1) if nrows > 1 else 0.1,
+                        subplot_titles=["<b>%s</b>" % c for c in cols],
+                        vertical_spacing=vsp,
                         horizontal_spacing=0.045)
 
     vals = pd.to_numeric(df_share.stack(), errors="coerce")
@@ -4462,15 +4475,26 @@ def chart_share_facets(df_share: pd.DataFrame, title: str = "",
             hovertemplate="%{x}: %{y:.0f}%<extra>" + str(col) + "</extra>",
         ), row=r, col=c)
         fig.update_yaxes(range=[0, ymax], ticksuffix="%", row=r, col=c,
-                         tickfont=dict(size=10), showgrid=True, gridcolor="rgba(128,128,128,.18)")
-        fig.update_xaxes(nticks=5, tickfont=dict(size=10), row=r, col=c)
+                         tickfont=dict(size=10), showgrid=True,
+                         gridcolor="rgba(128,128,128,.18)")
+        fig.update_xaxes(nticks=5, tickfont=dict(size=10), row=r, col=c,
+                         showticklabels=(r == son_satir.get(c, nrows)))
+
+    # Kullanılmayan hücrelerin eksenlerini gizle (8 konu, 3x3 ızgara -> 1 boş hücre)
+    for k in range(len(cols), nrows * ncols):
+        r, c = k // ncols + 1, k % ncols + 1
+        fig.update_xaxes(visible=False, row=r, col=c)
+        fig.update_yaxes(visible=False, row=r, col=c)
 
     fig.update_layout(
-        title=title, height=210 * nrows + 90, showlegend=False,
-        margin=dict(t=80, b=45, l=55, r=25),
+        title=title, height=250 * nrows + 110, showlegend=False,
+        margin=dict(t=90, b=50, l=58, r=25),
     )
+    # Başlıklar eksen etiketi gibi değil, BAŞLIK gibi görünmeli: daha büyük ve koyu.
     for ann in fig.layout.annotations:
-        ann.font.size = 13
+        if ann.text != title:
+            ann.font.size = 15
+            ann.font.color = "#2c3e50"
     return fig
 
 

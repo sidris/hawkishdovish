@@ -385,6 +385,63 @@ with tab1:
                             st.rerun()
         # -----------------------------------------------------------------------
 
+        # ----------------------------------------------------------------------
+        # CÜMLE BAZLI TON DÖKÜMÜ
+        # ----------------------------------------------------------------------
+        # "Endeksteki bu hareket hangi ifadelerden geldi?" sorusunun doğrudan
+        # cevabı. Model ÇALIŞTIRILMAZ; her şey cümle önbelleğinden okunur, bu
+        # yüzden dashboard'da gecikmesiz açılır.
+        st.markdown("---")
+        st.subheader("🔍 Hangi İfadeler Belirleyici Oldu?")
+
+        _df_sent_dash = utils.fetch_sentences()
+        if _df_sent_dash is None or _df_sent_dash.empty:
+            st.info(
+                "Cümle önbelleği boş. «🗺️ Ton Haritası & Konular» sekmesindeki "
+                "*Eksik/bayat kaydı hesapla* butonuna bir kez basınca bu bölüm dolar."
+            )
+        else:
+            _donemler = sorted(_df_sent_dash["Donem"].dropna().unique().tolist(),
+                               reverse=True)
+            _c1, _c2 = st.columns([1, 2])
+            with _c1:
+                _sel = st.selectbox("Dönem", _donemler, index=0, key="dash_sent_period")
+            with _c2:
+                _k = st.slider("Kaç cümle", 3, 10, 5, key="dash_sent_k")
+
+            _sahin, _guvercin, _ozet = utils.top_sentences(_sel, k=_k,
+                                                           df_sent=_df_sent_dash)
+            if _ozet:
+                _m1, _m2, _m3, _m4, _m5 = st.columns(5)
+                _m1.metric("Cümle", _ozet["n"])
+                _m2.metric("Ortalama ton", f"{_ozet['ort']:+.3f}")
+                _m3.metric("🦅 Şahin", _ozet["n_hawk"])
+                _m4.metric("⚪ Nötr", _ozet["n_neut"])
+                _m5.metric("🕊️ Güvercin", _ozet["n_dove"])
+
+            _isim = {"sent_idx": "#", "sentence": "Cümle", "diff": "Ton",
+                     "agent_label": "İlgili Kesim", "theme_label": "Tema"}
+            _sc, _gc = st.columns(2)
+            with _sc:
+                st.markdown("**🦅 En şahin ifadeler**")
+                if _sahin is not None and not _sahin.empty:
+                    st.dataframe(_sahin.rename(columns=_isim).round(3),
+                                 use_container_width=True, hide_index=True)
+                else:
+                    st.caption("Bu dönemde eşiği geçen şahin cümle yok.")
+            with _gc:
+                st.markdown("**🕊️ En güvercin ifadeler**")
+                if _guvercin is not None and not _guvercin.empty:
+                    st.dataframe(_guvercin.rename(columns=_isim).round(3),
+                                 use_container_width=True, hide_index=True)
+                else:
+                    st.caption("Bu dönemde eşiği geçen güvercin cümle yok.")
+
+            st.caption(
+                "Ton = P(şahin) − P(güvercin), cümle düzeyinde. Renkli tam metin "
+                "görünümü ve konu kırılımı için «🗺️ Ton Haritası & Konular» sekmesine bak."
+            )
+
         if event_links_display:
             with st.expander("📅 Grafikteki Önemli Tarihler ve Haber Linkleri", expanded=False):
                 for item in event_links_display:
@@ -1379,11 +1436,97 @@ with tab7:
         df_abg_source['period_date'] = pd.to_datetime(df_abg_source['period_date'])
         df_abg_source['Donem'] = df_abg_source['period_date'].dt.strftime('%Y-%m')
         abg_df = utils.calculate_abg_scores(df_abg_source)
-        fig_abg = go.Figure()
-        fig_abg.add_trace(go.Scatter(x=abg_df['period_date'], y=abg_df['abg_index'], name="ABF Net Hawkishness", line=dict(color='purple', width=3), marker=dict(size=8)))
-        fig_abg.add_shape(type="line", x0=abg_df['period_date'].min(), x1=abg_df['period_date'].max(), y0=1, y1=1, line=dict(color="gray", dash="dash"))
-        fig_abg.update_layout(title="ABF (2019) Endeksi Zaman Serisi (Nötr=1.0)", yaxis_title="Hawkishness Index (0 - 2)", hovermode="x unified")
-        st.plotly_chart(fig_abg, use_container_width=True)
+
+        # --- Güvenilirlik eşiği ------------------------------------------------
+        # Endeks bir ORANDIR; kaç kelimeye dayandığını göstermez. Az eşleşmeli
+        # dönemlerde ham oran uçlara yapışır, bu yüzden hem yumuşatılmış endeks
+        # kullanılır hem de eşleşme sayısı grafiğe konur.
+        min_n = st.slider(
+            "Güvenilirlik eşiği — endeksin dayandığı en az kelime eşleşmesi",
+            0, 20, 6, key="abg_minn",
+            help="Bu sayının altındaki dönemler grafikte içi boş işaretle gösterilir: "
+                 "endeks değeri hesaplanır ama küçük örnekleme dayandığı için "
+                 "yorumlanmamalıdır.",
+        )
+        abg_df = abg_df.copy()
+        abg_df["guvenilir"] = abg_df["n_match"] >= min_n
+
+        fig_abg = make_subplots(
+            rows=2, cols=1, shared_xaxes=True, row_heights=[0.72, 0.28],
+            vertical_spacing=0.07,
+            subplot_titles=("", "Endeksin dayandığı kelime eşleşmesi (adet)"),
+        )
+
+        # Şahin / güvercin arka plan bantları — dashboard'la aynı görsel dil
+        fig_abg.add_hrect(y0=1, y1=2, fillcolor="rgba(192,57,43,0.06)",
+                          line_width=0, row=1, col=1)
+        fig_abg.add_hrect(y0=0, y1=1, fillcolor="rgba(31,78,156,0.06)",
+                          line_width=0, row=1, col=1)
+
+        fig_abg.add_trace(go.Scatter(
+            x=abg_df['period_date'], y=abg_df['abg_index'],
+            name="ABG Net Hawkishness (yumuşatılmış)",
+            line=dict(color='purple', width=3),
+            mode="lines+markers",
+            marker=dict(
+                size=9,
+                color=["purple" if g else "white" for g in abg_df["guvenilir"]],
+                line=dict(color="purple", width=2),
+            ),
+            customdata=abg_df[["n_match", "hawk_count", "dove_count", "abg_index_raw"]].values,
+            hovertemplate=("%{x|%Y-%m}<br>endeks: %{y:.2f}"
+                           "<br>eşleşme: %{customdata[0]} "
+                           "(şahin %{customdata[1]} / güvercin %{customdata[2]})"
+                           "<br>yumuşatılmamış: %{customdata[3]:.2f}<extra></extra>"),
+        ), row=1, col=1)
+
+        fig_abg.add_hline(y=1, line=dict(color="gray", dash="dash", width=1),
+                          row=1, col=1)
+
+        # Yön etiketleri: hakemin istediği "yukarı/aşağı oklu kutu"
+        fig_abg.add_annotation(
+            xref="paper", x=0.012, y=1.88, yref="y1", showarrow=False,
+            text="▲ ŞAHİN — sıkılaştırıcı dil", align="left",
+            font=dict(color="#c0392b", size=13),
+            bgcolor="rgba(192,57,43,0.10)", bordercolor="#c0392b", borderwidth=1,
+            borderpad=6,
+        )
+        fig_abg.add_annotation(
+            xref="paper", x=0.012, y=0.12, yref="y1", showarrow=False,
+            text="▼ GÜVERCİN — gevşetici dil", align="left",
+            font=dict(color="#1f4e9c", size=13),
+            bgcolor="rgba(31,78,156,0.10)", bordercolor="#1f4e9c", borderwidth=1,
+            borderpad=6,
+        )
+
+        fig_abg.add_trace(go.Bar(
+            x=abg_df['period_date'], y=abg_df['n_match'], name="Eşleşme adedi",
+            marker=dict(color=["#8e44ad" if g else "#d5b8e0" for g in abg_df["guvenilir"]]),
+            hovertemplate="%{x|%Y-%m}: %{y} eşleşme<extra></extra>",
+        ), row=2, col=1)
+        fig_abg.add_hline(y=min_n, line=dict(color="crimson", dash="dot", width=1),
+                          row=2, col=1)
+
+        fig_abg.update_yaxes(title_text="Hawkishness Index (0 – 2)",
+                             range=[0, 2], row=1, col=1)
+        fig_abg.update_yaxes(title_text="adet", rangemode="tozero", row=2, col=1)
+        fig_abg.update_layout(
+            title="ABG (2019) Endeksi Zaman Serisi — Nötr = 1.0",
+            hovermode="x unified", height=620, showlegend=False,
+            margin=dict(t=70, b=45),
+        )
+        st.plotly_chart(fig_abg, use_container_width=True, key="abg_main")
+
+        zayif = int((~abg_df["guvenilir"]).sum())
+        st.caption(
+            f"Endeks `1 + (şahin−güvercin) / (şahin+güvercin+{utils.ABG_SHRINK_K:g})` "
+            "olarak hesaplanır. Paydadaki sabit, **az eşleşmeli dönemleri nötre çeker**: "
+            "klasik ABG tanımında tek bir şahin eşleşmesi de yirmi eşleşme de 2.00 "
+            "değerini üretiyor, bu yüzden kısa metinlerde seri uçlara yapışıyordu. "
+            + (f"Bu eşikte **{zayif} dönem** güvenilirlik sınırının altında "
+               "(içi boş işaret) — o noktalar yorumlanmamalıdır." if zayif else
+               "Bu eşikte tüm dönemler güvenilirlik sınırının üstünde.")
+        )
         st.divider()
         st.subheader("🔍 Dönem Bazlı Detaylar")
         sel_abg_period = st.selectbox("İncelenecek Dönem:", abg_df['Donem'].tolist())

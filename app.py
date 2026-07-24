@@ -1907,6 +1907,9 @@ def _tone_topic_series(df_sent):
         )
     is_agent = mode.startswith("İlgili Kesim")
     col = "agent_label" if is_agent else "theme_label"
+    # Renk + çizgi deseni birlikte: yakın hue'lar farklı desen alır, böylece
+    # sekiz seri üst üste binse de ayırt edilebilir kalır.
+    styles = utils.AGENT_STYLE if is_agent else utils.THEME_STYLE
     colors = utils.AGENT_COLORS if is_agent else None
 
     if is_agent and df_sent["agent_label"].fillna("Belirsiz").eq("Belirsiz").all():
@@ -1969,17 +1972,36 @@ def _tone_topic_series(df_sent):
         st.info("Yeterli veri yok.")
         return
 
+    # Seriler ortalama büyüklüğe göre sıralanır: legend sırası grafikteki
+    # yükseklik sırasıyla örtüşünce "hangi çizgi hangisi" takibi kolaylaşır.
     if is_agent:
         order = [c for c in utils.AGENT_ORDER if c in share.columns]
         order += [c for c in share.columns if c not in order]
-        share = share[order]
+    else:
+        order = share.mean().sort_values(ascending=False).index.tolist()
+    share = share[[c for c in order if c in share.columns]]
 
     if multi:
-        fig_share = utils.chart_share_lines(share, "Konu kapsamı (%)", colors=colors)
+        gorunum = st.radio(
+            "Görünüm", ["Çizgi", "Küçük paneller"], horizontal=True, key="tp_view",
+            help="Sekiz seri üst üste bindiğinde takip zorlaşır. Küçük paneller her "
+                 "konuyu kendi mini grafiğine ayırır; y ekseni ortak tutulduğu için "
+                 "karşılaştırma geçerli kalır.",
+        )
+        if gorunum == "Küçük paneller":
+            fig_share = utils.chart_share_facets(
+                share, "Konu kapsamı (%) — konu başına panel",
+                styles=styles, ncols=3, order=order)
+        else:
+            fig_share = utils.chart_share_lines(
+                share, "Konu kapsamı (%)", colors=colors, styles=styles, order=order)
     else:
-        fig_share = utils.chart_share_area(share, "Cümle payları (%)", colors=colors)
+        gorunum = "Çizgi"
+        fig_share = utils.chart_share_area(
+            share, "Cümle payları (%)", colors=colors, styles=styles)
     if fig_share:
-        st.plotly_chart(fig_share, use_container_width=True, key=f"share_{col}_{multi}")
+        st.plotly_chart(fig_share, use_container_width=True,
+                        key=f"share_{col}_{multi}_{gorunum}")
 
     # --- Konu × Ton -----------------------------------------------------------
     st.markdown("#### 🌡️ Konu × Ton")

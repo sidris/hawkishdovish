@@ -1039,7 +1039,19 @@ def select_non_overlapping_terms(tokens, term_infos):
 #: ABG endeksinde küçük örneklem yumuşatma sabiti.
 #: Payda (hawk+dove+K) olur. Büyütürsen seri daha çok nötre yaslanır, küçültürsen
 #: ham orana yaklaşır. 0 verirsen klasik ABG tanımına dönersin.
-ABG_SHRINK_K = 5.0
+#:
+#: K=2 -> Laplace düzeltmesi: her metne 1 sahte şahin + 1 sahte güvercin eşleşmesi
+#: eklemeye denktir (Beta(1,1), yani düzgün öncül). İstatistikte varsayılan tercih
+#: olduğu için gerekçesi tek cümlede yazılabilir. Simetrik olduğundan yönü
+#: saptırmaz, yalnızca kanıt azaldıkça tahmini nötre (1.0) çeker.
+#:
+#: Neden 5 değil: K=5, metne 2.5'er sahte eşleşme koymak demektir (Beta(2.5,2.5)).
+#: Veriden çok öncüle ağırlık verdiği için çok eşleşmeli dönemlerle az eşleşmeli
+#: dönemleri birbirine yaklaştırıyor ve seriyi 1.2-1.4 bandına sıkıştırıyordu:
+#:   11 şahin/0 güvercin -> 1.69   |   3 şahin/0 güvercin -> 1.38   (fark 0.31)
+#: K=2 ile aynı iki metin 1.85 ve 1.60 veriyor (fark 0.25) — kanıt miktarı hâlâ
+#: cezalandırılıyor ama seri ezilmiyor.
+ABG_SHRINK_K = 2.0
 
 
 def analyze_hawk_dove(text: str, DICT: dict, window_words: int = 7, dedupe_within_term_window: bool = True, nearest_only: bool = False):
@@ -1123,10 +1135,17 @@ def analyze_hawk_dove(text: str, DICT: dict, window_words: int = 7, dedupe_withi
     net_raw = 1.0 if denom == 0 else (1.0 + (hawk_total - dove_total) / denom)
 
     # --- YUMUŞATILMIŞ ENDEKS (kanonik) ----------------------------------------
-    # Paydaya sabit bir K eklenir (Laplace tarzı büzülme): eşleşme sayısı azaldıkça
+    # Paydaya sabit bir K eklenir (Laplace düzeltmesi): eşleşme sayısı azaldıkça
     # endeks nötre (1.0) çekilir, arttıkça ham orana yakınsar. Böylece "2.00" değeri
     # yalnızca çok sayıda şahin eşleşmesi olan metinlerde görülebilir.
-    #   K=5:  1 şahin/0 güvercin -> 1.17   |  20 şahin/2 güvercin -> 1.67
+    #   K=2:  1 şahin/0 güvercin  -> 1.33
+    #         3 şahin/0 güvercin  -> 1.60
+    #        11 şahin/0 güvercin  -> 1.85
+    #        20 şahin/2 güvercin  -> 1.75
+    # Endeksin ayrıştırılmış hali:  1 + (ham oran) * n/(n+K)
+    # yani "metin ne kadar tek yönlü" ile "arkasında ne kadar kanıt var" çarpımı.
+    # Bu ikisi tek sayıda birleştiği için, YÖN okunurken n_match'e de bakılmalıdır
+    # (grafikte içi boş işaret / güvenilirlik eşiği bunun içindir).
     net_hawkishness = 1.0 + (hawk_total - dove_total) / (denom + ABG_SHRINK_K)
 
     return {

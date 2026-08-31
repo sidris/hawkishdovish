@@ -1,0 +1,13 @@
+name: Keep Streamlit app awake
+
+on:
+  schedule:
+    - cron: "0 */10 * * *"   # her 10 saatte bir (UTC)
+  workflow_dispatch: {}        # istersen elle de tetikleyebilmek için
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping the app
+        run: curl -sS -o /dev/null -w "HTTP %{http_code}\n" https://etiketleme.streamlit.app/

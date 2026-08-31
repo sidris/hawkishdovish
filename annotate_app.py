@@ -22,9 +22,17 @@ import utils
 
 st.set_page_config(page_title="PPK Cümle Etiketleme", layout="centered")
 
-# --- Annotator listesi ve paylaşılan PIN — gerçek isimlerle değiştirin -------
-ANNOTATORS = ["Annotator 1", "Annotator 2", "Annotator 3", "Annotator 4", "Annotator 5"]
-SHARED_PIN = "PPKEtiketle26"  # ana uygulamanın APP_PWD/ADMIN_PWD'sinden BAĞIMSIZ, ayrı bir PIN
+# --- Annotator başına ayrı PIN — gerçek isimler ve kendi seçtiğiniz PIN'lerle
+# değiştirin. Kimlik artık açılır menüden DEĞİL, hangi PIN girildiğinden
+# belirleniyor — böylece PIN'i bilmeyen biri başkası adına giriş yapamaz ve
+# yanlışlıkla (ya da kasıtlı) başka bir annotator'ın etiketinin üzerine yazamaz.
+ANNOTATOR_PINS = {
+    "4471": "Ayşe",
+    "8823": "Berk",
+    "1195": "Cem",
+    "6640": "Deniz",
+    "3308": "Elif",
+}
 
 LABEL_OPTIONS = [("🦅 Şahin", "HAWK"), ("⚖️ Nötr", "NEUT"), ("🕊️ Güvercin", "DOVE")]
 CONF_OPTIONS = [("Emin değilim", 1), ("Orta", 2), ("Eminim", 3)]
@@ -35,13 +43,15 @@ CONF_OPTIONS = [("Emin değilim", 1), ("Orta", 2), ("Eminim", 3)]
 # =============================================================================
 if "annot_ok" not in st.session_state:
     st.session_state["annot_ok"] = False
+    st.session_state["annotator"] = None
 
 if not st.session_state["annot_ok"]:
     st.title("🏷️ PPK Cümle Etiketleme")
     pin = st.text_input("PIN", type="password")
     if st.button("Giriş", type="primary"):
-        if pin == SHARED_PIN:
+        if pin in ANNOTATOR_PINS:
             st.session_state["annot_ok"] = True
+            st.session_state["annotator"] = ANNOTATOR_PINS[pin]
             st.rerun()
         else:
             st.error("Hatalı PIN.")
@@ -49,7 +59,13 @@ if not st.session_state["annot_ok"]:
 
 st.title("🏷️ PPK Cümle Etiketleme")
 
-annotator = st.selectbox("Kimsin?", ANNOTATORS, key="annot_who")
+annotator = st.session_state["annotator"]
+top_l, top_r = st.columns([4, 1])
+top_l.caption(f"Giriş yapan: **{annotator}**")
+if top_r.button("🚪 Çıkış", use_container_width=True):
+    st.session_state["annot_ok"] = False
+    st.session_state["annotator"] = None
+    st.rerun()
 
 with st.expander("ℹ️ Bu ne işe yarıyor / nasıl etiketlemeliyim?"):
     st.markdown(

@@ -5,6 +5,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import altair as alt
 import utils
+import report_builder
 
 # =============================================================================
 # SÜRÜM UYUMLULUK KATMANI
@@ -113,7 +114,7 @@ with c_head1: st.title("🦅 Şahin/Güvercin Paneli")
 with c_head2: 
     if st.button("Çıkış"): st.session_state['logged_in'] = False; st.rerun()
 
-tab1, tab2, tab3, tab4, tab_textdata, tab6, tab7, tab_roberta, tab_tone, tab_imp = st.tabs([
+tab1, tab2, tab3, tab4, tab_textdata, tab6, tab7, tab_roberta, tab_tone, tab_imp, tab_rapor = st.tabs([
     "📈 Dashboard",
     "📝 Veri Girişi",
     "📊 Veriler",
@@ -123,7 +124,8 @@ tab1, tab2, tab3, tab4, tab_textdata, tab6, tab7, tab_roberta, tab_tone, tab_imp
     "📜 ABG (2019)",
     "🧠 CB-RoBERTa",
     "🗺️ Ton Haritası & Konular",
-    "📅 Haberler"
+    "📅 Haberler",
+    "📄 Rapor",
 ])
 
 ENFLATION_EXPECTATION_COLS = [
@@ -2387,3 +2389,74 @@ yeni bir kayıt geçmiş skorları da değiştirir. Bu yüzden her yüklemede ye
 
 with tab_tone:
     _render_tab_tone_topics()
+
+# ==============================================================================
+# TAB: RAPOR (Word .docx üretimi)
+# ==============================================================================
+with tab_rapor:
+    st.header("📄 Genişletilmiş Bilgi Notu (Word)")
+    st.caption(
+        "Seçilen dönem için; ABG ve CB-RoBERTa sonuçlarını, cümle bazlı ton dökümünü, "
+        "konu ve metin-içi konum analizini, metin→faiz backtest performansını (varsa) ve "
+        "otomatik üretilmiş bir yönetici özeti/sonuç bölümünü tek bir .docx dosyasında "
+        "toplar. Model ÇALIŞTIRILMAZ — CB-RoBERTa/tema/cümle verileri önbellekten okunur; "
+        "önbellek güncel değilse «🗺️ Ton Haritası & Konular» sekmesinden önce doldurun."
+    )
+
+    df_logs_rapor = utils.fetch_all_data()
+    if df_logs_rapor is None or df_logs_rapor.empty:
+        st.info("Kayıt yok.")
+    else:
+        df_logs_rapor = df_logs_rapor.copy()
+        df_logs_rapor["period_date"] = pd.to_datetime(df_logs_rapor["period_date"])
+        df_logs_rapor["Donem"] = df_logs_rapor["period_date"].dt.strftime("%Y-%m")
+        donemler_rapor = sorted(df_logs_rapor["Donem"].dropna().unique().tolist(), reverse=True)
+
+        c_r1, c_r2 = st.columns([1, 2])
+        with c_r1:
+            secili_donem = st.selectbox("Rapor dönemi", donemler_rapor, index=0, key="rapor_donem_sec")
+        with c_r2:
+            _eksik_rapor = utils.missing_periods(df_logs_rapor)
+            if secili_donem in (_eksik_rapor or []):
+                st.warning(
+                    f"⚠️ **{secili_donem}** cümle önbelleğinde güncel değil. Rapor yine de "
+                    "üretilir, ancak §4/§5/§6 (cümle, konu, konum analizi) bu dönem için "
+                    "eksik/boş görünebilir."
+                )
+
+        analist_notu = st.text_area(
+            "Analist notu (opsiyonel)",
+            placeholder=(
+                "İsterseniz buraya kendi yorumunuzu ya da dışarıda (ör. bir sohbet "
+                "asistanından) aldığınız bir okuma önerisini yapıştırın. Rapor bu alanın "
+                "üstüne otomatik olarak 'tek seferlik/prompt'a duyarlı' uyarısını ekler."
+            ),
+            height=100, key="rapor_analist_notu",
+        )
+
+        if st.button("📄 Rapor Oluştur (Word)", type="primary", key="btn_rapor_uret"):
+            with st.spinner(f"{secili_donem} için rapor üretiliyor... (backtest modeli eğitiliyorsa biraz sürebilir)"):
+                try:
+                    tmp_path = f"/tmp/ppk_rapor_{secili_donem}.docx"
+                    out_path = report_builder.generate_full_report_for_period(
+                        donem=secili_donem,
+                        analyst_note=analist_notu,
+                        out_path=tmp_path,
+                    )
+                    with open(out_path, "rb") as f:
+                        docx_bytes = f.read()
+                    st.session_state["rapor_docx_bytes"] = docx_bytes
+                    st.session_state["rapor_docx_name"] = f"ppk_rapor_{secili_donem}.docx"
+                    st.success("Rapor üretildi.")
+                except Exception as e:
+                    st.error("Rapor üretilirken hata oluştu.")
+                    st.exception(e)
+
+        if st.session_state.get("rapor_docx_bytes"):
+            st.download_button(
+                "⬇️ Word Raporunu İndir",
+                data=st.session_state["rapor_docx_bytes"],
+                file_name=st.session_state.get("rapor_docx_name", "ppk_rapor.docx"),
+                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                key="btn_rapor_indir",
+            )

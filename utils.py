@@ -4695,3 +4695,129 @@ def sentence_heatmap_html(df_one: pd.DataFrame,
         f"font-size:0.94rem;padding:14px 16px;border:1px solid rgba(128,128,128,.28);"
         f"border-radius:8px;'>{body}</div>{legend}"
     )
+
+
+
+# =============================================================================
+# 20. İNSAN ETİKETLEME (fine-tuning için) — human_annotations tablosu
+# =============================================================================
+# Bu bölüm, mrince/CBRT-RoBERTa-HawkishDovish-Classifier modelini kendi PPK
+# metinlerinizle fine-tune etmek isteyen ekipler için: birden çok uzmanın
+# cümle bazında etiketlediği bir insan-etiketi havuzu tutar. Model ÇALIŞTIRMAZ,
+# sadece Supabase'e okur/yazar — mevcut fetch_events/add_event kalıbıyla aynı
+# stildedir. Eğitim tarafı (fine-tuning script) bu fonksiyonları kullanır.
+#
+# Gerekli tablo (Supabase SQL editöründe bir kez çalıştırılmalı):
+#
+#   create table if not exists human_annotations (
+#       id bigserial primary key,
+#       log_id bigint not null,
+#       sent_idx int not null,
+#       sentence text not null,
+#       sentence_hash text not null,
+#       annotator text not null,
+#       label text not null check (label in ('HAWK','DOVE','NEUT')),
+#       confidence int check (confidence between 1 and 3),
+#       created_at timestamptz default now(),
+#       unique (sentence_hash, annotator)
+#   );
+#
+# "unique (sentence_hash, annotator)" + upsert: aynı kişi aynı cümleyi tekrar
+# etiketlerse GÜNCELLENİR (yeni satır açılmaz) — fikrini değiştirebilir.
+
+TBL_ANNOT = "human_annotations"
+ANNOTATION_LABELS = ["HAWK", "NEUT", "DOVE"]
+
+
+def build_sentence_pool(df_logs: pd.DataFrame) -> pd.DataFrame:
+    """
+    Tüm PPK metinlerini CÜMLELERE böler — etiketleme havuzu.
+
+    DİKKAT: Bu, roberta_sentences önbelleğinden BAĞIMSIZDIR (model çalıştırmaz,
+    yalnızca aynı cümle bölme fonksiyonunu — split_sentences_nlp — kullanır).
+    Böylece insan etiketleme, CB-RoBERTa önbelleği hiç doldurulmamış olsa bile
+    baştan başlatılabilir.
+    """
+    if df_logs is None or df_logs.empty:
+        return pd.DataFrame()
+    rows = []
+    d = df_logs.copy()
+    d["period_date"] = pd.to_datetime(d["period_date"], errors="coerce")
+    for _, r in d.iterrows():
+        text = str(r.get("text_content", "") or "")
+        if len(text) < 30:
+            continue
+        sents = split_sentences_nlp(normalize_text(text))
+        n = len(sents)
+        donem = r["period_date"].strftime("%Y-%m") if pd.notna(r["period_date"]) else None
+        for idx, s in enumerate(sents):
+            rows.append({
+                "log_id": int(r["id"]), "period_date": r["period_date"], "Donem": donem,
+                "sent_idx": idx, "sent_total": n, "sentence": s,
+                "sentence_hash": text_fingerprint(s),
+            })
+    return pd.DataFrame(rows)
+
+
+def fetch_annotations() -> pd.DataFrame:
+    """Tüm insan etiketlerini çeker (tüm annotator'lar, tüm cümleler)."""
+    df = _paged_select(TBL_ANNOT)
+    if df.empty:
+        return df
+    if "created_at" in df.columns:
+        df["created_at"] = pd.to_datetime(df["created_at"], errors="coerce")
+    if "confidence" in df.columns:
+        df["confidence"] = pd.to_numeric(df["confidence"], errors="coerce")
+    return df
+
+
+def insert_annotation(log_id, sent_idx, sentence: str, annotator: str, label: str,
+                       confidence: Optional[int] = None) -> bool:
+    """Bir cümle için bir annotator'ın etiketini kaydeder (upsert — aynı kişi
+    aynı cümleyi tekrar etiketlerse üzerine yazılır)."""
+    if not supabase:
+        return False
+    if label not in ANNOTATION_LABELS:
+        raise ValueError(f"Geçersiz etiket: {label} (beklenen: {ANNOTATION_LABELS})")
+    payload = {
+        "log_id": int(log_id), "sent_idx": int(sent_idx), "sentence": str(sentence),
+        "sentence_hash": text_fingerprint(str(sentence)), "annotator": str(annotator),
+        "label": str(label),
+        "confidence": int(confidence) if confidence is not None else None,
+    }
+    try:
+        supabase.table(TBL_ANNOT).upsert(payload, on_conflict="sentence_hash,annotator").execute()
+        return True
+    except Exception as e:
+        print(f"[utils] insert_annotation hata: {e}")
+        return False
+
+
+def annotation_progress(df_ann: pd.DataFrame) -> pd.DataFrame:
+    """Annotator başına kaç cümle etiketlendi."""
+    if df_ann is None or df_ann.empty:
+        return pd.DataFrame(columns=["annotator", "etiketlenen"])
+    return (df_ann.groupby("annotator").size().rename("etiketlenen")
+            .reset_index().sort_values("etiketlenen", ascending=False).reset_index(drop=True))
+
+
+def annotation_overlap_counts(df_ann: pd.DataFrame) -> pd.Series:
+    """Her cümlenin (sentence_hash) kaç FARKLI annotator tarafından etiketlendiği."""
+    if df_ann is None or df_ann.empty:
+        return pd.Series(dtype=int)
+    return df_ann.groupby("sentence_hash")["annotator"].nunique()
+
+
+def kappa_set_hashes(pool: pd.DataFrame, target_size: int = 150, seed: int = 42) -> set:
+    """
+    TÜM annotator'ların ortak etiketleyeceği sabit alt küme (inter-annotator
+    agreement / Fleiss' kappa hesaplamak için). Deterministiktir: aynı pool +
+    aynı seed her zaman aynı cümleleri seçer, böylece annotator'lar arasında
+    koordinasyona gerek kalmaz — herkes aynı listeyi görür.
+    """
+    if pool is None or pool.empty:
+        return set()
+    hashes = sorted(pool["sentence_hash"].dropna().unique().tolist())
+    rng = np.random.default_rng(seed)
+    idx = rng.permutation(len(hashes))[:min(target_size, len(hashes))]
+    return {hashes[i] for i in idx}

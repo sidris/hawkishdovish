@@ -27,11 +27,11 @@ st.set_page_config(page_title="PPK Cümle Etiketleme", layout="centered")
 # belirleniyor — böylece PIN'i bilmeyen biri başkası adına giriş yapamaz ve
 # yanlışlıkla (ya da kasıtlı) başka bir annotator'ın etiketinin üzerine yazamaz.
 ANNOTATOR_PINS = {
-    "4471": "Ayşe",
-    "8823": "Berk",
-    "1195": "Cem",
-    "6640": "Deniz",
-    "3308": "Elif",
+    "4471": "Murat Taşcı",
+    "8823": "Mahmut Günay",
+    "1195": "Halil İbrahim Korkmaz",
+    "6640": "Fırat Bora Taş",
+    "3308": "Ekonomist",
 }
 
 LABEL_OPTIONS = [("🦅 Şahin", "HAWK"), ("⚖️ Nötr", "NEUT"), ("🕊️ Güvercin", "DOVE")]

@@ -44,6 +44,8 @@ import tempfile
 import datetime as _dt
 from typing import Optional
 
+from collections import Counter
+
 import numpy as np
 import pandas as pd
 
@@ -319,7 +321,7 @@ def _exec_summary(donem, abg_row, ai_row, ai_prev_row, sent_ozet, flesch, n_sent
 
     if ai_word and abg_word != "belirsiz":
         agree = "iki yöntem de aynı yönü işaret ediyor" if ai_word == abg_word else \
-                "iki yöntem farklı yönlere işaret ediyor (bkz. §5.3 Yöntemler Arası Karşılaştırma)"
+                "iki yöntem farklı yönlere işaret ediyor (bkz. §3.3 Yöntemler Arası Karşılaştırma)"
         parts.append(
             f"{donem} dönemi PPK metni, sözlük temelli ABG yöntemine göre {abg_word}, "
             f"CB-RoBERTa cümle-bazlı modeline göre {ai_word} olarak sınıflandırılmıştır "
@@ -396,8 +398,92 @@ def _reconciliation_text(abg_row, sent_ozet):
         else:
             txt += (" Yön açısından iki yöntem BİRBİRİNDEN AYRIŞIYOR — bu genellikle metnin "
                     "ABG sözlüğünün kapsamadığı temalarda (ör. iletişim/çerçeve dili) yoğunlaştığına "
-                    "işaret eder ve tek bir sayıya indirgemek yerine cümle dökümüne (§6) bakılmalıdır.")
+                    "işaret eder ve tek bir sayıya indirgemek yerine cümle dökümüne (§4) bakılmalıdır.")
     return txt
+
+
+_FALLBACK_STOPWORDS = {
+    "the", "a", "an", "of", "to", "in", "and", "or", "is", "are", "was", "were", "be", "been",
+    "being", "on", "at", "by", "for", "with", "as", "that", "this", "it", "its", "which", "will",
+    "would", "should", "could", "has", "have", "had", "not", "no", "also", "than", "then", "there",
+    "their", "from", "into", "over", "under", "further", "more", "most", "such", "other", "these",
+    "those", "based", "same", "may", "can", "if", "so", "but", "while", "when", "where", "s",
+}
+
+
+def _lexical_shift_rows(text_now: str, text_prev: str, top_k: int = 12) -> list:
+    """
+    Önceki döneme göre ÇOĞALAN/AZALAN/YENİ ORTAYA ÇIKAN/KAYBOLAN kelime ve iki-kelimelik
+    ifadeleri bulur. Ham sayım yerine 1000 kelime başına oran (‰) kullanılır — metin
+    uzunluğu dönemden döneme değiştiği için ham sayım yanıltıcı olabilir (ör. metin
+    kısalırken aynı sayıda geçen bir kelime aslında GÖRECELİ olarak ağırlaşmış olur).
+    """
+    try:
+        from wordcloud import STOPWORDS as _sw
+        stop = set(_sw)
+    except Exception:
+        stop = _FALLBACK_STOPWORDS
+
+    def _freqs(text, ngram):
+        if not text:
+            return {}
+        toks = [t for t in utils.tokenize(utils.normalize_text(text)) if len(t) > 2 and t not in stop]
+        items = toks if ngram == 1 else [f"{a} {b}" for a, b in zip(toks, toks[1:])
+                                          if a not in stop and b not in stop]
+        n = len(items) or 1
+        c = Counter(items)
+        return {k: v / n * 1000.0 for k, v in c.items()}
+
+    rows = []
+    for ngram, label in ((1, "tek kelime"), (2, "iki kelimelik ifade")):
+        f_now = _freqs(text_now, ngram)
+        f_prev = _freqs(text_prev, ngram)
+        for k in set(f_now) | set(f_prev):
+            now_v, prev_v = f_now.get(k, 0.0), f_prev.get(k, 0.0)
+            if prev_v == 0 and now_v >= 1.0:
+                durum = "🆕 Yeni ortaya çıktı"
+            elif now_v == 0 and prev_v >= 1.0:
+                durum = "❌ Kayboldu"
+            elif prev_v > 0 and now_v >= prev_v * 1.6 and (now_v - prev_v) >= 0.5:
+                durum = "↑ Güçlendi"
+            elif prev_v > 0 and now_v <= prev_v / 1.6 and (prev_v - now_v) >= 0.5:
+                durum = "↓ Zayıfladı"
+            else:
+                continue
+            rows.append({"Tür": label, "İfade": k, "Bu dönem (‰)": round(now_v, 2),
+                         "Önceki dönem (‰)": round(prev_v, 2), "Değişim": durum})
+    rows.sort(key=lambda r: abs(r["Bu dönem (‰)"] - r["Önceki dönem (‰)"]), reverse=True)
+    return rows[:top_k]
+
+
+_DOVE_NOTE_KEYWORDS = ["güvercin", "gevşe", "dovish", "faiz indir", "indirim sinyal", "destekleyici ton"]
+_HAWK_NOTE_KEYWORDS = ["şahin", "sıkılaştır", "hawkish", "faiz artış", "sıkı duruş", "sıkı para"]
+
+
+def _note_consistency_caveat(note: Optional[str], abg_word: str, ai_word: str) -> Optional[str]:
+    """
+    Yapıştırılan analist notunun yönü, bu rapor için otomatik hesaplanan yönle (ABG/CB-RoBERTa)
+    çelişiyorsa uyarı üretir. Amaç: örn. önceki bir toplantıdan kalmış, güncellenmemiş bir notun
+    fark edilmeden rapora girmesini engellemek (bkz. §8 kullanım notu). Bu bir dilbilimsel/anlamsal
+    analiz DEĞİL, kaba bir anahtar-kelime taramasıdır — kesin bir hüküm olarak okunmamalıdır.
+    """
+    if not note or not note.strip():
+        return None
+    low = note.lower()
+    has_dove = any(k in low for k in _DOVE_NOTE_KEYWORDS)
+    has_hawk = any(k in low for k in _HAWK_NOTE_KEYWORDS)
+    if has_dove and has_hawk:
+        return None  # her iki yön de geçiyor — muhtemelen nüanslı bir tartışma, bayrak kaldırma
+    auto = {w for w in (abg_word, ai_word) if w in ("şahin", "güvercin")}
+    if has_dove and auto == {"şahin"}:
+        return ("Bu not GÜVERCİN yönlü ifadeler içeriyor, ancak bu dönem için ABG ve/veya CB-RoBERTa "
+                "yöntemleri ŞAHİN sonucu veriyor. Not, farklı/eski bir döneme ait olabilir — "
+                "hangi metne ve tarihe ait olduğunu kontrol edin.")
+    if has_hawk and auto == {"güvercin"}:
+        return ("Bu not ŞAHİN yönlü ifadeler içeriyor, ancak bu dönem için ABG ve/veya CB-RoBERTa "
+                "yöntemleri GÜVERCİN sonucu veriyor. Not, farklı/eski bir döneme ait olabilir — "
+                "hangi metne ve tarihe ait olduğunu kontrol edin.")
+    return None
 
 
 def _position_short(pos_matrix: pd.DataFrame, donem: str) -> Optional[str]:
@@ -474,7 +560,7 @@ def _conclusion(donem, abg_row, ai_row, sent_ozet, backtest_metrics, hit, pos_na
                     f"genel duruş okuması güvenilir kabul edilebilir.")
     else:
         bits.append(f"{donem} kararında yöntemler arasında {('tam' if ai_word==abg_word else 'kısmi')} "
-                    f"uyum var; tek bir skora değil, cümle bazlı döküme (§6) bakılarak karar verilmelidir.")
+                    f"uyum var; tek bir skora değil, cümle bazlı döküme (§4) bakılarak karar verilmelidir.")
     if sent_ozet and sent_ozet.get("n", 0) > 0:
         n_hawk, n_dove, n = sent_ozet["n_hawk"], sent_ozet["n_dove"], sent_ozet["n"]
         if n_hawk > 2 * max(n_dove, 1):
@@ -605,11 +691,16 @@ def build_report(
                                      flesch_now, n_sent_now, flesch_prev, n_sent_prev))
 
     # ---- özet tablo ----
+    # Her göstergenin NE ölçtüğü ve hangi ölçek/eşik üzerinden okunduğu, değerin
+    # kendisiyle birlikte gösterilir — aksi halde (ör. "ABG=1.00" ile "CB-RoBERTa
+    # ton=+0.26" yan yana) okuyucu iki sayının aynı şeyi mi ölçtüğünü sanabilir.
     _add_heading(doc, "Özet Göstergeler", level=2)
     summary_rows = []
     if abg_row is not None:
         summary_rows.append({
             "Gösterge": "ABG (2019) — yumuşatılmış endeks",
+            "Ölçtüğü şey": "Sözlük/kural tabanlı şahin-güvercin kelime dengesi (tüm metne bakar)",
+            "Ölçek / Eşik": "0–2  (1.00 = nötr; >1 şahin, <1 güvercin)",
             "Değer": f"{abg_row['abg_index']:.3f}  (ham: {abg_row.get('abg_index_raw', float('nan')):.3f})",
             "Önceki dönem": f"{abg_row_prev['abg_index']:.3f}" if abg_row_prev is not None else "—",
             "Not": f"n_match={int(abg_row.get('n_match', 0))} — {'DÜŞÜK ÖRNEKLEM, ihtiyatlı yorumlayın' if abg_row.get('n_match', 0) < 5 else 'yeterli örneklem'}",
@@ -617,19 +708,25 @@ def build_report(
     if ai_row is not None:
         summary_rows.append({
             "Gösterge": "CB-RoBERTa — ton (Diff H-D)",
+            "Ölçtüğü şey": "Cümle-bazlı modelin bu dönemin HAM tonu (P(Şahin)−P(Güvercin), karar cümlesi ağırlıklı)",
+            "Ölçek / Eşik": f"-1..+1  (±{utils.DOC_STANCE_DEADBAND:.2f} = şahin/nötr/güvercin eşiği)",
             "Değer": f"{ai_row.get('Diff (H-D)', float('nan')):+.3f}  ({ai_row.get('Duruş','—')})",
             "Önceki dönem": f"{ai_row_prev.get('Diff (H-D)', float('nan')):+.3f}" if ai_row_prev is not None else "—",
             "Not": "cümle-bazlı, karar-ağırlıklı kanonik sinyal",
         })
         summary_rows.append({
             "Gösterge": "CB-RoBERTa — rejim (histerezis, EMA)",
+            "Ölçtüğü şey": "Dönemler arası gürültüyü süzen, yumuşatılmış GENEL İLETİŞİM REJİMİ (tek dönemin tonu değil)",
+            "Ölçek / Eşik": "🦅 Şahin / ⚪ Nötr / 🕊️ Güvercin  (histerezis bandı — bkz. §2.2)",
             "Değer": str(ai_row.get("AI Rejim", ai_row.get("Rejim", "—"))),
             "Önceki dönem": str(ai_row_prev.get("AI Rejim", ai_row_prev.get("Rejim", "—"))) if ai_row_prev is not None else "—",
-            "Not": "ani rejim sıçramalarını önlemek için yumuşatılmıştır (bkz. §3 Yöntem)",
+            "Not": "ani rejim sıçramalarını önlemek için yumuşatılmıştır (bkz. §2 Yöntem)",
         })
     if flesch_now is not None:
         summary_rows.append({
             "Gösterge": "Okunabilirlik (Flesch)",
+            "Ölçtüğü şey": "Metnin (İngilizce çeviri) ne kadar kolay okunduğu — ŞAHİN/GÜVERCİN yönüyle İLGİSİZDİR",
+            "Ölçek / Eşik": "0–100  (yüksek = daha kolay okunur; eşik yok)",
             "Değer": f"{flesch_now:.2f}",
             "Önceki dönem": f"{flesch_prev:.2f}" if flesch_prev is not None else "—",
             "Not": "İngilizce çeviri üzerinden hesaplanır",
@@ -637,14 +734,19 @@ def build_report(
     if n_sent_now is not None:
         summary_rows.append({
             "Gösterge": "Cümle sayısı",
+            "Ölçtüğü şey": "Metindeki toplam cümle adedi — bu rapordaki TÜM cümle-bazlı sayımların (§4, §5, §6) paydası",
+            "Ölçek / Eşik": "sayaç (eşik yok)",
             "Değer": str(n_sent_now),
             "Önceki dönem": str(n_sent_prev) if n_sent_prev else "—",
             "Not": "",
         })
-    _df_to_table(doc, pd.DataFrame(summary_rows))
-    _add_note(doc, "Bu raporun tüm sayısal göstergeleri, aşağıdaki §3 Yöntem bölümünde tanımlanan "
+    _df_to_table(doc, pd.DataFrame(summary_rows), font_size=8)
+    _add_note(doc, "Bu raporun tüm sayısal göstergeleri, aşağıdaki §2 Yöntem bölümünde tanımlanan "
                    "eşikler ve dönüşümlerle üretilmiştir; farklı bir eşikle yeniden hesaplanırsa "
-                   "farklı bir 'şahin/güvercin' etiketi çıkabilir.")
+                   "farklı bir 'şahin/güvercin' etiketi çıkabilir. Yukarıdaki göstergeler FARKLI "
+                   "ŞEYLER ölçer (bkz. 'Ölçtüğü şey' kolonu) — sayıca birbirine yakın/uzak olmaları "
+                   "tek başına bir tutarlılık/tutarsızlık kanıtı değildir; yöntemler arası "
+                   "karşılaştırma için bkz. §3.3.")
 
     # =========================================================================
     # 2. YÖNTEM
@@ -752,6 +854,27 @@ def build_report(
 
     _add_heading(doc, "3.3 Yöntemler Arası Karşılaştırma", level=2)
     doc.add_paragraph(_reconciliation_text(abg_row, sent_ozet))
+
+    _add_heading(doc, "3.4 Sözcük ve İfade Değişimi (önceki döneme göre)", level=2)
+    if text_now and text_prev:
+        shift_rows = _lexical_shift_rows(text_now, text_prev, top_k=14)
+        doc.add_paragraph(
+            "Aşağıdaki tablo, önceki metne göre YENİ ORTAYA ÇIKAN, KAYBOLAN ya da belirgin biçimde "
+            "GÜÇLENEN/ZAYIFLAYAN kelime ve iki-kelimelik ifadeleri listeler. Sayılar ham geçiş adedi "
+            "değil, 1000 kelime başına orandır (‰) — böylece metin uzunluğu dönemden döneme "
+            "değişse bile karşılaştırma anlamlı kalır. Bu, tek tek şahin/güvercin kelime sayımının "
+            "(§2.1 ABG) ötesinde, iletişimin HANGİ SÖZCÜKLERİNİN öne çıktığını/geri çekildiğini gösterir."
+        )
+        if shift_rows:
+            _df_to_table(doc, pd.DataFrame(shift_rows), font_size=8)
+        else:
+            _add_note(doc, "İki dönem arasında eşiği aşan belirgin bir sözcük/ifade değişimi tespit edilmedi.")
+        _add_note(doc, "Bu liste anahtar-kelime frekansına dayanır; bir ifadenin şahin/güvercin "
+                       "OLDUĞU anlamına gelmez — sadece önceki metne göre daha çok ya da daha az "
+                       "kullanıldığı anlamına gelir. Yön yorumu için §2.1/§3.1 (ABG) ve §4 (cümle "
+                       "bazlı ton) ile birlikte okunmalıdır.")
+    else:
+        _add_note(doc, "Karşılaştırma için önceki dönemin metni bulunamadığından bu bölüm atlandı.")
 
     # =========================================================================
     # 4. CÜMLE BAZLI TON DÖKÜMÜ
@@ -877,11 +1000,21 @@ def build_report(
         "(ör. bir sohbet asistanından) aldığınız bir okuma önerisini yapıştırabilirsiniz. Böyle bir "
         "girdi kullanıyorsanız şunu unutmayın: büyük dil modeli çıktıları PROMPT'A DUYARLIDIR ve "
         "TEK SEFERLİK/TEKRAR-ÜRETİLEMEZ olabilir — burada aşağıya yapıştırılan metin, doğrulanmış "
-        "bir ölçüm değil, ek bir görüştür ve o şekilde okunmalıdır.",
+        "bir ölçüm değil, ek bir görüştür ve o şekilde okunmalıdır. BİRDEN FAZLA dış görüş "
+        "kullanıyorsanız (ör. birkaç farklı sohbet asistanından alınan yorumlar), önce KENDİ "
+        "1-2 cümlelik sentezinizi yazın (\"X ve Y aynı yönde, Z farklı görüşte çünkü ...\"), "
+        "sonra tam metinleri ayrı ayrı; üç ayrı görüşü sentezlemeden art arda yapıştırmak okuyucuyu "
+        "\"hangisi doğru?\" sorusuyla baş başa bırakır. Ayrıca bu metinler BAĞIMSIZ DOĞRULAMA değil, "
+        "NİTEL YORUM KONTROLÜ olarak adlandırılmalıdır — aradaki fark önemlidir.",
         label="Kullanım notu:")
     if analyst_note and analyst_note.strip():
         p = doc.add_paragraph()
         p.add_run(analyst_note.strip())
+        _abg_word_for_note = _stance_word((abg_row["abg_index"] - 1.0) if abg_row is not None else None, 0.05)
+        _ai_word_for_note = _stance_word(ai_row.get("Diff (H-D)"), utils.DOC_STANCE_DEADBAND) if ai_row is not None else "belirsiz"
+        _caveat = _note_consistency_caveat(analyst_note, _abg_word_for_note, _ai_word_for_note)
+        if _caveat:
+            _add_note(doc, _caveat, label="⚠ Otomatik tutarlılık kontrolü:")
     else:
         doc.add_paragraph("(Bu rapor üretilirken bir analist notu girilmedi.)").italic = True
 
@@ -900,7 +1033,12 @@ def build_report(
     _add_heading(doc, "10. Kısaltmalar ve Sözlük", level=1)
     glossary = [
         ("ABG", "Apel & Blix-Grimaldi (2019) — sözlük/kural temelli şahin-güvercin ölçüm yöntemi."),
-        ("CB-RoBERTa", "Merkez bankası metinleri üzerinde eğitilmiş, cümle düzeyinde şahin/güvercin/nötr sınıflandırması yapan dil modeli."),
+        ("CB-RoBERTa", "Bu raporun kullandığı model: mrince/CBRT-RoBERTa-HawkishDovish-Classifier "
+                       "(Hugging Face). Taban model FacebookAI/roberta-base'dir; TCMB PPK özet "
+                       "metinlerinden çıkarılmış ~7.200 gerçek cümleyle 3 sınıf (hawkish/dovish/"
+                       "neutral) için fine-tune edilmiştir. Genel amaçlı bir duygu (pozitif/negatif) "
+                       "sınıflandırıcısı DEĞİLDİR ve Fed konuşmalarıyla eğitilmiş, benzer isimli başka "
+                       "akademik modellerle karıştırılmamalıdır — bu, TCMB metinlerine özel bir modeldir."),
         ("Ton / Rejim", "Ton = o dönemin ham/kalibre skoru; Rejim = EMA + histerezis bandıyla yumuşatılmış, ani sıçramalara karşı dirençli etiket."),
         ("EMA", "Üstel hareketli ortalama (Exponentially Weighted Moving Average) — yakın dönemlere daha çok ağırlık veren yumuşatma yöntemi."),
         ("Histerezis bandı", "Rejim etiketinin değişmesi için skorun belirli bir eşiği aşması gerektiği; küçük dalgalanmalarda önceki rejimin korunmasını sağlayan mekanizma."),

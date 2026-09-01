@@ -31,7 +31,7 @@ ANNOTATOR_PINS = {
     "8823": "Mahmut Günay",
     "1195": "Halil İbrahim Korkmaz",
     "6640": "Fırat Bora Taş",
-    "3308": "Ekonomist",
+    "3308": "Ahmet Bilal Kurtoğlu",
 }
 
 LABEL_OPTIONS = [("🦅 Şahin", "HAWK"), ("⚖️ Nötr", "NEUT"), ("🕊️ Güvercin", "DOVE")]

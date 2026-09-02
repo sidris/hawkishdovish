@@ -330,7 +330,7 @@ def _add_note(doc, text, label="Not:"):
     return tbl
 
 
-def _add_takeaway(doc, text, label="Kısaca:"):
+def _add_takeaway(doc, text, label="Özet:"):
     """
     Her ağır/teknik bölümün EN ÜSTÜNE, o bölümü tek cümlede özetleyen, düz dille
     yazılmış bir "hızlı okuma" kutusu. Amaç: okuyucu teknik detaya (yöntem,
@@ -498,38 +498,68 @@ def _abg_trend_figure(abg_df: pd.DataFrame, min_n: int = 5):
     return fig
 
 
-def _watch_terms_frequency_figure(df_logs: pd.DataFrame, terms: list):
+def _add_text_diff(doc, text_old: str, text_new: str, label_old: str = "önceki dönem",
+                    label_new: str = "bu dönem"):
     """
-    Uygulamanın "🔍 Frekans" sekmesiyle AYNI mantık (utils.build_watch_terms_timeseries):
-    verilen terimlerin HAM geçiş SAYISINI, dönem dönem, tüm tarihçe boyunca çizer.
-    §3.4'teki "bu dönem vs. önceki dönem" karşılaştırmasını (iki nokta) tarihsel bir
-    TREND'e (çok nokta) genişletir — bu yüzden §3.4'te "en çok değişen" terimler
-    burada otomatik seçilip tarihsel bağlamlarıyla gösterilir.
+    utils.generate_diff_html (uygulamanın "🔄 Metin Farkı (Diff) Analizi" sekmesi)
+    ile BİREBİR AYNI mantık — kelime kelime difflib.SequenceMatcher karşılaştırması
+    — ama docx run'larına (renkli metin) çevrilmiş hali. Bir frekans grafiğinden ya
+    da ‰ tablosundan farklı olarak YORUM GEREKTİRMEZ: okuyucu metnin KENDİSİNİ görür,
+    silinen ifadeler kırmızı üstü çizili, eklenen ifadeler yeşil kalın olarak aynı
+    akışta işaretlenir. Üst yönetim için en sezgisel gösterim budur.
     """
-    if df_logs is None or df_logs.empty or not terms:
-        return None
-    if not hasattr(utils, "build_watch_terms_timeseries"):
-        return None
-    ts_df = utils.build_watch_terms_timeseries(df_logs, terms)
-    if ts_df is None or ts_df.empty:
-        return None
-    present = [t for t in terms if t in ts_df.columns]
-    if not present:
-        return None
-    ts_df = ts_df.sort_values("period_date").reset_index(drop=True)
+    import difflib
+    a = (text_old or "").split()
+    b = (text_new or "").split()
+    matcher = difflib.SequenceMatcher(None, a, b)
 
-    import plotly.graph_objects as go
-    fig = go.Figure()
-    for term in present:
-        fig.add_trace(go.Scatter(x=ts_df["Donem"], y=ts_df[term], mode="lines+markers", name=term))
-    fig.update_xaxes(tickangle=-45)
-    fig.update_layout(
-        title="Seçili terimlerin geçiş sayısı — dönemler arası (ham adet)",
-        yaxis_title="geçiş sayısı (adet)", height=420, hovermode="x unified",
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
-        margin=dict(t=90, b=60, l=40, r=20),
-    )
-    return fig
+    legend_p = doc.add_paragraph()
+    legend_p.paragraph_format.space_after = Pt(4)
+    lr1 = legend_p.add_run("Kırmızı (üstü çizili): ")
+    lr1.bold = True; lr1.font.size = Pt(9); _set_run_font(lr1)
+    lr2 = legend_p.add_run(f"{label_old}'den silinenler   ")
+    lr2.font.size = Pt(9); _set_run_font(lr2)
+    lr3 = legend_p.add_run("Yeşil (kalın): ")
+    lr3.bold = True; lr3.font.size = Pt(9); _set_run_font(lr3)
+    lr3.font.color.rgb = RGBColor.from_string("376E37")
+    lr1.font.color.rgb = RGBColor.from_string("9C4444")
+    lr4 = legend_p.add_run(f"{label_new}'e eklenenler")
+    lr4.font.size = Pt(9); _set_run_font(lr4)
+
+    tbl = doc.add_table(rows=1, cols=1)
+    tbl.alignment = WD_TABLE_ALIGNMENT.CENTER
+    cell = tbl.rows[0].cells[0]
+    _shade_cell(cell, "FAFAFA")
+    cell.text = ""
+    p = cell.paragraphs[0]
+    n_del = n_ins = 0
+    for opcode, a0, a1, b0, b1 in matcher.get_opcodes():
+        if opcode == "equal":
+            run = p.add_run(" ".join(a[a0:a1]) + " ")
+            run.font.size = Pt(9)
+            _set_run_font(run)
+            continue
+        if opcode in ("delete", "replace") and a0 != a1:
+            seg = a[a0:a1]
+            run = p.add_run(" ".join(seg) + " ")
+            run.font.size = Pt(9)
+            run.font.strike = True
+            run.font.color.rgb = RGBColor.from_string("9C4444")
+            _shade_run(run, "FCD4BC")
+            _set_run_font(run)
+            n_del += len(seg)
+        if opcode in ("insert", "replace") and b0 != b1:
+            seg = b[b0:b1]
+            run = p.add_run(" ".join(seg) + " ")
+            run.bold = True
+            run.font.size = Pt(9)
+            run.font.color.rgb = RGBColor.from_string("376E37")
+            _shade_run(run, "D4FCBC")
+            _set_run_font(run)
+            n_ins += len(seg)
+    _add_caption(doc, f"Toplam {n_del} kelime çıktı, {n_ins} kelime eklendi "
+                      f"({label_old} → {label_new}).")
+    return n_del, n_ins
 
 
 def _add_clean_summary_card(doc, rows: list):
@@ -1295,16 +1325,11 @@ def build_report(
 
     _add_heading(doc, "2.1 ABG (Apel & Blix-Grimaldi, 2019) — sözlük temelli endeks", level=2)
     doc.add_paragraph(
-        "Yöntem, metindeki üç konu (enflasyon, iktisadi faaliyet, istihdam) etrafında geçen "
-        "belirli çapa kelimelerin (ör. \"inflation\", \"economic activity\", \"employment\") "
-        f"±10 kelimelik penceresinde şahin/güvercin yönlü sıfat-fiil kalıplarını arar. "
-        f"Ham endeks (klasik ABG tanımı) 1 + (şahin−güvercin)/(şahin+güvercin) biçimindedir ve "
-        f"az sayıda eşleşmede uçlara yapışma eğilimindedir (ör. 1 şahin/0 güvercin de, "
-        f"20 şahin/0 güvercin de 2.00 verir). Bu raporda ASIL gösterge, paydaya bir düzeltme "
-        f"sabiti eklenen (K={utils.ABG_SHRINK_K:.0f}) YUMUŞATILMIŞ endekstir: eşleşme sayısı "
-        f"azaldıkça skor nötre (1.0) çekilir, arttıkça ham orana yaklaşır. Her iki değer de "
-        f"özet tabloda birlikte gösterilir; ayrıca kaç eşleşmeye (n_match) dayandığı da raporlanır "
-        f"— düşük n_match, endeksin güvenilir biçimde yorumlanamayacağının işaretidir."
+        "Metindeki enflasyon/faaliyet/istihdam çapa kelimelerinin çevresinde şahin-güvercin "
+        "yönlü kalıpları sayan, sözlük tabanlı bir yöntemdir (0–2 skala, 1.00 = nötr). Az "
+        "sayıda eşleşmede uçlara yapışmayı önlemek için endeks yumuşatılmıştır; düşük eşleşme "
+        "sayısı (n_match), sonucun güvenilir yorumlanamayacağının işaretidir. (Formül ve "
+        "gerekçe: Ek A.1)"
     )
     try:
         _fig_abg = _abg_trend_figure(abg_df, min_n=5)
@@ -1317,40 +1342,23 @@ def build_report(
         _add_note(doc, f"ABG tarihsel grafiği üretilemedi: {e}")
     _add_heading(doc, "2.2 CB-RoBERTa — cümle bazlı model, ton ve rejim ayrımı", level=2)
     doc.add_paragraph(
-        "Şahin/güvercin sınıflandırması, TCMB PPK metinleri üzerinde eğitilmiş bir RoBERTa "
-        "modeli (mrince/CBRT-RoBERTa-HawkishDovish-Classifier) ile CÜMLE düzeyinde yapılır "
-        "(tam metin tek seferde verilirse hem 512 token sınırına takılır hem de literatürdeki "
-        "yöntemle [Apel & Blix Grimaldi; Picault & Renault] tutarsız olurdu). Her cümle için "
-        "ton = P(Şahin) − P(Güvercin) hesaplanır; kararı doğrudan bildiren cümle "
-        f"({utils.DOC_ACTION_WEIGHT:.0f}× ağırlıkla) diğerlerinden daha belirleyicidir. "
-        f"Cümle bazında şahin/güvercin/nötr ayrımı ±{utils.DOC_STANCE_DEADBAND:.2f}'lik tek bir "
-        "eşikle (deadband) yapılır ve bu rapordaki TÜM cümle sayımları bu eşiği kullanır."
-    )
-    doc.add_paragraph(
-        "TON (o dönemin ham/kalibre skoru) ile REJİM (🦅/🕊️/⚖️ etiketi) FARKLI şeylerdir: "
-        "ton her dönem yeniden hesaplanan bir sayıdır; rejim ise robust z-skor → tanh kalibrasyonu "
-        "→ üstel hareketli ortalama (EMA) → HİSTEREZİS BANDI ile yumuşatılmış bir etikettir. "
-        "Histerezis, ardışık dönemler arasında gürültüden kaynaklı ani rejim sıçramalarını "
-        "engeller: skor güçlü bir eşiği aşana kadar önceki rejim korunur, yalnızca ters yöndeki "
-        "orta bir eşiği de geçerse rejim değişir. Bu yüzden bir dönemin HAM tonu şahine yakın "
-        "olsa bile, rejim etiketi hâlâ 'Nötr' görünebilir — bu bir hata değil, tasarımdır."
+        "TCMB metinleri üzerinde eğitilmiş bir RoBERTa modeli (mrince/CBRT-RoBERTa-"
+        "HawkishDovish-Classifier), her cümle için ton = P(Şahin) − P(Güvercin) hesaplar; "
+        "kararı doğrudan bildiren cümle daha ağırlıklıdır. 'Ton' (o dönemin ham skoru) ile "
+        "'Rejim' (🦅/🕊️/⚖️ — EMA + histerezis bandıyla yumuşatılmış etiket) FARKLI şeylerdir: "
+        "bir dönemin ham tonu şahine yakın olsa bile rejim etiketi hâlâ 'Nötr' görünebilir — "
+        "bu bir hata değil, ani sıçramaları önleyen tasarımdır. (Ayrıntı: Ek A.2)"
     )
     _add_heading(doc, "2.3 Konu (tema) sınıflandırması", level=2)
     doc.add_paragraph(
-        "Konu ataması MODEL TABANLI DEĞİL, düzenli-ifade (regex) sözlüğü tabanlıdır: her cümle "
-        f"{len(utils.THEME_ORDER)-1} tanımlı temadan ({', '.join(utils.THEME_ORDER[:-1])}) "
-        "hangisine ait anahtar kalıpları en çok içeriyorsa o temaya atanır (kararı bildiren "
-        "cümle her zaman doğrudan 'Politika Duruşu' sayılır). Tek-etiket görünüm metnin "
-        "KOMPOZİSYONUNU (%100'e tamamlanan pay), çok-etiketli görünüm ise KAPSAMINI (bir cümle "
-        "birden çok temaya değinebilir, toplam %100'ü aşabilir) yansıtır; bu raporda ısı "
-        "haritaları kompozisyon (tek etiket) moduyla üretilmiştir."
+        "Konu ataması model tabanlı değil, düzenli-ifade (regex) sözlüğü tabanlıdır: her cümle "
+        "en çok hangi temanın kalıplarını içeriyorsa o temaya atanır (kararı bildiren cümle "
+        "her zaman 'Politika Duruşu' sayılır). (Ayrıntı: Ek A.3)"
     )
     _add_heading(doc, "2.4 Metin-içi konum analizi", level=2)
     doc.add_paragraph(
-        "Her karar metni kendi cümle sayısına göre eşit bölümlere ayrılır (bu raporda varsayılan "
-        "3 bölüm: Giriş / Gövde / Kapanış) ve her bölümün ortalama tonu hesaplanır. Amaç, iletişimin "
-        "'anlatı mimarisini' görmektir — ör. temkinli bir açılışın ardından sıkı bir çerçeve "
-        "bloğu ve kararlı bir kapanış gelmesi, homojen bir tondan farklı bir strateji anlamına gelir."
+        "Her karar metni Giriş / Gövde / Kapanış olarak üçe bölünür ve her bölümün ortalama "
+        "tonu hesaplanır — amaç iletişimin 'anlatı mimarisini' görmektir. (Ayrıntı: Ek A.4)"
     )
     _add_heading(doc, "2.5 Sınırlamalar", level=2)
     doc.add_paragraph(
@@ -1435,34 +1443,13 @@ def build_report(
 
     _add_heading(doc, "3.4 Sözcük ve İfade Değişimi (önceki döneme göre)", level=2)
     if text_now and text_prev:
-        shift_rows = _lexical_shift_rows(text_now, text_prev, top_k=14)
         doc.add_paragraph(
-            "Bu bölüm tek bir soruya bakar: metinde SÖZ DAĞARCIĞI önceki toplantıya göre nasıl "
-            "değişti — hangi kelime/ifade YENİ girdi, hangisi DÜŞTÜ, hangisi belirgin biçimde "
-            "GÜÇLENDİ ya da ZAYIFLADI? Bu, §2.1'deki şahin/güvercin kelime sayımından farklıdır: "
-            "orada sadece ÖNCEDEN TANIMLI bir sözlük taranır; burada ise metnin TAMAMI, iki dönem "
-            "arasında karşılaştırılır. Sayılar ham adet değil, 1000 kelime başına orandır (‰) — "
-            "metin uzunluğu dönemden döneme değişse bile karşılaştırma anlamlı kalır."
+            f"Metin, {prev_donem} ile {donem} arasında kelime kelime karşılaştırılmıştır: "
+            "SİLİNEN ifadeler kırmızı üstü çizili, EKLENEN ifadeler yeşil kalın olarak "
+            "işaretlenmiştir. Bir ifadenin şahin/güvercin OLDUĞU anlamına gelmez — yön yorumu "
+            "için §3.1 (ABG) ve §4 (cümle bazlı ton) ile birlikte okunmalıdır."
         )
-        if shift_rows:
-            _df_to_table(doc, pd.DataFrame(shift_rows), font_size=8)
-            top_terms = [r["İfade"] for r in shift_rows[:8]]
-            try:
-                _fig_freq = _watch_terms_frequency_figure(df_logs, top_terms)
-                if _fig_freq is not None:
-                    _add_figure(doc, _fig_freq,
-                        caption="Yukarıdaki tabloda en çok değişen 8 ifadenin TÜM tarihçedeki geçiş "
-                                "sayısı — tabloyu (iki nokta: bu dönem / önceki dönem) bir TREND'e "
-                                "genişletir; bir sıçramanın tek seferlik mi yoksa süregelen bir eğilimin "
-                                "parçası mı olduğu buradan görülür.")
-            except Exception as e:
-                _add_note(doc, f"Frekans grafiği üretilemedi: {e}")
-        else:
-            _add_note(doc, "İki dönem arasında eşiği aşan belirgin bir sözcük/ifade değişimi tespit edilmedi.")
-        _add_note(doc, "Bu liste anahtar-kelime frekansına dayanır; bir ifadenin şahin/güvercin "
-                       "OLDUĞU anlamına gelmez — sadece önceki metne göre daha çok ya da daha az "
-                       "kullanıldığı anlamına gelir. Yön yorumu için §2.1/§3.1 (ABG) ve §4 (cümle "
-                       "bazlı ton) ile birlikte okunmalıdır.")
+        _add_text_diff(doc, text_prev, text_now, label_old=prev_donem, label_new=donem)
     else:
         _add_note(doc, "Karşılaştırma için önceki dönemin metni bulunamadığından bu bölüm atlandı.")
 
@@ -1531,14 +1518,10 @@ def build_report(
     if not df_sent.empty:
         _add_heading(doc, "5.1 Konu × Ton Isı Haritası", level=2)
         doc.add_paragraph(
-            "Nasıl okunur: satırlar konuları (enflasyon, büyüme, istihdam vb.), sütunlar "
-            "dönemleri (PPK toplantılarını) gösterir. Her hücre, O DÖNEM O KONUYA değinen "
-            "cümlelerin ORTALAMA tonudur — koyu kırmızıya kaydıkça o konuda şahin, koyu "
-            "maviye kaydıkça güvercin bir dil kullanılmış demektir; beyaza yakın hücreler "
-            "nötrdür. Gri hücre bir 'sıfır' değil, VERİ YOKLUĞUdur — o dönem metin o konuya "
-            "hiç ya da yeterince değinmemiştir (bkz. min_n eşiği). Amaç: 'genel ton şahin' "
-            "gibi tek bir cümlenin ARKASINDA hangi konunun bu sonucu sürüklediğini görmek "
-            "— ör. genel ton nötr görünse bile enflasyon satırı koyu kırmızı olabilir."
+            "Satırlar konuları, sütunlar dönemleri gösterir; her hücre o dönem o konuya değinen "
+            "cümlelerin ortalama tonudur (koyu kırmızı=şahin, koyu mavi=güvercin, beyaz=nötr, "
+            "gri=o dönem o konuya değinilmedi). Amaç: 'genel ton nötr' görünse bile hangi "
+            "konunun altta şahin/güvercin kaldığını görmek. (Ayrıntı: Ek A.5)"
         )
         tmat, cmat = utils.tone_matrix(df_sent, "theme_label", min_n=2)
         if not tmat.empty:
@@ -1552,14 +1535,11 @@ def build_report(
 
         _add_heading(doc, "5.2 Konu Kapsamı (zaman içinde, %)", level=2)
         doc.add_paragraph(
-            "Nasıl okunur: bu, ısı haritasından TAMAMEN FARKLI bir soru sorar — konunun "
-            "TONUNU değil, metindeki YER KAPLAMINI (kaç cümlenin bu konudan bahsettiğini) "
-            "ölçer. Her dönemde (yatay eksende), renkli bantların TOPLAMI her zaman %100'dür "
-            "— yani grafik metnin o dönemki 'gündem dağılımını' gösterir. Bir bandın "
-            "kalınlaşması 'bu konuya daha çok cümle ayrıldı' demektir; bu konunun ŞAHİN mi "
-            "GÜVERCİN mi olduğuyla ilgisizdir (onu §5.1'deki ısı haritasından okuyun). "
-            "Pratik kullanım: bir bandın aniden büyümesi/küçülmesi, TCMB'nin iletişimde "
-            "önceliği bir konudan diğerine kaydırdığının erken bir işareti olabilir."
+            "Isı haritasından farklı bir soru sorar: konunun tonunu değil, metindeki yer "
+            "kaplamını (gündem payını, toplamı her dönem %100) gösterir. Bir bandın aniden "
+            "büyümesi/küçülmesi, TCMB'nin iletişim önceliğini bir konudan diğerine kaydırdığının "
+            "erken işareti olabilir — konunun şahin/güvercin olduğunu §5.1'den okuyun. "
+            "(Ayrıntı: Ek A.6)"
         )
         try:
             share = utils.share_timeseries(df_sent, "theme_label")
@@ -1583,17 +1563,10 @@ def build_report(
         dvg = utils.divergence_table(df_sent, "theme_label")
         _add_heading(doc, "5.3 Konu bazlı özet (tüm dönemler)", level=2)
         doc.add_paragraph(
-            "§5.1 ve §5.2 konuyu DÖNEM DÖNEM gösterdi; bu tablo aynı konuları TÜM TARİHÇE "
-            "boyunca TEK BİR SATIRDA birleştirir — her konunun 'ortalama karnesi'dir. Nasıl "
-            "okunur: 'Ort. Ton' o konunun bugüne kadar ortalama olarak ne kadar şahin/güvercin "
-            "işlendiğini, 'Std' bu tonun dönemden döneme NE KADAR OYNADIĞINI (yüksekse konu "
-            "istikrarsız/duruma göre değişken ele alınmış, düşükse hep aynı çizgide işlenmiş), "
-            "'Dönem' o konunun kaç FARKLI toplantıda hiç gündeme geldiğini gösterir — bu sayı "
-            "küçükse (ör. 1-2), o satırdaki ortalamayı güvenilir bir eğilim değil, tek seferlik "
-            "bir gözlem olarak okuyun. Pratik sonuç: listenin ÜSTÜNDEKİ konular tarihsel olarak "
-            "en şahin işlenen, EN ALTTAKİLER en güvercin işlenen konulardır; yüksek 'Dönem' ve "
-            "düşük 'Std' ile birleşen bir satır, üzerinde en çok durulabilecek güvenilir bir "
-            "sinyaldir."
+            "§5.1/§5.2'yi tüm tarihçe için tek satıra indirger — her konunun ortalama karnesi. "
+            "Listenin üstündeki konular tarihsel olarak en şahin, en alttakiler en güvercin "
+            "işlenenlerdir; yüksek 'Dönem' + düşük 'Std' ile birleşen bir satır en güvenilir "
+            "sinyaldir, 'Dönem' düşükse (1-2) tek seferlik bir gözlem sayın. (Ayrıntı: Ek A.7)"
         )
         _df_to_table(doc, dvg.rename(columns={"theme_label": "Konu"}))
     else:
@@ -1686,33 +1659,13 @@ def build_report(
 
     _add_heading(doc, "7.2 Geçmiş Performans (Backtest Detayları)", level=2)
     doc.add_paragraph(
-        "§7.1'deki tahmin NASIL üretildi? Model, ELİNDEKİ (geçmiş) PPK metinlerindeki kelime "
-        "ve karakter dizilerinin ne sıklıkla "
-        "kadar sık geçiyor VE tüm metinler arasında ne kadar AYIRT EDİCİ olduğu) sayısal "
-        "özniteliklere çevirir; bunlara gecikmeli (bir önceki toplantılardan) makro/faiz "
-        "değişkenlerini ekler ve bu birleşik öznitelik kümesiyle bir sonraki delta_bp'yi tahmin "
-        "eden düzenlileştirilmiş (Ridge) bir regresyon eğitir. Düzenlileştirme, TF-IDF'in ürettiği "
-        "çok sayıda (metindeki her benzersiz kelime/karakter dizisi kadar) öznitelikle, az sayıdaki "
-        "PPK kararına AŞIRI UYUMU (overfitting) önlemek için gereklidir. Doğrulama YÜRÜYEN-PENCERE "
-        "(walk-forward) yöntemiyle yapılır: her tahmin, SADECE o tarihten ÖNCEKİ kararlarla eğitilmiş "
-        "bir modelden gelir (gelecekteki hiçbir veri modele sızmaz) — bu, ton skorlarının yalnızca "
-        "iç-tutarlı değil, dışarıdan da (gerçekleşen kararla) doğrulanabilir olup olmadığının testidir."
+        "Model, geçmiş PPK metinlerini TF-IDF ile sayısal özniteliklere çevirip gecikmeli "
+        "makro/faiz değişkenleriyle birleştirir ve bir sonraki delta_bp'yi tahmin eden "
+        "düzenlileştirilmiş (Ridge) bir regresyon eğitir. Doğrulama yürüyen-pencere (walk-"
+        "forward) yöntemiyledir: her tahmin SADECE o tarihten önceki kararlarla eğitilmiş bir "
+        "modelden gelir — gelecekteki hiçbir veri modele sızmaz. Yöntemin akademik dayanağı "
+        "ve literatür karşılaştırması: Ek A.8."
     )
-    _add_note(doc,
-        "Metin öznitelikleri + düzenlileştirilmiş (Ridge/Elastic Net) regresyon + gecikmeli "
-        "değişkenlerle birleştirme + yürüyen/genişleyen-pencere doğrulama şeması, merkez bankası "
-        "metninden politika faizi DEĞİŞİMİNİ tahmin eden güncel akademik çalışmalarla aynı ailededir "
-        "— örn. Duarte & Laurini (2026), Forecasting dergisinde yayımlanan çalışmada metin "
-        "temsili olarak TF-IDF yerine transformer tabanlı yoğun gömme (embedding) + PCA kullanıyor, "
-        "ancak gecikmeli politika dinamikleriyle birleştirip düzenlileştirilmiş regresyonla "
-        "genişleyen-pencere (expanding-window) doğrulamasıyla Δpolitika-faizini (baz puan) tahmin "
-        "etme YAPISI birebir aynıdır. TF-IDF'in kendisi de bu literatürde (FOMC/merkez bankası metni "
-        "üzerinden faiz kararı tahmini) yaygın kullanılan, embedding'lere göre daha basit/klasik ama "
-        "yerleşik bir metin temsilidir. Kısacası: buradaki YÖNTEM İSKELETİ (metin özniteliği + "
-        "düzenlileştirme + gecikmeli dinamik + sızıntısız doğrulama) literatürle tutarlıdır; TF-IDF "
-        "seçimi ise bu iskeletin daha basit/yorumlanabilir bir versiyonudur — R²/MAE/hit-rate "
-        "değerleri (aşağıda) bu basit temsilin BU örneklemde ne kadar işe yaradığının doğrudan kanıtıdır.",
-        label="Yöntemin bilimsel dayanağı:")
     if model_pack and model_pack.get("metrics"):
         metrics = model_pack["metrics"]
         hit = _hit_rate(model_pack.get("pred_df"))
@@ -1758,16 +1711,10 @@ def build_report(
     # =========================================================================
     _add_heading(doc, "8. Analist Notları / Dış Değerlendirmeler", level=1)
     _add_note(doc,
-        "Bu bölüm isteğe bağlıdır ve otomatik üretilmez. Buraya kendi yorumunuzu ya da dışarıda "
-        "(ör. bir sohbet asistanından) aldığınız bir okuma önerisini yapıştırabilirsiniz. Böyle bir "
-        "girdi kullanıyorsanız şunu unutmayın: büyük dil modeli çıktıları PROMPT'A DUYARLIDIR ve "
-        "TEK SEFERLİK/TEKRAR-ÜRETİLEMEZ olabilir — burada aşağıya yapıştırılan metin, doğrulanmış "
-        "bir ölçüm değil, ek bir görüştür ve o şekilde okunmalıdır. BİRDEN FAZLA dış görüş "
-        "kullanıyorsanız (ör. birkaç farklı sohbet asistanından alınan yorumlar), önce KENDİ "
-        "1-2 cümlelik sentezinizi yazın (\"X ve Y aynı yönde, Z farklı görüşte çünkü ...\"), "
-        "sonra tam metinleri ayrı ayrı; üç ayrı görüşü sentezlemeden art arda yapıştırmak okuyucuyu "
-        "\"hangisi doğru?\" sorusuyla baş başa bırakır. Ayrıca bu metinler BAĞIMSIZ DOĞRULAMA değil, "
-        "NİTEL YORUM KONTROLÜ olarak adlandırılmalıdır — aradaki fark önemlidir.",
+        "Bu bölüm isteğe bağlıdır. Buraya kendi yorumunuzu ya da dış bir kaynaktan (ör. bir "
+        "sohbet asistanından) aldığınız okuma önerisini ekleyebilirsiniz — böyle bir girdi "
+        "doğrulanmış bir ölçüm değil, ek bir görüş olarak okunmalıdır. Birden fazla dış görüş "
+        "varsa önce kendi 1-2 cümlelik sentezinizi yazın, sonra tam metinleri ayrı ayrı ekleyin.",
         label="Kullanım notu:")
     if analyst_note and analyst_note.strip():
         p = doc.add_paragraph()
@@ -1815,6 +1762,141 @@ def build_report(
     ]
     gdf = pd.DataFrame(glossary, columns=["Terim", "Açıklama"])
     _df_to_table(doc, gdf, col_widths_in=[1.6, 4.9])
+
+    # =========================================================================
+    # EK A: YÖNTEM NOTLARI (DETAYLI)
+    # =========================================================================
+    # Rapor gövdesindeki her "Nasıl okunur / Ayrıntı" paragrafı bilerek TEK CÜMLEYE
+    # indirildi (üst yönetim için hızlı okuma) — atlanan TAM metin burada, ilgili
+    # bölüme geri referansla (bkz. §X.Y) birlikte durur. Kaybolan bilgi yok, sadece
+    # gövdeden bu eke taşındı.
+    doc.add_page_break()
+    _add_heading(doc, "Ek A: Yöntem Notları (Detaylı)", level=1)
+    doc.add_paragraph(
+        "Bu ek, rapor gövdesinde tek cümleye indirilen yöntem açıklamalarının TAM metnini "
+        "içerir. Ana bölümlerin (§1-9) anlaşılması için gerekli değildir; yönteme dair "
+        "sorularınız olursa buraya başvurun."
+    ).italic = True
+
+    _add_heading(doc, "A.1 — ABG (2019) Endeksi (bkz. §2.1)", level=2)
+    doc.add_paragraph(
+        "Yöntem, metindeki üç konu (enflasyon, iktisadi faaliyet, istihdam) etrafında geçen "
+        "belirli çapa kelimelerin (ör. \"inflation\", \"economic activity\", \"employment\") "
+        "±10 kelimelik penceresinde şahin/güvercin yönlü sıfat-fiil kalıplarını arar. "
+        "Ham endeks (klasik ABG tanımı) 1 + (şahin−güvercin)/(şahin+güvercin) biçimindedir ve "
+        "az sayıda eşleşmede uçlara yapışma eğilimindedir (ör. 1 şahin/0 güvercin de, "
+        "20 şahin/0 güvercin de 2.00 verir). Bu raporda ASIL gösterge, paydaya bir düzeltme "
+        f"sabiti eklenen (K={utils.ABG_SHRINK_K:.0f}) YUMUŞATILMIŞ endekstir: eşleşme sayısı "
+        "azaldıkça skor nötre (1.0) çekilir, arttıkça ham orana yaklaşır. Her iki değer de "
+        "özet tabloda birlikte gösterilir; ayrıca kaç eşleşmeye (n_match) dayandığı da raporlanır "
+        "— düşük n_match, endeksin güvenilir biçimde yorumlanamayacağının işaretidir."
+    )
+
+    _add_heading(doc, "A.2 — CB-RoBERTa Modeli (bkz. §2.2)", level=2)
+    doc.add_paragraph(
+        "Şahin/güvercin sınıflandırması, TCMB PPK metinleri üzerinde eğitilmiş bir RoBERTa "
+        "modeli (mrince/CBRT-RoBERTa-HawkishDovish-Classifier) ile CÜMLE düzeyinde yapılır "
+        "(tam metin tek seferde verilirse hem 512 token sınırına takılır hem de literatürdeki "
+        "yöntemle [Apel & Blix Grimaldi; Picault & Renault] tutarsız olurdu). Her cümle için "
+        "ton = P(Şahin) − P(Güvercin) hesaplanır; kararı doğrudan bildiren cümle "
+        f"({utils.DOC_ACTION_WEIGHT:.0f}× ağırlıkla) diğerlerinden daha belirleyicidir. "
+        f"Cümle bazında şahin/güvercin/nötr ayrımı ±{utils.DOC_STANCE_DEADBAND:.2f}'lik tek bir "
+        "eşikle (deadband) yapılır ve bu rapordaki TÜM cümle sayımları bu eşiği kullanır."
+    )
+    doc.add_paragraph(
+        "TON (o dönemin ham/kalibre skoru) ile REJİM (🦅/🕊️/⚖️ etiketi) FARKLI şeylerdir: "
+        "ton her dönem yeniden hesaplanan bir sayıdır; rejim ise robust z-skor → tanh kalibrasyonu "
+        "→ üstel hareketli ortalama (EMA) → HİSTEREZİS BANDI ile yumuşatılmış bir etikettir. "
+        "Histerezis, ardışık dönemler arasında gürültüden kaynaklı ani rejim sıçramalarını "
+        "engeller: skor güçlü bir eşiği aşana kadar önceki rejim korunur, yalnızca ters yöndeki "
+        "orta bir eşiği de geçerse rejim değişir. Bu yüzden bir dönemin HAM tonu şahine yakın "
+        "olsa bile, rejim etiketi hâlâ 'Nötr' görünebilir — bu bir hata değil, tasarımdır."
+    )
+
+    _add_heading(doc, "A.3 — Konu (Tema) Sınıflandırması (bkz. §2.3)", level=2)
+    doc.add_paragraph(
+        "Konu ataması MODEL TABANLI DEĞİL, düzenli-ifade (regex) sözlüğü tabanlıdır: her cümle "
+        f"{len(utils.THEME_ORDER)-1} tanımlı temadan ({', '.join(utils.THEME_ORDER[:-1])}) "
+        "hangisine ait anahtar kalıpları en çok içeriyorsa o temaya atanır (kararı bildiren "
+        "cümle her zaman doğrudan 'Politika Duruşu' sayılır). Tek-etiket görünüm metnin "
+        "KOMPOZİSYONUNU (%100'e tamamlanan pay), çok-etiketli görünüm ise KAPSAMINI (bir cümle "
+        "birden çok temaya değinebilir, toplam %100'ü aşabilir) yansıtır; bu raporda ısı "
+        "haritaları kompozisyon (tek etiket) moduyla üretilmiştir."
+    )
+
+    _add_heading(doc, "A.4 — Metin İçi Konum Analizi (bkz. §2.4)", level=2)
+    doc.add_paragraph(
+        "Her karar metni kendi cümle sayısına göre eşit bölümlere ayrılır (bu raporda varsayılan "
+        "3 bölüm: Giriş / Gövde / Kapanış) ve her bölümün ortalama tonu hesaplanır. Amaç, iletişimin "
+        "'anlatı mimarisini' görmektir — ör. temkinli bir açılışın ardından sıkı bir çerçeve "
+        "bloğu ve kararlı bir kapanış gelmesi, homojen bir tondan farklı bir strateji anlamına gelir."
+    )
+
+    _add_heading(doc, "A.5 — Konu × Ton Isı Haritası Nasıl Okunur (bkz. §5.1)", level=2)
+    doc.add_paragraph(
+        "Satırlar konuları (enflasyon, büyüme, istihdam vb.), sütunlar dönemleri (PPK "
+        "toplantılarını) gösterir. Her hücre, O DÖNEM O KONUYA değinen cümlelerin ORTALAMA "
+        "tonudur — koyu kırmızıya kaydıkça o konuda şahin, koyu maviye kaydıkça güvercin bir "
+        "dil kullanılmış demektir; beyaza yakın hücreler nötrdür. Gri hücre bir 'sıfır' değil, "
+        "VERİ YOKLUĞUdur — o dönem metin o konuya hiç ya da yeterince değinmemiştir (bkz. min_n "
+        "eşiği). Amaç: 'genel ton şahin' gibi tek bir cümlenin ARKASINDA hangi konunun bu sonucu "
+        "sürüklediğini görmek — ör. genel ton nötr görünse bile enflasyon satırı koyu kırmızı olabilir."
+    )
+
+    _add_heading(doc, "A.6 — Konu Kapsamı Grafiği Nasıl Okunur (bkz. §5.2)", level=2)
+    doc.add_paragraph(
+        "Bu, ısı haritasından TAMAMEN FARKLI bir soru sorar — konunun TONUNU değil, metindeki "
+        "YER KAPLAMINI (kaç cümlenin bu konudan bahsettiğini) ölçer. Her dönemde (yatay "
+        "eksende), renkli bantların TOPLAMI her zaman %100'dür — yani grafik metnin o dönemki "
+        "'gündem dağılımını' gösterir. Bir bandın kalınlaşması 'bu konuya daha çok cümle "
+        "ayrıldı' demektir; bu konunun ŞAHİN mi GÜVERCİN mi olduğuyla ilgisizdir (onu §5.1'deki "
+        "ısı haritasından okuyun). Pratik kullanım: bir bandın aniden büyümesi/küçülmesi, "
+        "TCMB'nin iletişimde önceliği bir konudan diğerine kaydırdığının erken bir işareti olabilir."
+    )
+
+    _add_heading(doc, "A.7 — Konu Bazlı Özet Tablosu Nasıl Okunur (bkz. §5.3)", level=2)
+    doc.add_paragraph(
+        "§5.1 ve §5.2 konuyu DÖNEM DÖNEM gösterdi; bu tablo aynı konuları TÜM TARİHÇE boyunca "
+        "TEK BİR SATIRDA birleştirir — her konunun 'ortalama karnesi'dir. Nasıl okunur: "
+        "'Ort. Ton' o konunun bugüne kadar ortalama olarak ne kadar şahin/güvercin işlendiğini, "
+        "'Std' bu tonun dönemden döneme NE KADAR OYNADIĞINI (yüksekse konu istikrarsız/duruma "
+        "göre değişken ele alınmış, düşükse hep aynı çizgide işlenmiş), 'Dönem' o konunun kaç "
+        "FARKLI toplantıda hiç gündeme geldiğini gösterir — bu sayı küçükse (ör. 1-2), o satırdaki "
+        "ortalamayı güvenilir bir eğilim değil, tek seferlik bir gözlem olarak okuyun. Pratik "
+        "sonuç: listenin ÜSTÜNDEKİ konular tarihsel olarak en şahin işlenen, EN ALTTAKİLER en "
+        "güvercin işlenen konulardır; yüksek 'Dönem' ve düşük 'Std' ile birleşen bir satır, "
+        "üzerinde en çok durulabilecek güvenilir bir sinyaldir."
+    )
+
+    _add_heading(doc, "A.8 — Backtest Yöntemi ve Bilimsel Dayanağı (bkz. §7.2)", level=2)
+    doc.add_paragraph(
+        "§7.1'deki tahmin NASIL üretildi? Model, ELİNDEKİ (geçmiş) PPK metinlerindeki kelime "
+        "ve karakter dizilerinin (ne kadar sık geçiyor VE tüm metinler arasında ne kadar AYIRT "
+        "EDİCİ olduğu) sayısal özniteliklere çevirir; bunlara gecikmeli (bir önceki "
+        "toplantılardan) makro/faiz değişkenlerini ekler ve bu birleşik öznitelik kümesiyle bir "
+        "sonraki delta_bp'yi tahmin eden düzenlileştirilmiş (Ridge) bir regresyon eğitir. "
+        "Düzenlileştirme, TF-IDF'in ürettiği çok sayıda (metindeki her benzersiz kelime/karakter "
+        "dizisi kadar) öznitelikle, az sayıdaki PPK kararına AŞIRI UYUMU (overfitting) önlemek "
+        "için gereklidir. Doğrulama YÜRÜYEN-PENCERE (walk-forward) yöntemiyle yapılır: her "
+        "tahmin, SADECE o tarihten ÖNCEKİ kararlarla eğitilmiş bir modelden gelir (gelecekteki "
+        "hiçbir veri modele sızmaz) — bu, ton skorlarının yalnızca iç-tutarlı değil, dışarıdan "
+        "da (gerçekleşen kararla) doğrulanabilir olup olmadığının testidir."
+    )
+    _add_note(doc,
+        "Metin öznitelikleri + düzenlileştirilmiş (Ridge/Elastic Net) regresyon + gecikmeli "
+        "değişkenlerle birleştirme + yürüyen/genişleyen-pencere doğrulama şeması, merkez bankası "
+        "metninden politika faizi DEĞİŞİMİNİ tahmin eden güncel akademik çalışmalarla aynı ailededir "
+        "— örn. Duarte & Laurini (2026), Forecasting dergisinde yayımlanan çalışmada metin "
+        "temsili olarak TF-IDF yerine transformer tabanlı yoğun gömme (embedding) + PCA kullanıyor, "
+        "ancak gecikmeli politika dinamikleriyle birleştirip düzenlileştirilmiş regresyonla "
+        "genişleyen-pencere (expanding-window) doğrulamasıyla Δpolitika-faizini (baz puan) tahmin "
+        "etme YAPISI birebir aynıdır. TF-IDF'in kendisi de bu literatürde (FOMC/merkez bankası metni "
+        "üzerinden faiz kararı tahmini) yaygın kullanılan, embedding'lere göre daha basit/klasik ama "
+        "yerleşik bir metin temsilidir. Özet: buradaki YÖNTEM İSKELETİ (metin özniteliği + "
+        "düzenlileştirme + gecikmeli dinamik + sızıntısız doğrulama) literatürle tutarlıdır; TF-IDF "
+        "seçimi ise bu iskeletin daha basit/yorumlanabilir bir versiyonudur — R²/MAE/hit-rate "
+        "değerleri (§7.2) bu basit temsilin BU örneklemde ne kadar işe yaradığının doğrudan kanıtıdır.",
+        label="Bilimsel dayanak:")
 
     # =========================================================================
     # EK: VERİ KALİTESİ

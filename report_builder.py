@@ -105,6 +105,22 @@ def _tone_hex(diff: float, deadband: Optional[float] = None) -> str:
     return "".join(f"{c:02X}" for c in blended)
 
 
+def _shade_run(run, hex_color: str):
+    """_shade_cell'in RUN (metin parçası) karşılığı — bir kelime/cümlenin arka
+    planını renklendirir. python-docx bunu public API'de sunmaz."""
+    hex_color = hex_color.lstrip("#")
+    rPr = run._r.get_or_add_rPr()
+    shd = OxmlElement("w:shd")
+    shd.set(qn("w:val"), "clear")
+    shd.set(qn("w:color"), "auto")
+    shd.set(qn("w:fill"), hex_color)
+    rPr.append(shd)
+
+
+def _stance_color_hex(word: str) -> str:
+    return {"şahin": "C0392B", "güvercin": "1F4E9C"}.get(word, "7F7F7F")
+
+
 def _add_heading(doc, text, level=1):
     h = doc.add_heading(text, level=level)
     return h
@@ -181,6 +197,117 @@ def _df_to_table(doc, df: pd.DataFrame, header_map: Optional[dict] = None,
     return table
 
 
+def _tone_gauge_figure(value: Optional[float], regime_label: Optional[str], hyst: float = 25.0):
+    """
+    Rejimi TEK BAKIŞTA gösteren gösterge (speedometer) grafiği. -100..+100 skalası
+    ve renk bantları, utils.postprocess_ai_series_steps'in GERÇEK histerezis eşiğiyle
+    (hyst, varsayılan 25.0) birebir tutarlıdır — rastgele/dekoratif bir bant değildir.
+    Amaç: sayı yerine "iğnenin nerede durduğunu" gösteren, metin okumadan anlaşılan
+    tek bir görsel.
+    """
+    import plotly.graph_objects as go
+    v = 0.0 if value is None or pd.isna(value) else float(np.clip(value, -100, 100))
+    fig = go.Figure(go.Indicator(
+        mode="gauge+number",
+        value=v,
+        number={"suffix": "", "font": {"size": 34, "color": "#2c2c2c"}},
+        title={"text": f"CB-RoBERTa Rejim Göstergesi<br><span style='font-size:0.65em;color:#666'>"
+                        f"{regime_label or '—'}</span>", "font": {"size": 16}},
+        gauge={
+            "axis": {"range": [-100, 100], "tickwidth": 1, "tickcolor": "#888"},
+            "bar": {"color": "#2c3e50", "thickness": 0.28},
+            "bgcolor": "white",
+            "borderwidth": 0,
+            "steps": [
+                {"range": [-100, -hyst], "color": "#c9daf0"},   # güvercin bandı
+                {"range": [-hyst, hyst], "color": "#eeeeee"},   # nötr bandı
+                {"range": [hyst, 100], "color": "#f3cfc8"},     # şahin bandı
+            ],
+        },
+    ))
+    fig.update_layout(height=280, margin=dict(t=60, b=10, l=30, r=30))
+    return fig
+
+
+def _add_clean_summary_card(doc, rows: list):
+    """
+    Uygulamanın Streamlit 'Özet' kartına (kalın etiket + renkli değer + soluk
+    '(Önceki: ...)') görsel olarak yakın, KENARLIKSIZ bir liste üretir. Yoğun,
+    çok-kolonlu bir tablo yerine tek bakışta okunan bir özet — detaylı yöntem/
+    eşik bilgisi ayrı bir tabloda (bkz. hemen altındaki 'Gösterge Detayları').
+
+    rows: [{"label": str, "value": str, "prev": Optional[str], "color": Optional[hex]}]
+    """
+    if not rows:
+        return None
+    tbl = doc.add_table(rows=0, cols=2)  # varsayılan stil kenarlıksızdır
+    tbl.alignment = WD_TABLE_ALIGNMENT.CENTER
+    for i, r in enumerate(rows):
+        row = tbl.add_row()
+        c0, c1 = row.cells
+        if i % 2 == 1:
+            _shade_cell(c0, "F5F6F8")
+            _shade_cell(c1, "F5F6F8")
+        _set_cell_text(c0, r["label"], bold=True, size=11)
+        c1.text = ""
+        p = c1.paragraphs[0]
+        run_v = p.add_run(str(r.get("value", "—")))
+        run_v.bold = True
+        run_v.font.size = Pt(12)
+        if r.get("color"):
+            run_v.font.color.rgb = RGBColor.from_string(r["color"])
+        if r.get("prev"):
+            run_p = p.add_run(f"   (Önceki: {r['prev']})")
+            run_p.italic = True
+            run_p.font.size = Pt(10)
+            run_p.font.color.rgb = RGBColor.from_string("808080")
+        c0.width = Inches(2.5)
+        c1.width = Inches(3.8)
+    return tbl
+
+
+def _add_sentence_highlight_paragraph(doc, sent_period: pd.DataFrame, deadband: float, show_agent: bool = True):
+    """
+    utils.sentence_heatmap_html ile AYNI renk mantığını (_tone_hex ↔ _tone_rgba)
+    kullanarak, dokümanın TAMAMINI tek akan bir paragraf halinde, her cümlenin
+    arka planı kendi tonuna göre boyanmış biçimde yazar. Tablodaki "en şahin /
+    en güvercin 6 cümle" özetinin aksine, metnin TAMAMI bağlamıyla birlikte
+    okunabilir — uygulamadaki '🗺️ Ton Haritası' sekmesinin docx karşılığı.
+    """
+    if sent_period is None or sent_period.empty:
+        _add_note(doc, "Bu dönem için cümle önbelleği yok, vurgulu metin üretilemedi.")
+        return
+    p = doc.add_paragraph()
+    p.paragraph_format.space_after = Pt(6)
+    for _, r in sent_period.sort_values("sent_idx").iterrows():
+        diff = float(r.get("diff", 0.0) or 0.0)
+        sent = str(r.get("sentence", "") or "").strip()
+        if not sent:
+            continue
+        run = p.add_run(sent + " ")
+        run.font.size = Pt(10)
+        _shade_run(run, _tone_hex(diff, deadband))
+        agent = r.get("agent_label")
+        if show_agent and agent and str(agent).strip():
+            run_badge = p.add_run(f" {agent} ")
+            run_badge.font.size = Pt(6)
+            run_badge.font.color.rgb = RGBColor.from_string("808080")
+            run_badge.font.superscript = True
+
+    legend_p = doc.add_paragraph()
+    legend_p.paragraph_format.space_before = Pt(2)
+    for lbl, val in ((f"şahin (ton ≥ +{deadband:.2f})", 1.0),
+                     (f"nötr (|ton| < {deadband:.2f})", 0.0),
+                     (f"güvercin (ton ≤ -{deadband:.2f})", -1.0)):
+        r1 = legend_p.add_run("  ")
+        _shade_run(r1, _tone_hex(val, deadband))
+        r2 = legend_p.add_run(f" {lbl}    ")
+        r2.font.size = Pt(8)
+        r2.font.color.rgb = RGBColor.from_string("595959")
+    _add_caption(doc, "Renk yoğunluğu |ton| ile artar; küçük gri üst simge ilgili kesimi gösterir "
+                      "(Merkez Bankası / Firmalar / Hanehalkı / Finansal Sektör vb.).")
+
+
 _TMP_FILES = []
 
 
@@ -219,8 +346,8 @@ def _mpl_fig_to_png(fig) -> Optional[str]:
         return None
 
 
-def _add_figure(doc, fig, caption=None, width_in=6.3, is_mpl=False):
-    path = _mpl_fig_to_png(fig) if is_mpl else _fig_to_png(fig)
+def _add_figure(doc, fig, caption=None, width_in=6.3, is_mpl=False, png_width=1100, png_height=650):
+    path = _mpl_fig_to_png(fig) if is_mpl else _fig_to_png(fig, width=png_width, height=png_height)
     if not path:
         _add_note(doc, "Bu grafik bu ortamda üretilemedi (kaleido/Chrome eksik olabilir); "
                         "veriler metin/tablo halinde aşağıda mevcut.", label="⚠")
@@ -690,11 +817,52 @@ def build_report(
     doc.add_paragraph(_exec_summary(donem, abg_row, ai_row, ai_row_prev, sent_ozet,
                                      flesch_now, n_sent_now, flesch_prev, n_sent_prev))
 
-    # ---- özet tablo ----
+    # ---- temiz özet kartı (uygulamadaki 'Özet' görünümüne yakın) ----
+    _abg_word = _stance_word((abg_row["abg_index"] - 1.0) if abg_row is not None else None, 0.05)
+    _abg_word_prev = _stance_word((abg_row_prev["abg_index"] - 1.0) if abg_row_prev is not None else None, 0.05)
+    _ai_word = _stance_word(ai_row.get("Diff (H-D)"), utils.DOC_STANCE_DEADBAND) if ai_row is not None else "belirsiz"
+    _ai_word_prev = _stance_word(ai_row_prev.get("Diff (H-D)"), utils.DOC_STANCE_DEADBAND) if ai_row_prev is not None else "belirsiz"
+    _ai_regime = str(ai_row.get("AI Rejim", ai_row.get("Rejim", "—"))) if ai_row is not None else None
+    _ai_regime_prev = str(ai_row_prev.get("AI Rejim", ai_row_prev.get("Rejim", "—"))) if ai_row_prev is not None else None
+
+    card_rows = []
+    if abg_row is not None:
+        card_rows.append({"label": "Apel, Blix-Grimaldi (sözlük temelli endeks)",
+                          "value": _abg_word.capitalize(), "prev": _abg_word_prev.capitalize() if abg_row_prev is not None else None,
+                          "color": _stance_color_hex(_abg_word)})
+    if ai_row is not None:
+        card_rows.append({"label": "CB-RoBERTa (cümle-bazlı model — ton)",
+                          "value": _ai_word.capitalize(), "prev": _ai_word_prev.capitalize() if ai_row_prev is not None else None,
+                          "color": _stance_color_hex(_ai_word)})
+        card_rows.append({"label": "CB-RoBERTa (rejim — histerezis/EMA)",
+                          "value": _ai_regime or "—", "prev": _ai_regime_prev,
+                          "color": None})
+    if flesch_now is not None:
+        card_rows.append({"label": "Okunabilirlik skoru (Flesch)",
+                          "value": f"{flesch_now:.2f}", "prev": f"{flesch_prev:.2f}" if flesch_prev is not None else None,
+                          "color": None})
+    if n_sent_now is not None:
+        card_rows.append({"label": "Cümle sayısı",
+                          "value": str(n_sent_now), "prev": str(n_sent_prev) if n_sent_prev else None,
+                          "color": None})
+    _add_clean_summary_card(doc, card_rows)
+
+    # ---- gösterge (speedometer) — metne bakmadan "iğnenin nerede durduğunu" gösterir ----
+    if ai_row is not None:
+        try:
+            _gauge_fig = _tone_gauge_figure(ai_row.get("AI Score (EMA)"), _ai_regime, hyst=25.0)
+            _add_figure(doc, _gauge_fig, width_in=3.4, png_width=520, png_height=380,
+                       caption="İğne, kalibre edilmiş EMA skorunu gösterir; renkli bantlar rejim eşiğini "
+                               "(±25) işaretler — bkz. §2.2.")
+        except Exception as e:
+            _add_note(doc, f"Gösterge grafiği üretilemedi: {e}")
+
+    # ---- özet tablo (detaylı: yöntem/ölçek/eşik) ----
     # Her göstergenin NE ölçtüğü ve hangi ölçek/eşik üzerinden okunduğu, değerin
     # kendisiyle birlikte gösterilir — aksi halde (ör. "ABG=1.00" ile "CB-RoBERTa
     # ton=+0.26" yan yana) okuyucu iki sayının aynı şeyi mi ölçtüğünü sanabilir.
-    _add_heading(doc, "Özet Göstergeler", level=2)
+    # (Yukarıdaki temiz kart hızlı okuma için; bu tablo merak edenler için detaydır.)
+    _add_heading(doc, "Gösterge Detayları (ölçek, eşik, yöntem notu)", level=2)
     summary_rows = []
     if abg_row is not None:
         summary_rows.append({
@@ -845,8 +1013,30 @@ def build_report(
         )
     if ai_df is not None and not ai_df.empty:
         try:
-            fig_ai = utils.create_ai_trend_chart_step(ai_df.sort_values("period_date"), step=3)
-            _add_figure(doc, fig_ai, caption="CB-RoBERTa kalibre skoru (EMA) — tarihsel seyir, histerezis rejimiyle birlikte.")
+            ai_sorted = ai_df.sort_values("period_date")
+            fig_ai = (utils.create_tone_action_chart(ai_sorted, step=3)
+                      if hasattr(utils, "create_tone_action_chart") and
+                         {"Delta BP", "Aksiyon Yön"}.issubset(ai_sorted.columns)
+                      else None)
+            if fig_ai is not None:
+                # utils.create_tone_action_chart alt paneldeki (Δ bp) y-eksenine PAY BIRAKMAZ —
+                # en yüksek/en düşük bar, çizim alanının tam kenarına yapışır ve "kırpılmış"
+                # görünür. utils.py'ye dokunmadan, burada döndürülen fig'e %18 boşluk payı ekliyoruz.
+                _bp_vals = pd.to_numeric(ai_sorted.get("Delta BP"), errors="coerce").dropna()
+                if not _bp_vals.empty:
+                    _bp_max = float(_bp_vals.abs().max())
+                    _pad = max(_bp_max * 0.18, 25.0)
+                    _lo = min(0.0, float(_bp_vals.min()) - _pad)
+                    _hi = max(0.0, float(_bp_vals.max()) + _pad)
+                    fig_ai.update_yaxes(range=[_lo, _hi], row=2, col=1)
+                _add_figure(doc, fig_ai, png_height=850,
+                    caption="Üst panel: ton (EMA + histerezis); işaretçi ŞEKLİ gerçekleşen aksiyonu gösterir "
+                            "(▲ artış, ▼ indirim, ■ sabit). Alt panel: gerçekleşen faiz değişimi (Δ bp). "
+                            "Yukarıda duran bir ▼ 'şahin bir çerçeveyle iletilen indirim', aşağıda duran "
+                            "bir ▲ 'güvercin bir çerçeveyle iletilen artış' anlamına gelir.")
+            else:
+                fig_ai = utils.create_ai_trend_chart_step(ai_sorted, step=3)
+                _add_figure(doc, fig_ai, caption="CB-RoBERTa kalibre skoru (EMA) — tarihsel seyir, histerezis rejimiyle birlikte.")
         except Exception as e:
             _add_note(doc, f"Tarihsel grafik üretilemedi: {e}")
     else:
@@ -891,6 +1081,14 @@ def build_report(
         except Exception as e:
             _add_note(doc, f"Cümle-şeridi grafiği üretilemedi: {e}")
 
+        _add_heading(doc, "Tüm metin — cümle cümle ton (renkli okuma)", level=2)
+        doc.add_paragraph(
+            "Aşağıda dönemin TAMAMI, her cümlenin arka planı kendi tonuna göre renklendirilmiş "
+            "biçimde yer alır — tablodaki 6 örnek yerine metnin tamamını BAĞLAMIYLA birlikte "
+            "okumak için."
+        )
+        _add_sentence_highlight_paragraph(doc, sent_period, utils.DOC_STANCE_DEADBAND)
+
         _add_heading(doc, "En şahin ifadeler", level=2)
         _df_to_table(doc, sahin_df.rename(columns={
             "sent_idx": "#", "sentence": "Cümle", "diff": "Ton",
@@ -909,6 +1107,7 @@ def build_report(
     # =========================================================================
     _add_heading(doc, "5. Konu Bazlı Analiz", level=1)
     if not df_sent.empty:
+        _add_heading(doc, "5.1 Konu × Ton Isı Haritası", level=2)
         tmat, cmat = utils.tone_matrix(df_sent, "theme_label", min_n=2)
         if not tmat.empty:
             fig_topic = utils.chart_tone_heatmap(tmat, "Konu × Ton (dönem bazında ortalama)", ylab="Konu", counts=cmat)
@@ -916,8 +1115,31 @@ def build_report(
             if donem in tmat.index:
                 doc.add_paragraph(f"{donem} döneminde konu bazlı tonlar: " +
                                   ", ".join(f"{c} {tmat.loc[donem, c]:+.2f}" for c in tmat.columns if pd.notna(tmat.loc[donem, c])))
+        else:
+            _add_note(doc, "Isı haritası için yeterli veri yok.")
+
+        _add_heading(doc, "5.2 Konu Kapsamı (zaman içinde, %)", level=2)
+        try:
+            share = utils.share_timeseries(df_sent, "theme_label")
+            if share is not None and not share.empty:
+                order = share.mean().sort_values(ascending=False).index.tolist()
+                share = share[[c for c in order if c in share.columns]]
+                fig_share = utils.chart_share_area(share, "Konu kapsamı (%) — dönemler arası kompozisyon",
+                                                    styles=getattr(utils, "THEME_STYLE", None))
+                if fig_share is not None:
+                    _add_figure(doc, fig_share,
+                        caption="Yığılmış alan grafiği: her dönemde payların toplamı %100'dür. DİKKAT — "
+                                "bir konunun payı, kendisi hiç değişmeden de düşebilir (başka bir konu "
+                                "büyüdüğü için); mutlak hacim değil, KOMPOZİSYON okunur.")
+                else:
+                    _add_note(doc, "Konu kapsamı grafiği üretilemedi.")
+            else:
+                _add_note(doc, "Konu kapsamı serisi için yeterli veri yok.")
+        except Exception as e:
+            _add_note(doc, f"Konu kapsamı grafiği üretilemedi: {e}")
+
         dvg = utils.divergence_table(df_sent, "theme_label")
-        _add_heading(doc, "Konu bazlı özet (tüm dönemler)", level=2)
+        _add_heading(doc, "5.3 Konu bazlı özet (tüm dönemler)", level=2)
         _df_to_table(doc, dvg.rename(columns={"theme_label": "Konu"}))
     else:
         _add_note(doc, "Konu analizi için cümle önbelleği gerekli; bulunamadı.")
@@ -946,11 +1168,35 @@ def build_report(
     # =========================================================================
     _add_heading(doc, "7. Model Performansı (Metin → Faiz Kararı Backtest)", level=1)
     doc.add_paragraph(
-        "Bu bölüm, PPK metninin kendisinin (TF-IDF öznitelikleri) ve gecikmeli makro/faiz "
-        "değişkenlerinin, GERÇEKLEŞEN faiz değişimini (delta_bp) ne ölçüde açıkladığını "
-        "yürüyen-pencere (walk-forward) doğrulamayla test eder. Bu, ton skorlarının sadece "
-        "iç-tutarlı değil, dışarıdan da doğrulanabilir olup olmadığının bir kontrolüdür."
+        "Önceki bölümler metnin TONUNU ölçtü; bu bölüm farklı bir soru sorar: metnin kendisi, "
+        "BİR SONRAKİ toplantıda faizin ne kadar değişeceğini (delta_bp) önceden kestirebilir mi? "
+        "Model, ELİNDEKİ (geçmiş) PPK metinlerindeki kelime ve karakter dizilerinin ne sıklıkla "
+        "geçtiğini (TF-IDF — 'term frequency-inverse document frequency': bir ifade o metinde ne "
+        "kadar sık geçiyor VE tüm metinler arasında ne kadar AYIRT EDİCİ olduğu) sayısal "
+        "özniteliklere çevirir; bunlara gecikmeli (bir önceki toplantılardan) makro/faiz "
+        "değişkenlerini ekler ve bu birleşik öznitelik kümesiyle bir sonraki delta_bp'yi tahmin "
+        "eden düzenlileştirilmiş (Ridge) bir regresyon eğitir. Düzenlileştirme, TF-IDF'in ürettiği "
+        "çok sayıda (metindeki her benzersiz kelime/karakter dizisi kadar) öznitelikle, az sayıdaki "
+        "PPK kararına AŞIRI UYUMU (overfitting) önlemek için gereklidir. Doğrulama YÜRÜYEN-PENCERE "
+        "(walk-forward) yöntemiyle yapılır: her tahmin, SADECE o tarihten ÖNCEKİ kararlarla eğitilmiş "
+        "bir modelden gelir (gelecekteki hiçbir veri modele sızmaz) — bu, ton skorlarının yalnızca "
+        "iç-tutarlı değil, dışarıdan da (gerçekleşen kararla) doğrulanabilir olup olmadığının testidir."
     )
+    _add_note(doc,
+        "Metin öznitelikleri + düzenlileştirilmiş (Ridge/Elastic Net) regresyon + gecikmeli "
+        "değişkenlerle birleştirme + yürüyen/genişleyen-pencere doğrulama şeması, merkez bankası "
+        "metninden politika faizi DEĞİŞİMİNİ tahmin eden güncel akademik çalışmalarla aynı ailededir "
+        "— örn. Duarte & Laurini (2026), Forecasting dergisinde yayımlanan çalışmada metin "
+        "temsili olarak TF-IDF yerine transformer tabanlı yoğun gömme (embedding) + PCA kullanıyor, "
+        "ancak gecikmeli politika dinamikleriyle birleştirip düzenlileştirilmiş regresyonla "
+        "genişleyen-pencere (expanding-window) doğrulamasıyla Δpolitika-faizini (baz puan) tahmin "
+        "etme YAPISI birebir aynıdır. TF-IDF'in kendisi de bu literatürde (FOMC/merkez bankası metni "
+        "üzerinden faiz kararı tahmini) yaygın kullanılan, embedding'lere göre daha basit/klasik ama "
+        "yerleşik bir metin temsilidir. Kısacası: buradaki YÖNTEM İSKELETİ (metin özniteliği + "
+        "düzenlileştirme + gecikmeli dinamik + sızıntısız doğrulama) literatürle tutarlıdır; TF-IDF "
+        "seçimi ise bu iskeletin daha basit/yorumlanabilir bir versiyonudur — R²/MAE/hit-rate "
+        "değerleri (aşağıda) bu basit temsilin BU örneklemde ne kadar işe yaradığının doğrudan kanıtıdır.",
+        label="Yöntemin bilimsel dayanağı:")
     if model_pack and model_pack.get("metrics"):
         metrics = model_pack["metrics"]
         hit = _hit_rate(model_pack.get("pred_df"))

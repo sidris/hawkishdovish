@@ -60,6 +60,184 @@ import utils  # noqa: F401  -- proje ile aynı dizinde olmalı
 
 
 # =============================================================================
+# KURUMSAL KİMLİK (TCMB "Rapor Şablonu" stil kılavuzundan) — renkler, yazı tipi
+# =============================================================================
+# Kaynak: kullanıcının paylaştığı rapor_sablonu.dotx (Renk Paleti (RGB) sayfası +
+# "Rapor Tasarımında Uyulacak Kurallar" sayfası). Bu modülün ürettiği rapor artık
+# ad-hoc renkler yerine BU paleti kullanır — böylece rapor, TCMB içi diğer
+# raporlarla aynı görsel dilde okunur.
+BRAND_FONT = "Open Sans"
+BRAND_RED = "D50032"        # Kurumsal renk (PANTONE 199C) — tablo başlıkları, vurgular
+BRAND_RED_DARK = "9F0024"   # Başlık1 rengi (şablonda accent1 %75 gölge)
+BRAND_NAVY = "1C3144"       # Grafik rengi 2
+BRAND_GOLD = "F9C213"       # Grafik rengi 3
+BRAND_BLUE = "5E8CC6"       # Grafik rengi 4
+BRAND_GRAY_BG = "F2F2F2"    # Tablo zebra dolgusu / kutu zemini
+BRAND_GRAY_TEXT = "595959"
+_ASSETS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets")
+BRAND_LOGO_PATH = os.path.join(_ASSETS_DIR, "tcmb_logo.png")
+
+
+def _set_run_font(run, name=BRAND_FONT):
+    """Bir run'ın hem Latin hem 'complex script' yazı tipini ayarlar — Word bazen
+    Calibri'ye geri düşer çünkü varsayılan tema yazı tipi yalnızca ana Latin
+    alanını değiştirir."""
+    run.font.name = name
+    rPr = run._r.get_or_add_rPr()
+    rFonts = rPr.find(qn("w:rFonts"))
+    if rFonts is None:
+        rFonts = OxmlElement("w:rFonts")
+        rPr.append(rFonts)
+    for attr in ("w:ascii", "w:hAnsi", "w:eastAsia", "w:cs"):
+        rFonts.set(qn(attr), name)
+
+
+def _apply_brand_styles(doc):
+    """
+    Doküman genelinde şablonun yazı tipi/başlık kurallarını uygular:
+    Open Sans, Normal 10pt / Başlık1 16pt / Başlık2 13pt / Başlık3 11pt,
+    başlıklar siyah-kalın (şablondaki "Rapor Tasarımında Uyulacak Kurallar"
+    sayfasındaki punto tablosuyla birebir).
+    """
+    try:
+        normal = doc.styles["Normal"]
+        normal.font.name = BRAND_FONT
+        normal.font.size = Pt(10)
+        rPr = normal.element.get_or_add_rPr()
+        rFonts = rPr.find(qn("w:rFonts"))
+        if rFonts is None:
+            rFonts = OxmlElement("w:rFonts")
+            rPr.append(rFonts)
+        for attr in ("w:ascii", "w:hAnsi", "w:eastAsia", "w:cs"):
+            rFonts.set(qn(attr), BRAND_FONT)
+    except Exception:
+        pass
+
+    heading_specs = {  # level: (pt, space_before, space_after)
+        1: (16, 12, 6),
+        2: (13, 10, 4),
+        3: (11, 8, 2),
+    }
+    for lvl, (pt, before, after) in heading_specs.items():
+        try:
+            st = doc.styles[f"Heading {lvl}"]
+            st.font.name = BRAND_FONT
+            st.font.size = Pt(pt)
+            st.font.bold = True
+            st.font.color.rgb = RGBColor.from_string("1A1A1A")
+            st.paragraph_format.space_before = Pt(before)
+            st.paragraph_format.space_after = Pt(after)
+            rPr = st.element.get_or_add_rPr()
+            rFonts = rPr.find(qn("w:rFonts"))
+            if rFonts is None:
+                rFonts = OxmlElement("w:rFonts")
+                rPr.append(rFonts)
+            for attr in ("w:ascii", "w:hAnsi", "w:eastAsia", "w:cs"):
+                rFonts.set(qn(attr), BRAND_FONT)
+        except Exception:
+            pass
+
+
+def _set_section_border(paragraph, color=BRAND_RED, sz=10, pos="bottom"):
+    """Bir paragrafın altına/üstüne renkli ince bir çizgi ekler (şablondaki
+    başlık altı kırmızı çizgi ve kapak çizgisi için)."""
+    pPr = paragraph._p.get_or_add_pPr()
+    pBdr = pPr.find(qn("w:pBdr"))
+    if pBdr is None:
+        pBdr = OxmlElement("w:pBdr")
+        pPr.append(pBdr)
+    edge = OxmlElement(f"w:{pos}")
+    edge.set(qn("w:val"), "single")
+    edge.set(qn("w:sz"), str(sz))
+    edge.set(qn("w:space"), "4")
+    edge.set(qn("w:color"), color)
+    pBdr.append(edge)
+
+
+def _setup_header_footer(doc, title: str, donem: str):
+    """
+    Şablondaki iç sayfa üstbilgisini ('Rapor Adı | Dönemi [sayfa no]' + ince
+    kırmızı çizgi) taklit eder. Kapak sayfasında (ilk sayfa) üstbilgi/altbilgi
+    GÖSTERİLMEZ — şablonda da kapakta harici bilgiye yer verilmiyordu.
+    """
+    section = doc.sections[0]
+    section.different_first_page_header_footer = True
+    # ilk sayfa (kapak) üstbilgisi boş kalsın
+    _ = section.first_page_header
+
+    header = section.header
+    hp = header.paragraphs[0]
+    hp.text = ""
+    hp.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+    r1 = hp.add_run(f"{title}  |  ")
+    _set_run_font(r1); r1.font.size = Pt(9); r1.font.color.rgb = RGBColor.from_string("404040")
+    r2 = hp.add_run(f"{donem}")
+    _set_run_font(r2); r2.font.size = Pt(9); r2.bold = True
+    r2.font.color.rgb = RGBColor.from_string(BRAND_RED)
+    _set_section_border(hp, color=BRAND_RED, sz=8, pos="bottom")
+
+    footer = section.footer
+    fp = footer.paragraphs[0]
+    fp.text = ""
+    fp.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+    fr = fp.add_run("Şahin/Güvercin Paneli — otomatik üretilmiştir")
+    _set_run_font(fr); fr.font.size = Pt(8); fr.font.color.rgb = RGBColor.from_string("8C8C8C")
+
+
+def _add_cover_page(doc, title: str, donem: str, birim: Optional[str] = None):
+    """
+    rapor_sablonu.dotx kapak sayfasıyla aynı tipografik hiyerarşiyi kullanır:
+    Rapor adı 35pt bütün-büyük-kalın / Hazırlayan birim 16pt bütün-büyük-kalın /
+    Dönem 16pt bütün-büyük-kalın KURUMSAL KIRMIZI + TCMB logosu sol altta.
+    Şablondaki elmas-desenli fotoğraf kolajı yeniden üretilmedi (karmaşık grafik
+    kompozisyonu); onun yerine aynı marka rengiyle sade bir vurgu çizgisi kullanıldı.
+    """
+    for _ in range(4):
+        doc.add_paragraph()
+
+    title_p = doc.add_paragraph()
+    r = title_p.add_run(title.upper())
+    _set_run_font(r); r.bold = True; r.font.size = Pt(35)
+    r.font.color.rgb = RGBColor.from_string("1A1A1A")
+    _set_section_border(title_p, color=BRAND_RED, sz=18, pos="bottom")
+    title_p.paragraph_format.space_after = Pt(18)
+
+    sub_p = doc.add_paragraph()
+    r = sub_p.add_run("Genişletilmiş Bilgi Notu")
+    _set_run_font(r); r.font.size = Pt(14); r.font.color.rgb = RGBColor.from_string(BRAND_NAVY)
+    sub_p.paragraph_format.space_after = Pt(28)
+
+    if birim:
+        birim_p = doc.add_paragraph()
+        r = birim_p.add_run(birim.upper())
+        _set_run_font(r); r.bold = True; r.font.size = Pt(16)
+        r.font.color.rgb = RGBColor.from_string("1A1A1A")
+        birim_p.paragraph_format.space_after = Pt(10)
+
+    donem_p = doc.add_paragraph()
+    r = donem_p.add_run(f"DÖNEM: {donem}")
+    _set_run_font(r); r.bold = True; r.font.size = Pt(16)
+    r.font.color.rgb = RGBColor.from_string(BRAND_RED)
+
+    meta_p = doc.add_paragraph()
+    r = meta_p.add_run(f"Üretim tarihi: {_dt.date.today().isoformat()}")
+    _set_run_font(r); r.font.size = Pt(10); r.font.color.rgb = RGBColor.from_string(BRAND_GRAY_TEXT)
+
+    for _ in range(10):
+        doc.add_paragraph()
+
+    if os.path.exists(BRAND_LOGO_PATH):
+        try:
+            logo_p = doc.add_paragraph()
+            run = logo_p.add_run()
+            run.add_picture(BRAND_LOGO_PATH, width=Inches(1.7))
+        except Exception:
+            pass
+
+    doc.add_page_break()
+
+
+# =============================================================================
 # 0. KÜÇÜK YARDIMCILAR (docx biçimlendirme)
 # =============================================================================
 
@@ -152,6 +330,33 @@ def _add_note(doc, text, label="Not:"):
     return tbl
 
 
+def _add_takeaway(doc, text, label="Kısaca:"):
+    """
+    Her ağır/teknik bölümün EN ÜSTÜNE, o bölümü tek cümlede özetleyen, düz dille
+    yazılmış bir "hızlı okuma" kutusu. Amaç: okuyucu teknik detaya (yöntem,
+    formül, eşik) girmeden önce "bu bölüm ne anlatıyor, benim için sonucu ne"
+    sorusunun cevabını bulsun — detay her zaman ALTINDA, kaybolmadan durmaya
+    devam eder. Görsel olarak _add_note'tan (gri/nötr, "dikkat" tonunda) FARKLI
+    bir renkte (soluk kurumsal kırmızı) tutulur ki göz otomatik olarak ayırt etsin.
+    """
+    tbl = doc.add_table(rows=1, cols=1)
+    tbl.alignment = WD_TABLE_ALIGNMENT.CENTER
+    cell = tbl.rows[0].cells[0]
+    _shade_cell(cell, "FBEAEC")
+    cell.text = ""
+    p = cell.paragraphs[0]
+    r1 = p.add_run(f"{label} ")
+    r1.bold = True
+    r1.font.size = Pt(10.5)
+    _set_run_font(r1)
+    r1.font.color.rgb = RGBColor.from_string(BRAND_RED_DARK)
+    r2 = p.add_run(text)
+    r2.font.size = Pt(10.5)
+    _set_run_font(r2)
+    r2.font.color.rgb = RGBColor.from_string("1A1A1A")
+    return tbl
+
+
 def _df_to_table(doc, df: pd.DataFrame, header_map: Optional[dict] = None,
                   shade_col: Optional[str] = None, shade_fn=None,
                   col_widths_in=None, max_rows: int = 40, font_size=9):
@@ -164,16 +369,20 @@ def _df_to_table(doc, df: pd.DataFrame, header_map: Optional[dict] = None,
     labels = [header_map.get(c, c) if header_map else c for c in cols]
 
     table = doc.add_table(rows=1, cols=len(cols))
-    table.style = "Light Grid Accent 1"
+    table.style = "Table Grid"
     table.alignment = WD_TABLE_ALIGNMENT.CENTER
 
+    # Kurumsal tablo kuralı: başlık satırı KURUMSAL KIRMIZI dolgu + beyaz kalın
+    # yazı; veri satırları zebra (bir atla bir gri F2F2F2) dolgulu.
     hdr = table.rows[0].cells
     for i, lab in enumerate(labels):
         _set_cell_text(hdr[i], lab, bold=True, size=font_size)
-        _shade_cell(hdr[i], "2F5496")
-        hdr[i].paragraphs[0].runs[0].font.color.rgb = RGBColor.from_string("FFFFFF")
+        _shade_cell(hdr[i], BRAND_RED)
+        hcell_run = hdr[i].paragraphs[0].runs[0]
+        hcell_run.font.color.rgb = RGBColor.from_string("FFFFFF")
+        _set_run_font(hcell_run)
 
-    for _, row in d.iterrows():
+    for ridx, (_, row) in enumerate(d.iterrows()):
         cells = table.add_row().cells
         for i, c in enumerate(cols):
             val = row[c]
@@ -182,6 +391,9 @@ def _df_to_table(doc, df: pd.DataFrame, header_map: Optional[dict] = None,
             else:
                 txt = val
             _set_cell_text(cells[i], txt, size=font_size)
+            _set_run_font(cells[i].paragraphs[0].runs[0]) if cells[i].paragraphs[0].runs else None
+            if ridx % 2 == 1:
+                _shade_cell(cells[i], BRAND_GRAY_BG)
             if shade_col and c == shade_col:
                 hexcol = shade_fn(val) if shade_fn else None
                 if hexcol:
@@ -678,6 +890,79 @@ def _backtest_narrative(metrics: dict, hit: Optional[dict]) -> str:
     return txt
 
 
+def _next_meeting_prediction(model_pack: Optional[dict], donem: str, text_now: str,
+                              df_logs: pd.DataFrame) -> Optional[dict]:
+    """
+    Modelin SIRADAKİ (henüz gerçekleşmemiş ya da bu rapordaki dönemden sonraki)
+    PPK kararı için ima ettiği delta_bp'yi hesaplar.
+
+    ÖNEMLİ METODOLOJİK NOKTA: PPK karar metni, kararla AYNI ANDA yayımlanır —
+    yani "bir sonraki, henüz yazılmamış" karar metni diye bir şey YOKTUR ve
+    hiçbir metin-temelli model bunu gerçek anlamda göremez. Bu fonksiyon bunun
+    yerine utils.predict_textasdata_hybrid_cpi'yi, elde EN GÜNCEL YAYIMLANMIŞ
+    metni (bu raporun kendi döneminin metnini) "ileriye dönük sözlü yönlendirme"
+    (forward guidance) sinyali olarak kullanacak şekilde çağırır — utils.py'deki
+    bu fonksiyon zaten tam olarak bunun için tasarlanmış (son bilinen durumun
+    gecikmeli/lag özelliklerini alıp verilen metinle birleştiriyor). Sonuç bu
+    yüzden bir KEHANET değil, "mevcut iletişim biçimi sürerse model ne bekler"
+    sorusunun cevabıdır — aşağıdaki kutuda bu sınırlama açıkça belirtilir.
+    """
+    if not model_pack or "model" not in model_pack:
+        return None
+    df_hist = model_pack.get("df_hist")
+    if df_hist is None or not isinstance(df_hist, pd.DataFrame) or df_hist.empty:
+        return None
+    if not text_now or len(text_now.strip()) < 30:
+        return None
+
+    pred = utils.predict_textasdata_hybrid_cpi(model_pack, df_hist, text_now)
+    if not pred or "pred_delta_bp" not in pred:
+        return None
+    pred_bp = float(pred["pred_delta_bp"])
+
+    # ampirik %10-%90 aralığı: geçmiş walk-forward hatalarının (gerçekleşen - tahmin)
+    # dağılımından — modelin KENDİ geçmiş hata payı, ayrı bir varsayım gerektirmez.
+    lo, hi = -50.0, 50.0
+    pred_df = model_pack.get("pred_df")
+    if pred_df is not None and not pred_df.empty and {"delta_bp", "pred_delta_bp"}.issubset(pred_df.columns):
+        resid = (pred_df["delta_bp"] - pred_df["pred_delta_bp"]).dropna()
+        if len(resid) >= 5:
+            lo, hi = float(np.nanquantile(resid, 0.10)), float(np.nanquantile(resid, 0.90))
+    interval = tuple(sorted((pred_bp + lo, pred_bp + hi)))
+
+    threshold = 25.0
+    if pred_bp >= threshold:
+        yon = "ARTIRIM"
+    elif pred_bp <= -threshold:
+        yon = "İNDİRİM"
+    else:
+        yon = "SABİT"
+
+    # bu dönemden SONRAKİ bir karar zaten kayıtlıysa (rapor geçmişe dönük üretildiyse),
+    # gerçekleşenle karşılaştırma imkânı var — canlı/ileriye dönük bir tahmin değilse bunu belirt.
+    actual_next = None
+    actual_next_donem = None
+    try:
+        d = df_logs.copy()
+        d["Donem"] = pd.to_datetime(d["period_date"]).dt.strftime("%Y-%m")
+        periods = sorted(d["Donem"].dropna().unique().tolist())
+        if donem in periods:
+            idx = periods.index(donem)
+            if idx < len(periods) - 1:
+                actual_next_donem = periods[idx + 1]
+                row = d[d["Donem"] == actual_next_donem]
+                if not row.empty and pd.notna(row.iloc[0].get("delta_bp")):
+                    actual_next = float(row.iloc[0]["delta_bp"])
+    except Exception:
+        pass
+
+    return {
+        "pred_bp": pred_bp, "interval": interval, "yon": yon,
+        "actual_next": actual_next, "actual_next_donem": actual_next_donem,
+        "is_live_forecast": actual_next_donem is None,
+    }
+
+
 def _conclusion(donem, abg_row, ai_row, sent_ozet, backtest_metrics, hit, pos_narrative_short):
     bits = []
     abg_word = _stance_word((abg_row["abg_index"] - 1.0) if abg_row is not None else None, 0.05)
@@ -726,6 +1011,7 @@ def build_report(
     analyst_note: Optional[str] = None,
     out_path: str = "ppk_rapor.docx",
     title: str = "PPK Metni İletişim Analizi",
+    birim: Optional[str] = None,
 ) -> str:
     """
     Tek bir PPK dönemi için genişletilmiş Word raporu üretir.
@@ -738,6 +1024,7 @@ def build_report(
     """
     _TMP_FILES.clear()
     doc = Document()
+    _apply_brand_styles(doc)
 
     # Sayfa kenar boşlukları biraz daraltılsın — tablolar/grafikler için yer açar
     for section in doc.sections:
@@ -788,27 +1075,10 @@ def build_report(
         n_sent_prev = len(sp) if not sp.empty else None
 
     # =========================================================================
-    # KAPAK
+    # KAPAK + İÇ SAYFA ÜSTBİLGİSİ (TCMB rapor şablonuyla uyumlu)
     # =========================================================================
-    doc.add_paragraph().add_run("")
-    title_p = doc.add_paragraph()
-    title_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    r = title_p.add_run(title)
-    r.bold = True
-    r.font.size = Pt(26)
-
-    sub_p = doc.add_paragraph()
-    sub_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    r = sub_p.add_run("Genişletilmiş Bilgi Notu")
-    r.font.size = Pt(15)
-    r.font.color.rgb = RGBColor.from_string("595959")
-
-    meta_p = doc.add_paragraph()
-    meta_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    r = meta_p.add_run(f"Dönem: {donem}   ·   Üretim tarihi: {_dt.date.today().isoformat()}")
-    r.font.size = Pt(11)
-
-    doc.add_page_break()
+    _add_cover_page(doc, title, donem, birim=birim)
+    _setup_header_footer(doc, title, donem)
 
     # =========================================================================
     # 1. YÖNETİCİ ÖZETİ
@@ -920,6 +1190,12 @@ def build_report(
     # 2. YÖNTEM
     # =========================================================================
     _add_heading(doc, "2. Yöntem", level=1)
+    _add_takeaway(doc,
+        "Metnin şahin mi güvercin mi olduğunu İKİ FARKLI YÖNTEMLE ölçüyoruz: basit bir "
+        "kelime sayımı (ABG) ve cümle cümle okuyan bir yapay-zekâ modeli (CB-RoBERTa). "
+        "İkisi de aynı yöne işaret ederse güven yüksektir; ayrışırlarsa cümle bazlı döküme "
+        "(§4) bakılmalıdır. Aşağıdaki alt başlıklar bu yöntemlerin teknik detaylarıdır — "
+        "sadece sonucu merak ediyorsanız §1'e dönebilirsiniz.")
 
     _add_heading(doc, "2.1 ABG (Apel & Blix-Grimaldi, 2019) — sözlük temelli endeks", level=2)
     doc.add_paragraph(
@@ -985,6 +1261,13 @@ def build_report(
     # 3. ŞAHİN-GÜVERCİN DURUŞ ANALİZİ
     # =========================================================================
     _add_heading(doc, "3. Şahin-Güvercin Duruş Analizi", level=1)
+    _add_takeaway(doc,
+        f"Bu dönem ({donem}) ABG yöntemi metni \"{_abg_word.upper()}\", CB-RoBERTa modeli "
+        f"\"{_ai_word.upper()}\" olarak okuyor"
+        + (" — iki yöntem AYNI YÖNDE." if _abg_word == _ai_word and _abg_word != "belirsiz"
+           else " — yöntemler FARKLI YÖNE işaret ediyor, aşağıdaki §3.3'e bakın.") +
+        " Alt bölümler bu sonuca nasıl ulaşıldığını (§3.1–§3.2) ve önceki döneme göre "
+        "kelime düzeyinde ne değiştiğini (§3.4) gösterir.")
 
     _add_heading(doc, "3.1 ABG (2019) sonucu", level=2)
     if text_now:
@@ -1070,6 +1353,11 @@ def build_report(
     # 4. CÜMLE BAZLI TON DÖKÜMÜ
     # =========================================================================
     _add_heading(doc, "4. Cümle Bazlı Ton Dökümü", level=1)
+    _add_takeaway(doc,
+        "Dönemin özet skoru TEK bir sayıya sığmayabilir — metin genelde şahin VE güvercin "
+        "cümlelerin bir karışımıdır. Bu bölüm metni cümle cümle açar: her cümlenin arka "
+        "planı kendi tonuna göre (kırmızı=şahin, mavi=güvercin, gri=nötr) renklendirilir, "
+        "böylece 'ortalama ton' rakamının ARKASINDA hangi ifadelerin durduğu görülür.")
     if not sent_period.empty:
         m1, m2, m3, m4 = sent_ozet.get("n", 0), sent_ozet.get("n_hawk", 0), sent_ozet.get("n_neut", 0), sent_ozet.get("n_dove", 0)
         doc.add_paragraph(f"Toplam {m1} cümle  ·  🦅 {m2} şahin  ·  ⚪ {m3} nötr  ·  🕊️ {m4} güvercin "
@@ -1106,8 +1394,24 @@ def build_report(
     # 5. KONU BAZLI ANALİZ
     # =========================================================================
     _add_heading(doc, "5. Konu Bazlı Analiz", level=1)
+    _add_takeaway(doc,
+        "Rapor buraya kadar metnin GENEL tonuna baktı; bu bölüm aynı soruyu KONU BAZINDA "
+        "sorar — ör. metin enflasyon konusunda mı şahin, büyüme konusunda mı güvercin? "
+        "İki farklı görsel var: ısı haritası (§5.1) 'hangi konuda ne kadar şahin/güvercin' "
+        "sorusunu, konu kapsamı grafiği (§5.2) ise 'metin ZAMANLA hangi konulara daha çok "
+        "yer ayırıyor' sorusunu cevaplar — ikisi FARKLI eksenler ölçer, karıştırılmamalı.")
     if not df_sent.empty:
         _add_heading(doc, "5.1 Konu × Ton Isı Haritası", level=2)
+        doc.add_paragraph(
+            "Nasıl okunur: satırlar konuları (enflasyon, büyüme, istihdam vb.), sütunlar "
+            "dönemleri (PPK toplantılarını) gösterir. Her hücre, O DÖNEM O KONUYA değinen "
+            "cümlelerin ORTALAMA tonudur — koyu kırmızıya kaydıkça o konuda şahin, koyu "
+            "maviye kaydıkça güvercin bir dil kullanılmış demektir; beyaza yakın hücreler "
+            "nötrdür. Gri hücre bir 'sıfır' değil, VERİ YOKLUĞUdur — o dönem metin o konuya "
+            "hiç ya da yeterince değinmemiştir (bkz. min_n eşiği). Amaç: 'genel ton şahin' "
+            "gibi tek bir cümlenin ARKASINDA hangi konunun bu sonucu sürüklediğini görmek "
+            "— ör. genel ton nötr görünse bile enflasyon satırı koyu kırmızı olabilir."
+        )
         tmat, cmat = utils.tone_matrix(df_sent, "theme_label", min_n=2)
         if not tmat.empty:
             fig_topic = utils.chart_tone_heatmap(tmat, "Konu × Ton (dönem bazında ortalama)", ylab="Konu", counts=cmat)
@@ -1119,6 +1423,16 @@ def build_report(
             _add_note(doc, "Isı haritası için yeterli veri yok.")
 
         _add_heading(doc, "5.2 Konu Kapsamı (zaman içinde, %)", level=2)
+        doc.add_paragraph(
+            "Nasıl okunur: bu, ısı haritasından TAMAMEN FARKLI bir soru sorar — konunun "
+            "TONUNU değil, metindeki YER KAPLAMINI (kaç cümlenin bu konudan bahsettiğini) "
+            "ölçer. Her dönemde (yatay eksende), renkli bantların TOPLAMI her zaman %100'dür "
+            "— yani grafik metnin o dönemki 'gündem dağılımını' gösterir. Bir bandın "
+            "kalınlaşması 'bu konuya daha çok cümle ayrıldı' demektir; bu konunun ŞAHİN mi "
+            "GÜVERCİN mi olduğuyla ilgisizdir (onu §5.1'deki ısı haritasından okuyun). "
+            "Pratik kullanım: bir bandın aniden büyümesi/küçülmesi, TCMB'nin iletişimde "
+            "önceliği bir konudan diğerine kaydırdığının erken bir işareti olabilir."
+        )
         try:
             share = utils.share_timeseries(df_sent, "theme_label")
             if share is not None and not share.empty:
@@ -1148,6 +1462,11 @@ def build_report(
     # 6. METİN İÇİ KONUM ANALİZİ
     # =========================================================================
     _add_heading(doc, "6. Metin İçi Konum Analizi", level=1)
+    _add_takeaway(doc,
+        "Bir metin başında temkinli başlayıp sonunda sıkı bir dille bitebilir (ya da tersi) "
+        "— tek bir ortalama ton bu 'anlatı yapısını' kaybeder. Bu bölüm metni Giriş / Gövde "
+        "/ Kapanış olarak üçe böler ve her bölümün ayrı tonunu gösterir; böylece kararın "
+        "HANGİ KISMININ mesajı taşıdığı (ör. kapanış cümlesi asıl sinyal mi?) görülür.")
     if not df_sent.empty:
         pmat, pcnt = utils.position_tone_matrix(df_sent, bins=3, min_n=1)
         if not pmat.empty:
@@ -1167,11 +1486,66 @@ def build_report(
     # 7. MODEL PERFORMANSI / BACKTEST
     # =========================================================================
     _add_heading(doc, "7. Model Performansı (Metin → Faiz Kararı Backtest)", level=1)
+    _add_takeaway(doc,
+        "Önceki bölümler metnin TONUNU (şahin/güvercin) ölçtü; bu bölüm farklı, daha somut "
+        "bir soruya bakar: bu iletişim tarzı, faizin gerçekte KAÇ BAZ PUAN değişeceğini "
+        "önceden kestirmede ne kadar işe yarıyor? Aşağıda önce SIRADAKİ toplantı için "
+        "modelin ima ettiği rakam, sonra bu tahminin ne kadar güvenilir olduğunu gösteren "
+        "geçmiş performans (backtest) detayları yer alır.")
+
+    # ---- SIRADAKİ TOPLANTI TAHMİNİ — önce sonuç, detay altta ----
+    _add_heading(doc, "7.1 Sıradaki Toplantı İçin Model Tahmini", level=2)
+    next_pred = _next_meeting_prediction(model_pack, donem, text_now, df_logs)
+    if next_pred:
+        _yon_renk = {"ARTIRIM": "C0392B", "İNDİRİM": "1F4E9C", "SABİT": "7F7F7F"}[next_pred["yon"]]
+        _label_donem = ("sıradaki toplantı (canlı)" if next_pred["is_live_forecast"]
+                        else f"{next_pred['actual_next_donem']} toplantısı")
+        pred_rows = [{
+            "label": f"Model tahmini — {_label_donem}",
+            "value": f"{next_pred['pred_bp']:+.0f} bp  ({next_pred['yon']})",
+            "prev": None, "color": _yon_renk,
+        }, {
+            "label": "Ampirik belirsizlik aralığı (geçmiş hata dağılımının %10–%90'ı)",
+            "value": f"{next_pred['interval'][0]:+.0f} … {next_pred['interval'][1]:+.0f} bp",
+            "prev": None, "color": None,
+        }]
+        if next_pred["actual_next"] is not None:
+            _match = "aynı yönde" if (
+                (next_pred["actual_next"] > 0 and next_pred["yon"] == "ARTIRIM") or
+                (next_pred["actual_next"] < 0 and next_pred["yon"] == "İNDİRİM") or
+                (next_pred["actual_next"] == 0 and next_pred["yon"] == "SABİT")
+            ) else "FARKLI yönde"
+            pred_rows.append({
+                "label": f"Gerçekleşen ({next_pred['actual_next_donem']}, karşılaştırma amaçlı)",
+                "value": f"{next_pred['actual_next']:+.0f} bp  — tahminle {_match}",
+                "prev": None, "color": None,
+            })
+        _add_clean_summary_card(doc, pred_rows)
+        if next_pred["is_live_forecast"]:
+            _add_note(doc,
+                "Bu tahmin, elde bulunan EN GÜNCEL yayımlanmış PPK metnini (bu raporun kendi "
+                "dönemi) 'sözlü yönlendirme' sinyali olarak kullanır, çünkü bir sonraki (henüz "
+                "toplanmamış) toplantının metni doğası gereği MEVCUT DEĞİLDİR — hiçbir metin "
+                "modeli bunu gerçek anlamda göremez. Bu nedenle bu bir 'kehanet' değil, 'mevcut "
+                "iletişim tarzı ve makro seyir sürerse modelin ne beklediği' sorusunun cevabıdır. "
+                "Belirsizlik aralığı geniştir ve tek başına bir işlem/pozisyon kararının dayanağı "
+                "olarak kullanılmamalıdır — bkz. §7.2'deki tarihsel isabet oranı.",
+                label="Yöntem sınırlaması:")
+        else:
+            _add_note(doc,
+                "Bu rapor GEÇMİŞE dönük üretildiği için, modelin o dönem için ima ettiği tahmin "
+                "ile GERÇEKTE yaşanan karar burada yan yana konulmuştur — modelin canlı bir "
+                "tahmininden değil, geçmişe dönük bir doğrulamadan söz ediyoruz.",
+                label="Not:")
+    else:
+        _add_note(doc, "Sıradaki toplantı tahmini üretilemedi (backtest modeli eğitilmedi, "
+                       "geçmiş özellik seti (df_hist) rapora iletilmedi ya da bu dönem için "
+                       "metin bulunamadı).")
+
+    _add_heading(doc, "7.2 Geçmiş Performans (Backtest Detayları)", level=2)
     doc.add_paragraph(
-        "Önceki bölümler metnin TONUNU ölçtü; bu bölüm farklı bir soru sorar: metnin kendisi, "
-        "BİR SONRAKİ toplantıda faizin ne kadar değişeceğini (delta_bp) önceden kestirebilir mi? "
-        "Model, ELİNDEKİ (geçmiş) PPK metinlerindeki kelime ve karakter dizilerinin ne sıklıkla "
-        "geçtiğini (TF-IDF — 'term frequency-inverse document frequency': bir ifade o metinde ne "
+        "§7.1'deki tahmin NASIL üretildi? Model, ELİNDEKİ (geçmiş) PPK metinlerindeki kelime "
+        "ve karakter dizilerinin ne sıklıkla "
         "kadar sık geçiyor VE tüm metinler arasında ne kadar AYIRT EDİCİ olduğu) sayısal "
         "özniteliklere çevirir; bunlara gecikmeli (bir önceki toplantılardan) makro/faiz "
         "değişkenlerini ekler ve bu birleşik öznitelik kümesiyle bir sonraki delta_bp'yi tahmin "
@@ -1345,7 +1719,8 @@ def build_report(
 # =============================================================================
 
 def generate_full_report_for_period(donem: str, analyst_note: Optional[str] = None,
-                                     out_path: Optional[str] = None) -> str:
+                                     out_path: Optional[str] = None,
+                                     birim: Optional[str] = None) -> str:
     """
     app.py içindeki yeni "📄 Rapor" sekmesinden çağrılır. Supabase/EVDS'e utils.py
     üzerinden (yani zaten çalışan Streamlit oturumunun secrets'ı ile) erişir.
@@ -1374,6 +1749,10 @@ def generate_full_report_for_period(donem: str, analyst_note: Optional[str] = No
             df_td = utils.textasdata_prepare_df_hybrid_cpi(df_logs, df_market)
             if not df_td.empty and df_td["delta_bp"].notna().sum() >= 10:
                 model_pack = utils.train_textasdata_hybrid_cpi_ridge(df_td)
+                if model_pack:
+                    # §7.1 "Sıradaki Toplantı İçin Model Tahmini" bu ham öznitelik geçmişine
+                    # ihtiyaç duyar (utils.predict_textasdata_hybrid_cpi'nin df_hist argümanı).
+                    model_pack["df_hist"] = df_td
         except Exception as e:
             print(f"[report_builder] Backtest modeli eğitilemedi (rapor bu bölüm olmadan devam ediyor): {e}")
             model_pack = None
@@ -1383,4 +1762,4 @@ def generate_full_report_for_period(donem: str, analyst_note: Optional[str] = No
 
     return build_report(df_logs, df_events, df_market, abg_df, ai_df, df_sent,
                         donem=donem, model_pack=model_pack, analyst_note=analyst_note,
-                        out_path=out_path)
+                        out_path=out_path, birim=birim)

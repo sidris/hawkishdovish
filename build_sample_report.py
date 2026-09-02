@@ -27,6 +27,28 @@ rng = np.random.default_rng(7)
 # =============================================================================
 
 PERIODS = [
+    # NOT: bu ilk 4 dönem, §7 backtest modelinin iç eşiğini (train_textasdata_hybrid_cpi_ridge
+    # >=10 etiketli gözlem ister) test ortamında da aşabilmek için eklendi — utils.py'deki
+    # GERÇEK eşik değiştirilmedi, sadece test verisi (sentetik geçmiş) uzatıldı. Ayrıca bu,
+    # önceki bir testte gözlemlenen "tarihler 2025'ten başlıyor" durumunu da düzeltir.
+    ("2024-03-21", 50.0, 0,
+     "The Committee has decided to keep the policy rate (the one-week repo auction rate) at 50 percent. "
+     "The tight monetary stance will be maintained decisively until a significant and sustained decline "
+     "in the underlying trend of inflation is achieved. The Committee will continue to make its decisions "
+     "based on the inflation outlook."),
+    ("2024-05-23", 50.0, 0,
+     "The Committee has decided to keep the policy rate (the one-week repo auction rate) at 50 percent. "
+     "Recent indicators point to a continued deceleration in the underlying trend of inflation. "
+     "The Committee reiterated that it remains highly attentive to inflation risks and will maintain "
+     "a tight stance until price stability is achieved."),
+    ("2024-07-18", 50.0, 0,
+     "The Committee has decided to keep the policy rate (the one-week repo auction rate) at 50 percent. "
+     "The Committee assessed that the current tight monetary stance needs to be maintained decisively. "
+     "Domestic demand continues to moderate, supporting the disinflation process."),
+    ("2024-09-12", 50.0, 0,
+     "The Committee has decided to keep the policy rate (the one-week repo auction rate) at 50 percent. "
+     "The underlying trend of inflation has started to slow, in line with the projections in the "
+     "July Inflation Report. The Committee will continue to make its decisions based on the inflation outlook."),
     ("2024-11-07", 50.0, 0,
      "The Committee has decided to keep the policy rate (the one-week repo auction rate) at 50 percent. "
      "The Committee assessed that the current tight monetary stance needs to be maintained decisively "
@@ -254,6 +276,8 @@ if not df_td.empty and df_td["delta_bp"].notna().sum() >= 5:
     # NOT: gerçek uygulamada eşik >=10'dur (bkz. app.py); bu demo veri setinde
     # yalnızca 9 dönem olduğu için burada test amaçlı 5'e düşürüldü.
     model_pack = utils.train_textasdata_hybrid_cpi_ridge(df_td, n_splits=3)
+    if model_pack:
+        model_pack["df_hist"] = df_td
     print("[model_pack metrics]", model_pack.get("metrics"))
 else:
     print("[model_pack] yeterli etiketli gözlem yok, backtest bölümü atlanacak")

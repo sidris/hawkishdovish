@@ -441,6 +441,97 @@ def _tone_gauge_figure(value: Optional[float], regime_label: Optional[str], hyst
     return fig
 
 
+def _abg_trend_figure(abg_df: pd.DataFrame, min_n: int = 5):
+    """
+    ABG endeksinin TÜM TARİHÇESİ — uygulamanın "📊 ABG" sekmesindeki grafikle
+    BİREBİR aynı tasarım (üst panel: 0–2 skalasında endeks + şahin/güvercin
+    arka plan bandı; alt panel: endeksin dayandığı kelime-eşleşme adedi).
+    Tek bir dönemin sayısına bakmak yerine, bu rapor bölümünün ('2.1 ABG')
+    okuyucusunun endeksin tarihsel olarak nasıl davrandığını GÖRMESİ için eklendi.
+
+    min_n: bu eşiğin altındaki dönemler içi BOŞ işaretle çizilir (güvenilmez
+    örneklem) — uygulamadaki varsayılanla tutarlı olsun diye 5 kullanılır
+    (bu raporun başka yerlerinde de "n_match < 5" eşiği zaten kullanılıyor).
+    """
+    if abg_df is None or abg_df.empty or "abg_index" not in abg_df.columns:
+        return None
+    import plotly.graph_objects as go
+    from plotly.subplots import make_subplots
+
+    d = abg_df.copy().sort_values("period_date")
+    for c, v in (("n_match", 0), ("hawk_count", 0), ("dove_count", 0)):
+        if c not in d.columns:
+            d[c] = v
+    if "abg_index_raw" not in d.columns:
+        d["abg_index_raw"] = d["abg_index"]
+    d["guvenilir"] = d["n_match"] >= min_n
+
+    fig = make_subplots(
+        rows=2, cols=1, shared_xaxes=True, row_heights=[0.72, 0.28],
+        vertical_spacing=0.08, subplot_titles=("", "Endeksin dayandığı kelime eşleşmesi (adet)"),
+    )
+    fig.add_hrect(y0=1, y1=2, fillcolor="rgba(192,57,43,0.06)", line_width=0, row=1, col=1)
+    fig.add_hrect(y0=0, y1=1, fillcolor="rgba(31,78,156,0.06)", line_width=0, row=1, col=1)
+    fig.add_trace(go.Scatter(
+        x=d["period_date"], y=d["abg_index"], name="ABG (yumuşatılmış)",
+        line=dict(color="purple", width=3), mode="lines+markers",
+        marker=dict(size=9, color=["purple" if g else "white" for g in d["guvenilir"]],
+                    line=dict(color="purple", width=2)),
+    ), row=1, col=1)
+    fig.add_hline(y=1, line=dict(color="gray", dash="dash", width=1), row=1, col=1)
+    fig.add_annotation(xref="paper", x=0.012, y=1.88, yref="y1", showarrow=False,
+                       text="▲ ŞAHİN", align="left", font=dict(color="#c0392b", size=13),
+                       bgcolor="rgba(192,57,43,0.10)", bordercolor="#c0392b", borderwidth=1, borderpad=6)
+    fig.add_annotation(xref="paper", x=0.012, y=0.12, yref="y1", showarrow=False,
+                       text="▼ GÜVERCİN", align="left", font=dict(color="#1f4e9c", size=13),
+                       bgcolor="rgba(31,78,156,0.10)", bordercolor="#1f4e9c", borderwidth=1, borderpad=6)
+    fig.add_trace(go.Bar(
+        x=d["period_date"], y=d["n_match"], name="Eşleşme adedi",
+        marker=dict(color=["#8e44ad" if g else "#d5b8e0" for g in d["guvenilir"]]),
+    ), row=2, col=1)
+    fig.add_hline(y=min_n, line=dict(color="crimson", dash="dot", width=1), row=2, col=1)
+    fig.update_yaxes(title_text="Şahinlik Endeksi (0–2)", range=[0, 2], row=1, col=1)
+    fig.update_yaxes(title_text="adet", rangemode="tozero", row=2, col=1)
+    fig.update_layout(title="ABG (2019) Endeksi — Tarihsel Seyir (Nötr = 1.0)",
+                      hovermode="x unified", height=560, showlegend=False,
+                      margin=dict(t=70, b=45))
+    return fig
+
+
+def _watch_terms_frequency_figure(df_logs: pd.DataFrame, terms: list):
+    """
+    Uygulamanın "🔍 Frekans" sekmesiyle AYNI mantık (utils.build_watch_terms_timeseries):
+    verilen terimlerin HAM geçiş SAYISINI, dönem dönem, tüm tarihçe boyunca çizer.
+    §3.4'teki "bu dönem vs. önceki dönem" karşılaştırmasını (iki nokta) tarihsel bir
+    TREND'e (çok nokta) genişletir — bu yüzden §3.4'te "en çok değişen" terimler
+    burada otomatik seçilip tarihsel bağlamlarıyla gösterilir.
+    """
+    if df_logs is None or df_logs.empty or not terms:
+        return None
+    if not hasattr(utils, "build_watch_terms_timeseries"):
+        return None
+    ts_df = utils.build_watch_terms_timeseries(df_logs, terms)
+    if ts_df is None or ts_df.empty:
+        return None
+    present = [t for t in terms if t in ts_df.columns]
+    if not present:
+        return None
+    ts_df = ts_df.sort_values("period_date").reset_index(drop=True)
+
+    import plotly.graph_objects as go
+    fig = go.Figure()
+    for term in present:
+        fig.add_trace(go.Scatter(x=ts_df["Donem"], y=ts_df[term], mode="lines+markers", name=term))
+    fig.update_xaxes(tickangle=-45)
+    fig.update_layout(
+        title="Seçili terimlerin geçiş sayısı — dönemler arası (ham adet)",
+        yaxis_title="geçiş sayısı (adet)", height=420, hovermode="x unified",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+        margin=dict(t=90, b=60, l=40, r=20),
+    )
+    return fig
+
+
 def _add_clean_summary_card(doc, rows: list):
     """
     Uygulamanın Streamlit 'Özet' kartına (kalın etiket + renkli değer + soluk
@@ -650,6 +741,9 @@ def _stance_word(diff, deadband):
 
 
 def _exec_summary(donem, abg_row, ai_row, ai_prev_row, sent_ozet, flesch, n_sent, flesch_prev, n_sent_prev):
+    # Üst yönetim için: sonuç önce, gerekçe kısa cümlelerle arkasından. Teknik
+    # detay (okunabilirlik skoru, eşik tanımları vb.) burada DEĞİL, aşağıdaki
+    # "Gösterge Detayları" tablosunda — akış gereksiz teknik ayrıntıyla bölünmesin.
     parts = []
     abg_word = _stance_word((abg_row["abg_index"] - 1.0) if abg_row is not None else None, 0.05)
     ai_word = None
@@ -659,45 +753,32 @@ def _exec_summary(donem, abg_row, ai_row, ai_prev_row, sent_ozet, flesch, n_sent
         ai_regime = ai_row.get("AI Rejim") or ai_row.get("Rejim")
 
     if ai_word and abg_word != "belirsiz":
-        agree = "iki yöntem de aynı yönü işaret ediyor" if ai_word == abg_word else \
-                "iki yöntem farklı yönlere işaret ediyor (bkz. §3.3 Yöntemler Arası Karşılaştırma)"
-        parts.append(
-            f"{donem} dönemi PPK metni, sözlük temelli ABG yöntemine göre {abg_word}, "
-            f"CB-RoBERTa cümle-bazlı modeline göre {ai_word} olarak sınıflandırılmıştır "
-            f"({agree})."
-        )
+        if ai_word == abg_word:
+            parts.append(f"{donem} kararı {ai_word.upper()} — iki bağımsız yöntem (ABG, CB-RoBERTa) de aynı yönü doğruluyor.")
+        else:
+            parts.append(f"{donem} kararında yöntemler ayrışıyor: ABG {abg_word}, CB-RoBERTa {ai_word} "
+                         f"diyor — tek bir skora değil, cümle bazlı döküme (§4) bakılmalı (bkz. §3.3).")
     elif ai_word:
-        parts.append(f"{donem} dönemi PPK metni CB-RoBERTa modeline göre {ai_word} olarak sınıflandırılmıştır.")
+        parts.append(f"{donem} kararı CB-RoBERTa modeline göre {ai_word.upper()}.")
     elif abg_word != "belirsiz":
-        parts.append(f"{donem} dönemi PPK metni ABG yöntemine göre {abg_word} olarak sınıflandırılmıştır.")
+        parts.append(f"{donem} kararı ABG yöntemine göre {abg_word.upper()}.")
 
     if ai_regime:
-        parts.append(f"CB-RoBERTa histerezis rejimi: {ai_regime}.")
+        parts.append(f"Genel iletişim rejimi {ai_regime} — bu, tek dönemin değil son dönemlerin ortalama eğilimidir.")
 
     if ai_row is not None and ai_prev_row is not None:
         d_now = ai_row.get("AI Score (EMA)")
         d_prev = ai_prev_row.get("AI Score (EMA)")
         if pd.notna(d_now) and pd.notna(d_prev):
             delta = d_now - d_prev
-            yon = "yükseldi (şahinleşti)" if delta > 1 else ("düştü (güvercinleşti)" if delta < -1 else "büyük ölçüde değişmedi")
-            parts.append(f"Kalibre edilmiş CB-RoBERTa skoru (EMA) bir önceki döneme göre {yon} "
-                         f"({_fmt_num(d_prev,1)} → {_fmt_num(d_now,1)}).")
+            yon = "şahinleşti" if delta > 1 else ("güvercinleşti" if delta < -1 else "büyük ölçüde değişmedi")
+            parts.append(f"Önceki döneme göre ton {yon} ({_fmt_num(d_prev,1)} → {_fmt_num(d_now,1)}).")
 
-    if sent_ozet:
+    if sent_ozet and sent_ozet.get("n", 0):
         parts.append(
-            f"Cümle bazlı dökümde {sent_ozet.get('n','—')} cümlenin "
-            f"{sent_ozet.get('n_hawk',0)} tanesi şahin, {sent_ozet.get('n_dove',0)} tanesi güvercin, "
-            f"{sent_ozet.get('n_neut',0)} tanesi nötr olarak etiketlenmiştir "
-            f"(eşik = ±{utils.DOC_STANCE_DEADBAND:.2f})."
+            f"{sent_ozet.get('n','—')} cümlenin {sent_ozet.get('n_hawk',0)}'i şahin, "
+            f"{sent_ozet.get('n_dove',0)}'i güvercin, {sent_ozet.get('n_neut',0)}'i nötr (§4)."
         )
-
-    if flesch is not None:
-        d_txt = ""
-        if flesch_prev is not None and pd.notna(flesch_prev):
-            diff = flesch - flesch_prev
-            d_txt = f" (önceki dönem: {flesch_prev:.1f})"
-        parts.append(f"Metnin okunabilirlik skoru (Flesch, İngilizce çeviri üzerinden) {flesch:.1f}{d_txt}, "
-                     f"cümle sayısı {n_sent}{f' (önceki: {n_sent_prev})' if n_sent_prev else ''} olarak ölçülmüştür.")
 
     return " ".join(parts) if parts else "Bu dönem için özetleyici veri bulunamadı."
 
@@ -968,28 +1049,24 @@ def _conclusion(donem, abg_row, ai_row, sent_ozet, backtest_metrics, hit, pos_na
     abg_word = _stance_word((abg_row["abg_index"] - 1.0) if abg_row is not None else None, 0.05)
     ai_word = _stance_word(ai_row.get("Diff (H-D)"), utils.DOC_STANCE_DEADBAND) if ai_row is not None else "belirsiz"
     if ai_word == abg_word and ai_word != "belirsiz":
-        bits.append(f"{donem} kararı iki bağımsız yöntemde de aynı yönde ({ai_word}) sınıflandığı için "
-                    f"genel duruş okuması güvenilir kabul edilebilir.")
+        bits.append(f"{donem} kararı iki bağımsız yöntemde de aynı yönde ({ai_word}) — genel duruş "
+                    f"okuması güvenilir.")
     else:
-        bits.append(f"{donem} kararında yöntemler arasında {('tam' if ai_word==abg_word else 'kısmi')} "
-                    f"uyum var; tek bir skora değil, cümle bazlı döküme (§4) bakılarak karar verilmelidir.")
+        bits.append(f"{donem} kararında yöntemler {('tam' if ai_word==abg_word else 'kısmen')} "
+                    f"uyuşuyor; karar tek bir skora değil, cümle bazlı döküme (§4) dayandırılmalı.")
     if sent_ozet and sent_ozet.get("n", 0) > 0:
         n_hawk, n_dove, n = sent_ozet["n_hawk"], sent_ozet["n_dove"], sent_ozet["n"]
         if n_hawk > 2 * max(n_dove, 1):
-            bits.append("Şahin cümleler güvercin cümlelerin belirgin biçimde üzerindedir; "
-                        "iletişimde net bir sıkı-duruş ağırlığı vardır.")
+            bits.append("Şahin cümleler güvercin cümlelerden belirgin biçimde fazla — iletişimde net bir sıkı-duruş ağırlığı var.")
         elif n_dove > 2 * max(n_hawk, 1):
-            bits.append("Güvercin cümleler şahin cümlelerin belirgin biçimde üzerindedir; "
-                        "iletişimde gevşeme sinyali ağır basmaktadır.")
+            bits.append("Güvercin cümleler şahin cümlelerden belirgin biçimde fazla — iletişimde gevşeme sinyali ağır basıyor.")
         else:
-            bits.append("Şahin ve güvercin cümle sayıları birbirine yakındır; metin karışık/dengeli bir "
-                        "ton taşımaktadır — tek yönlü bir okuma yapmak yanıltıcı olabilir.")
+            bits.append("Şahin ve güvercin cümle sayıları birbirine yakın; metin karışık/dengeli bir ton taşıyor — tek yönlü bir okuma yanıltıcı olabilir.")
     if backtest_metrics and not pd.isna(backtest_metrics.get("r2", np.nan)):
         r2 = backtest_metrics["r2"]
         guven = "düşük" if r2 < 0.1 else ("orta" if r2 < 0.4 else "yüksek")
-        bits.append(f"Metin-temelli faiz tahmin modelinin tarihsel açıklama gücü ({guven}, R²={r2:.2f}) "
-                    f"göz önünde bulundurulduğunda, bu raporun sinyalleri YÖNLENDİRİCİ değil "
-                    f"DESTEKLEYİCİ bilgi olarak kullanılmalıdır.")
+        bits.append(f"Metin-temelli faiz tahmin modelinin tarihsel açıklama gücü {guven} (R²={r2:.2f}) — "
+                    f"raporun sinyalleri YÖNLENDİRİCİ değil DESTEKLEYİCİ bilgi olarak kullanılmalı.")
     if pos_narrative_short:
         bits.append(pos_narrative_short)
     return " ".join(bits)
@@ -1074,6 +1151,10 @@ def build_report(
         sp = df_sent[df_sent["Donem"] == prev_donem]
         n_sent_prev = len(sp) if not sp.empty else None
 
+    # Sıradaki toplantı tahmini BİR KEZ hesaplanır (§1'deki yönetim özeti satırında
+    # ve §7.1'de aynı sonuç tekrar kullanılır — iki kez model çağırmaya gerek yok).
+    next_pred = _next_meeting_prediction(model_pack, donem, text_now, df_logs)
+
     # =========================================================================
     # KAPAK + İÇ SAYFA ÜSTBİLGİSİ (TCMB rapor şablonuyla uyumlu)
     # =========================================================================
@@ -1084,6 +1165,21 @@ def build_report(
     # 1. YÖNETİCİ ÖZETİ
     # =========================================================================
     _add_heading(doc, "1. Yönetici Özeti", level=1)
+
+    # ---- Yönetim için tek cümlelik sonuç (BLUF — bottom-line-up-front) ----
+    _bluf_ai_word = _stance_word(ai_row.get("Diff (H-D)"), utils.DOC_STANCE_DEADBAND) if ai_row is not None else "belirsiz"
+    _bluf_regime = str(ai_row.get("AI Rejim", ai_row.get("Rejim", "—"))) if ai_row is not None else None
+    _bluf_bits = []
+    if _bluf_ai_word != "belirsiz":
+        _bluf_bits.append(f"{donem} kararı {_bluf_ai_word.upper()}")
+        if _bluf_regime:
+            _bluf_bits.append(f"genel rejim {_bluf_regime}")
+    if next_pred:
+        _bluf_bits.append(f"model sıradaki toplantı için {next_pred['pred_bp']:+.0f} bp "
+                          f"{next_pred['yon'].lower()} öngörüyor")
+    if _bluf_bits:
+        _add_takeaway(doc, "; ".join(_bluf_bits).capitalize() + ".", label="Yönetim İçin Sonuç:")
+
     doc.add_paragraph(_exec_summary(donem, abg_row, ai_row, ai_row_prev, sent_ozet,
                                      flesch_now, n_sent_now, flesch_prev, n_sent_prev))
 
@@ -1210,6 +1306,15 @@ def build_report(
         f"özet tabloda birlikte gösterilir; ayrıca kaç eşleşmeye (n_match) dayandığı da raporlanır "
         f"— düşük n_match, endeksin güvenilir biçimde yorumlanamayacağının işaretidir."
     )
+    try:
+        _fig_abg = _abg_trend_figure(abg_df, min_n=5)
+        if _fig_abg is not None:
+            _add_figure(doc, _fig_abg, png_height=780,
+                caption="İçi dolu nokta = güvenilir örneklem (≥5 eşleşme); içi boş nokta = düşük "
+                        "örneklem, yorumlanmamalı. Alt panel, endeksin dayandığı kelime sayısını "
+                        "gösterir — üst panelin ne kadar 'kanıta dayalı' olduğunun göstergesidir.")
+    except Exception as e:
+        _add_note(doc, f"ABG tarihsel grafiği üretilemedi: {e}")
     _add_heading(doc, "2.2 CB-RoBERTa — cümle bazlı model, ton ve rejim ayrımı", level=2)
     doc.add_paragraph(
         "Şahin/güvercin sınıflandırması, TCMB PPK metinleri üzerinde eğitilmiş bir RoBERTa "
@@ -1332,14 +1437,26 @@ def build_report(
     if text_now and text_prev:
         shift_rows = _lexical_shift_rows(text_now, text_prev, top_k=14)
         doc.add_paragraph(
-            "Aşağıdaki tablo, önceki metne göre YENİ ORTAYA ÇIKAN, KAYBOLAN ya da belirgin biçimde "
-            "GÜÇLENEN/ZAYIFLAYAN kelime ve iki-kelimelik ifadeleri listeler. Sayılar ham geçiş adedi "
-            "değil, 1000 kelime başına orandır (‰) — böylece metin uzunluğu dönemden döneme "
-            "değişse bile karşılaştırma anlamlı kalır. Bu, tek tek şahin/güvercin kelime sayımının "
-            "(§2.1 ABG) ötesinde, iletişimin HANGİ SÖZCÜKLERİNİN öne çıktığını/geri çekildiğini gösterir."
+            "Bu bölüm tek bir soruya bakar: metinde SÖZ DAĞARCIĞI önceki toplantıya göre nasıl "
+            "değişti — hangi kelime/ifade YENİ girdi, hangisi DÜŞTÜ, hangisi belirgin biçimde "
+            "GÜÇLENDİ ya da ZAYIFLADI? Bu, §2.1'deki şahin/güvercin kelime sayımından farklıdır: "
+            "orada sadece ÖNCEDEN TANIMLI bir sözlük taranır; burada ise metnin TAMAMI, iki dönem "
+            "arasında karşılaştırılır. Sayılar ham adet değil, 1000 kelime başına orandır (‰) — "
+            "metin uzunluğu dönemden döneme değişse bile karşılaştırma anlamlı kalır."
         )
         if shift_rows:
             _df_to_table(doc, pd.DataFrame(shift_rows), font_size=8)
+            top_terms = [r["İfade"] for r in shift_rows[:8]]
+            try:
+                _fig_freq = _watch_terms_frequency_figure(df_logs, top_terms)
+                if _fig_freq is not None:
+                    _add_figure(doc, _fig_freq,
+                        caption="Yukarıdaki tabloda en çok değişen 8 ifadenin TÜM tarihçedeki geçiş "
+                                "sayısı — tabloyu (iki nokta: bu dönem / önceki dönem) bir TREND'e "
+                                "genişletir; bir sıçramanın tek seferlik mi yoksa süregelen bir eğilimin "
+                                "parçası mı olduğu buradan görülür.")
+            except Exception as e:
+                _add_note(doc, f"Frekans grafiği üretilemedi: {e}")
         else:
             _add_note(doc, "İki dönem arasında eşiği aşan belirgin bir sözcük/ifade değişimi tespit edilmedi.")
         _add_note(doc, "Bu liste anahtar-kelime frekansına dayanır; bir ifadenin şahin/güvercin "
@@ -1377,6 +1494,17 @@ def build_report(
         )
         _add_sentence_highlight_paragraph(doc, sent_period, utils.DOC_STANCE_DEADBAND)
 
+        _add_note(doc,
+            "'İlgili Kesim' sütunu ayrı bir model tarafından üretilir "
+            "(Moritz-Pfeifer/CentralBankRoBERTa-agent-classifier) ve cümlenin KİME HİTAP ETTİĞİNİ "
+            "DEĞİL, cümlenin ekonomik içeriğinin KİMİN DURUMUYLA İLGİLİ olduğunu sınıflandırır — "
+            "Hanehalkı / Firmalar / Finansal Sektör / Kamu / Merkez Bankası'ndan biri. Örneğin "
+            "\"ücretler enflasyonun üzerinde arttı\" cümlesi çoğu zaman 'Hanehalkı' çıkar, çünkü "
+            "fiyatı ödeyip reel geliri aşınan taraf hanehalkıdır — bu, metnin hanehalkına 'seslendiği' "
+            "anlamına gelmez. Faiz kararını ve duruş taahhüdünü doğrudan bildiren cümleler ise "
+            "genelde 'Merkez Bankası' çıkar. Bu sütunu 'kime hitap ediyor' değil, 'kimin ekonomik "
+            "durumunu anlatıyor' olarak okuyun.",
+            label="Metodoloji — 'İlgili Kesim' nasıl belirlenir:")
         _add_heading(doc, "En şahin ifadeler", level=2)
         _df_to_table(doc, sahin_df.rename(columns={
             "sent_idx": "#", "sentence": "Cümle", "diff": "Ton",
@@ -1454,6 +1582,19 @@ def build_report(
 
         dvg = utils.divergence_table(df_sent, "theme_label")
         _add_heading(doc, "5.3 Konu bazlı özet (tüm dönemler)", level=2)
+        doc.add_paragraph(
+            "§5.1 ve §5.2 konuyu DÖNEM DÖNEM gösterdi; bu tablo aynı konuları TÜM TARİHÇE "
+            "boyunca TEK BİR SATIRDA birleştirir — her konunun 'ortalama karnesi'dir. Nasıl "
+            "okunur: 'Ort. Ton' o konunun bugüne kadar ortalama olarak ne kadar şahin/güvercin "
+            "işlendiğini, 'Std' bu tonun dönemden döneme NE KADAR OYNADIĞINI (yüksekse konu "
+            "istikrarsız/duruma göre değişken ele alınmış, düşükse hep aynı çizgide işlenmiş), "
+            "'Dönem' o konunun kaç FARKLI toplantıda hiç gündeme geldiğini gösterir — bu sayı "
+            "küçükse (ör. 1-2), o satırdaki ortalamayı güvenilir bir eğilim değil, tek seferlik "
+            "bir gözlem olarak okuyun. Pratik sonuç: listenin ÜSTÜNDEKİ konular tarihsel olarak "
+            "en şahin işlenen, EN ALTTAKİLER en güvercin işlenen konulardır; yüksek 'Dönem' ve "
+            "düşük 'Std' ile birleşen bir satır, üzerinde en çok durulabilecek güvenilir bir "
+            "sinyaldir."
+        )
         _df_to_table(doc, dvg.rename(columns={"theme_label": "Konu"}))
     else:
         _add_note(doc, "Konu analizi için cümle önbelleği gerekli; bulunamadı.")
@@ -1494,8 +1635,9 @@ def build_report(
         "geçmiş performans (backtest) detayları yer alır.")
 
     # ---- SIRADAKİ TOPLANTI TAHMİNİ — önce sonuç, detay altta ----
+    # (next_pred bu fonksiyonun başında, §1'deki "Yönetim İçin Sonuç" satırı için
+    # zaten hesaplanmıştı — burada aynı sonuç tekrar kullanılır.)
     _add_heading(doc, "7.1 Sıradaki Toplantı İçin Model Tahmini", level=2)
-    next_pred = _next_meeting_prediction(model_pack, donem, text_now, df_logs)
     if next_pred:
         _yon_renk = {"ARTIRIM": "C0392B", "İNDİRİM": "1F4E9C", "SABİT": "7F7F7F"}[next_pred["yon"]]
         _label_donem = ("sıradaki toplantı (canlı)" if next_pred["is_live_forecast"]

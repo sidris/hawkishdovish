@@ -1253,12 +1253,10 @@ def build_report(
         except Exception as e:
             _add_note(doc, f"Gösterge grafiği üretilemedi: {e}")
 
-    # ---- özet tablo (detaylı: yöntem/ölçek/eşik) ----
-    # Her göstergenin NE ölçtüğü ve hangi ölçek/eşik üzerinden okunduğu, değerin
-    # kendisiyle birlikte gösterilir — aksi halde (ör. "ABG=1.00" ile "CB-RoBERTa
-    # ton=+0.26" yan yana) okuyucu iki sayının aynı şeyi mi ölçtüğünü sanabilir.
-    # (Yukarıdaki temiz kart hızlı okuma için; bu tablo merak edenler için detaydır.)
-    _add_heading(doc, "Gösterge Detayları (ölçek, eşik, yöntem notu)", level=2)
+    # ---- özet tablo (detaylı: yöntem/ölçek/eşik) — GÖVDEDEN EK A.0'A TAŞINDI ----
+    # Yukarıdaki temiz kart hızlı okuma için yeterlidir; her göstergenin ölçek/eşik/
+    # yöntem notuyla birlikte döküldüğü detaylı tablo artık Ek A.0'da (üst yönetim
+    # ana akışta bu yoğun tabloyla karşılaşmasın diye).
     summary_rows = []
     if abg_row is not None:
         summary_rows.append({
@@ -1304,13 +1302,7 @@ def build_report(
             "Önceki dönem": str(n_sent_prev) if n_sent_prev else "—",
             "Not": "",
         })
-    _df_to_table(doc, pd.DataFrame(summary_rows), font_size=8)
-    _add_note(doc, "Bu raporun tüm sayısal göstergeleri, aşağıdaki §2 Yöntem bölümünde tanımlanan "
-                   "eşikler ve dönüşümlerle üretilmiştir; farklı bir eşikle yeniden hesaplanırsa "
-                   "farklı bir 'şahin/güvercin' etiketi çıkabilir. Yukarıdaki göstergeler FARKLI "
-                   "ŞEYLER ölçer (bkz. 'Ölçtüğü şey' kolonu) — sayıca birbirine yakın/uzak olmaları "
-                   "tek başına bir tutarlılık/tutarsızlık kanıtı değildir; yöntemler arası "
-                   "karşılaştırma için bkz. §3.3.")
+    doc.add_paragraph("Göstergelerin ölçek/eşik tanımlarıyla birlikte detaylı dökümü: Ek A.0.")
 
     # =========================================================================
     # 2. YÖNTEM
@@ -1638,13 +1630,10 @@ def build_report(
         _add_clean_summary_card(doc, pred_rows)
         if next_pred["is_live_forecast"]:
             _add_note(doc,
-                "Bu tahmin, elde bulunan EN GÜNCEL yayımlanmış PPK metnini (bu raporun kendi "
-                "dönemi) 'sözlü yönlendirme' sinyali olarak kullanır, çünkü bir sonraki (henüz "
-                "toplanmamış) toplantının metni doğası gereği MEVCUT DEĞİLDİR — hiçbir metin "
-                "modeli bunu gerçek anlamda göremez. Bu nedenle bu bir 'kehanet' değil, 'mevcut "
-                "iletişim tarzı ve makro seyir sürerse modelin ne beklediği' sorusunun cevabıdır. "
-                "Belirsizlik aralığı geniştir ve tek başına bir işlem/pozisyon kararının dayanağı "
-                "olarak kullanılmamalıdır — bkz. §7.2'deki tarihsel isabet oranı.",
+                "Bir 'kehanet' değil, 'mevcut iletişim tarzı ve makro seyir sürerse modelin ne "
+                "beklediği' sorusunun cevabıdır — henüz toplanmamış toplantının metni doğası "
+                "gereği mevcut değildir. Belirsizlik aralığı geniştir; tek başına bir işlem/"
+                "pozisyon kararının dayanağı olarak kullanılmamalıdır (tarihsel isabet oranı: §7.2).",
                 label="Yöntem sınırlaması:")
         else:
             _add_note(doc,
@@ -1737,33 +1726,6 @@ def build_report(
     doc.add_paragraph(_conclusion(donem, abg_row, ai_row, sent_ozet, backtest_metrics, hit, pos_short))
 
     # =========================================================================
-    # 10. KISALTMALAR VE SÖZLÜK
-    # =========================================================================
-    _add_heading(doc, "10. Kısaltmalar ve Sözlük", level=1)
-    glossary = [
-        ("ABG", "Apel & Blix-Grimaldi (2019) — sözlük/kural temelli şahin-güvercin ölçüm yöntemi."),
-        ("CB-RoBERTa", "Bu raporun kullandığı model: mrince/CBRT-RoBERTa-HawkishDovish-Classifier "
-                       "(Hugging Face). Taban model FacebookAI/roberta-base'dir; TCMB PPK özet "
-                       "metinlerinden çıkarılmış ~7.200 gerçek cümleyle 3 sınıf (hawkish/dovish/"
-                       "neutral) için fine-tune edilmiştir. Genel amaçlı bir duygu (pozitif/negatif) "
-                       "sınıflandırıcısı DEĞİLDİR ve Fed konuşmalarıyla eğitilmiş, benzer isimli başka "
-                       "akademik modellerle karıştırılmamalıdır — bu, TCMB metinlerine özel bir modeldir."),
-        ("Ton / Rejim", "Ton = o dönemin ham/kalibre skoru; Rejim = EMA + histerezis bandıyla yumuşatılmış, ani sıçramalara karşı dirençli etiket."),
-        ("EMA", "Üstel hareketli ortalama (Exponentially Weighted Moving Average) — yakın dönemlere daha çok ağırlık veren yumuşatma yöntemi."),
-        ("Histerezis bandı", "Rejim etiketinin değişmesi için skorun belirli bir eşiği aşması gerektiği; küçük dalgalanmalarda önceki rejimin korunmasını sağlayan mekanizma."),
-        ("Deadband (eşik)", f"Bir cümlenin/dokümanın şahin, güvercin ya da nötr sayılması için ton skorunun aşması gereken sınır (bu raporda cümle düzeyinde ±{utils.DOC_STANCE_DEADBAND:.2f})."),
-        ("n_match", "ABG yönteminde tespit edilen toplam şahin+güvercin kelime eşleşmesi sayısı; düşükse endeks güvenilir yorumlanamaz."),
-        ("AOFM", "Ağırlıklı Ortalama Fonlama Maliyeti — TCMB'nin fiilen uyguladığı ortalama fonlama faizi (ilan edilen politika faizinden farklı olabilir)."),
-        ("PKA / İYA / HBA 12 Ay Enflasyon Beklentisi", "Piyasa Katılımcıları / İmalat Sanayi Anketi / Hanehalkı Anketi kaynaklı, gelecek 12 aya dair enflasyon beklentisi serileri."),
-        ("TÜFE", "Tüketici Fiyat Endeksi (CPI)."),
-        ("delta_bp", "İki ardışık PPK kararı arasındaki politika faizi değişimi, baz puan cinsinden (100 bp = 1 puan)."),
-        ("MAE / RMSE / R²", "Tahmin hatasının ortalama mutlak değeri / kök ortalama kare hatası / modelin açıkladığı varyans oranı — üçü de standart regresyon performans ölçütleridir."),
-        ("Yön isabet oranı (hit-rate)", "Tahmin edilen faiz hareketinin yönünün (artış/indirim) gerçekleşenle örtüşme oranı; mevcut kod tabanında bulunmadığı için bu rapor için eklenmiştir."),
-    ]
-    gdf = pd.DataFrame(glossary, columns=["Terim", "Açıklama"])
-    _df_to_table(doc, gdf, col_widths_in=[1.6, 4.9])
-
-    # =========================================================================
     # EK A: YÖNTEM NOTLARI (DETAYLI)
     # =========================================================================
     # Rapor gövdesindeki her "Nasıl okunur / Ayrıntı" paragrafı bilerek TEK CÜMLEYE
@@ -1777,6 +1739,15 @@ def build_report(
         "içerir. Ana bölümlerin (§1-9) anlaşılması için gerekli değildir; yönteme dair "
         "sorularınız olursa buraya başvurun."
     ).italic = True
+
+    _add_heading(doc, "A.0 — Gösterge Detayları (ölçek, eşik, yöntem notu; bkz. §1)", level=2)
+    _df_to_table(doc, pd.DataFrame(summary_rows), font_size=8)
+    _add_note(doc, "Bu raporun tüm sayısal göstergeleri, §2 Yöntem bölümünde tanımlanan "
+                   "eşikler ve dönüşümlerle üretilmiştir; farklı bir eşikle yeniden hesaplanırsa "
+                   "farklı bir 'şahin/güvercin' etiketi çıkabilir. Yukarıdaki göstergeler FARKLI "
+                   "ŞEYLER ölçer (bkz. 'Ölçtüğü şey' kolonu) — sayıca birbirine yakın/uzak olmaları "
+                   "tek başına bir tutarlılık/tutarsızlık kanıtı değildir; yöntemler arası "
+                   "karşılaştırma için bkz. §3.3.")
 
     _add_heading(doc, "A.1 — ABG (2019) Endeksi (bkz. §2.1)", level=2)
     doc.add_paragraph(
@@ -1897,6 +1868,34 @@ def build_report(
         "seçimi ise bu iskeletin daha basit/yorumlanabilir bir versiyonudur — R²/MAE/hit-rate "
         "değerleri (§7.2) bu basit temsilin BU örneklemde ne kadar işe yaradığının doğrudan kanıtıdır.",
         label="Bilimsel dayanak:")
+
+    # =========================================================================
+    # EK B: KISALTMALAR VE SÖZLÜK
+    # =========================================================================
+    doc.add_page_break()
+    _add_heading(doc, "Ek B: Kısaltmalar ve Sözlük", level=1)
+    glossary = [
+        ("ABG", "Apel & Blix-Grimaldi (2019) — sözlük/kural temelli şahin-güvercin ölçüm yöntemi."),
+        ("CB-RoBERTa", "Bu raporun kullandığı model: mrince/CBRT-RoBERTa-HawkishDovish-Classifier "
+                       "(Hugging Face). Taban model FacebookAI/roberta-base'dir; TCMB PPK özet "
+                       "metinlerinden çıkarılmış ~7.200 gerçek cümleyle 3 sınıf (hawkish/dovish/"
+                       "neutral) için fine-tune edilmiştir. Genel amaçlı bir duygu (pozitif/negatif) "
+                       "sınıflandırıcısı DEĞİLDİR ve Fed konuşmalarıyla eğitilmiş, benzer isimli başka "
+                       "akademik modellerle karıştırılmamalıdır — bu, TCMB metinlerine özel bir modeldir."),
+        ("Ton / Rejim", "Ton = o dönemin ham/kalibre skoru; Rejim = EMA + histerezis bandıyla yumuşatılmış, ani sıçramalara karşı dirençli etiket."),
+        ("EMA", "Üstel hareketli ortalama (Exponentially Weighted Moving Average) — yakın dönemlere daha çok ağırlık veren yumuşatma yöntemi."),
+        ("Histerezis bandı", "Rejim etiketinin değişmesi için skorun belirli bir eşiği aşması gerektiği; küçük dalgalanmalarda önceki rejimin korunmasını sağlayan mekanizma."),
+        ("Deadband (eşik)", f"Bir cümlenin/dokümanın şahin, güvercin ya da nötr sayılması için ton skorunun aşması gereken sınır (bu raporda cümle düzeyinde ±{utils.DOC_STANCE_DEADBAND:.2f})."),
+        ("n_match", "ABG yönteminde tespit edilen toplam şahin+güvercin kelime eşleşmesi sayısı; düşükse endeks güvenilir yorumlanamaz."),
+        ("AOFM", "Ağırlıklı Ortalama Fonlama Maliyeti — TCMB'nin fiilen uyguladığı ortalama fonlama faizi (ilan edilen politika faizinden farklı olabilir)."),
+        ("PKA / İYA / HBA 12 Ay Enflasyon Beklentisi", "Piyasa Katılımcıları / İmalat Sanayi Anketi / Hanehalkı Anketi kaynaklı, gelecek 12 aya dair enflasyon beklentisi serileri."),
+        ("TÜFE", "Tüketici Fiyat Endeksi (CPI)."),
+        ("delta_bp", "İki ardışık PPK kararı arasındaki politika faizi değişimi, baz puan cinsinden (100 bp = 1 puan)."),
+        ("MAE / RMSE / R²", "Tahmin hatasının ortalama mutlak değeri / kök ortalama kare hatası / modelin açıkladığı varyans oranı — üçü de standart regresyon performans ölçütleridir."),
+        ("Yön isabet oranı (hit-rate)", "Tahmin edilen faiz hareketinin yönünün (artış/indirim) gerçekleşenle örtüşme oranı; mevcut kod tabanında bulunmadığı için bu rapor için eklenmiştir."),
+    ]
+    gdf = pd.DataFrame(glossary, columns=["Terim", "Açıklama"])
+    _df_to_table(doc, gdf, col_widths_in=[1.6, 4.9])
 
     # =========================================================================
     # EK: VERİ KALİTESİ

@@ -97,18 +97,26 @@ def fetch_all_data():
         return pd.DataFrame()
 
 def insert_entry(date, text, source, s_dict, s_abg):
+    # NOT: 'score_dict' kolonu kod tabanının HİÇBİR yerinde geri okunmuyor —
+    # ölü bir sütun. Önceden çağıranlar (app.py) s_abg değerini yanılt��cı
+    # biçimde hem s_dict hem s_abg parametresine geçiriyordu; bu, sanki ayrı,
+    # hesaplanmış bir 'sözlük skoru' varmış izlenimi veriyordu. s_dict
+    # parametresi geriye dönük uyumluluk için imzada duruyor ama artık DB'ye
+    # YAZILMIYOR — score_dict yerine dürüstçe None/NULL yazılır (hesaplanan
+    # ayrı bir değer olmadığını yansıtır).
     if not supabase: return
     try:
         data = {"period_date": str(date), "text_content": text, "source": source,
-            "score_dict": s_dict, "score_abg": s_abg}
+            "score_dict": None, "score_abg": s_abg}
         supabase.table("market_logs").insert(data).execute()
     except Exception: pass
 
 def update_entry(rid, date, text, source, s_dict, s_abg):
+    # bkz. insert_entry'deki not — score_dict artık her zaman None yazılır.
     if not supabase: return
     try:
         data = {"period_date": str(date), "text_content": text, "source": source,
-            "score_dict": s_dict, "score_abg": s_abg}
+            "score_dict": None, "score_abg": s_abg}
         supabase.table("market_logs").update(data).eq("id", rid).execute()
     except Exception: pass
 

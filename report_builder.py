@@ -1268,11 +1268,11 @@ def build_report(
     if ai_row is not None:
         summary_rows.append({
             "Gösterge": "CB-RoBERTa — ton (Diff H-D)",
-            "Ölçtüğü şey": "Cümle-bazlı modelin bu dönemin HAM tonu (P(Şahin)−P(Güvercin), karar cümlesi ağırlıklı)",
+            "Ölçtüğü şey": "Cümle-bazlı modelin bu dönemin HAM tonu (P(Şahin)−P(Güvercin), cümlelerin ağırlıksız ortalaması)",
             "Ölçek / Eşik": f"-1..+1  (±{utils.DOC_STANCE_DEADBAND:.2f} = şahin/nötr/güvercin eşiği)",
             "Değer": f"{ai_row.get('Diff (H-D)', float('nan')):+.3f}  ({ai_row.get('Duruş','—')})",
             "Önceki dönem": f"{ai_row_prev.get('Diff (H-D)', float('nan')):+.3f}" if ai_row_prev is not None else "—",
-            "Not": "cümle-bazlı, karar-ağırlıklı kanonik sinyal",
+            "Not": "cümle-bazlı, eşit-ağırlıklı kanonik sinyal",
         })
         summary_rows.append({
             "Gösterge": "CB-RoBERTa — rejim (histerezis, EMA)",
@@ -1333,7 +1333,8 @@ def build_report(
     doc.add_paragraph(
         "TCMB metinleri üzerinde eğitilmiş bir RoBERTa modeli (mrince/CBRT-RoBERTa-"
         "HawkishDovish-Classifier), her cümle için ton = P(Şahin) − P(Güvercin) hesaplar; "
-        "kararı doğrudan bildiren cümle daha ağırlıklıdır. 'Ton' (o dönemin ham skoru) ile "
+        "dönemin tonu bu cümle skorlarının AĞIRLIKSIZ ortalamasıdır (karar cümlesi dahil, "
+        "diğerleriyle eşit ağırlıkta). 'Ton' (o dönemin ham skoru) ile "
         "'Rejim' (🦅/🕊️/⚖️ — EMA + histerezis bandıyla yumuşatılmış etiket) FARKLI şeylerdir: "
         "bir dönemin ham tonu şahine yakın olsa bile rejim etiketi hâlâ 'Nötr' görünebilir — "
         "bu bir hata değil, ani sıçramaları önleyen tasarımdır. (Ayrıntı: Ek A.2)"
@@ -1786,10 +1787,26 @@ def build_report(
         "modeli (mrince/CBRT-RoBERTa-HawkishDovish-Classifier) ile CÜMLE düzeyinde yapılır "
         "(tam metin tek seferde verilirse hem 512 token sınırına takılır hem de literatürdeki "
         "yöntemle [Apel & Blix Grimaldi; Picault & Renault] tutarsız olurdu). Her cümle için "
-        "ton = P(Şahin) − P(Güvercin) hesaplanır; kararı doğrudan bildiren cümle "
-        f"({utils.DOC_ACTION_WEIGHT:.0f}× ağırlıkla) diğerlerinden daha belirleyicidir. "
+        "ton = P(Şahin) − P(Güvercin) hesaplanır; dönemin KANONİK tonu bu cümle skorlarının "
+        "AĞIRLIKSIZ (eşit-ağırlıklı) ortalamasıdır — kararı doğrudan bildiren cümle, tondaki "
+        "payı bakımından diğer cümlelerden daha belirleyici DEĞİLDİR. (Kararı bildiren cümle "
+        "ayrıca, tondan BAĞIMSIZ bir mekanizmayla, o dönemin aksiyon etiketini — faiz artış/"
+        "indirim/sabit — ve gerçekleşen baz puan değişimini çıkarmak için kullanılır; bu, tonu "
+        "etkilemez.) "
         f"Cümle bazında şahin/güvercin/nötr ayrımı ±{utils.DOC_STANCE_DEADBAND:.2f}'lik tek bir "
         "eşikle (deadband) yapılır ve bu rapordaki TÜM cümle sayımları bu eşiği kullanır."
+    )
+    doc.add_paragraph(
+        "Şeffaflık notu: kodda karar cümlesine ekstra ağırlık veren bir mekanizma "
+        f"(DOC_ACTION_WEIGHT={utils.DOC_ACTION_WEIGHT:.0f}×) mevcuttur, ancak dönemin "
+        "raporlanan/görüntülenen tonu bu ağırlıklı değeri DEĞİL, ağırlıksız ortalamayı "
+        "kullanır — ağırlıklı değer hesaplanır ama hiçbir grafik/tabloda gösterilmez "
+        "(ölü kod). Bu rapor önceki bir sürümde yanlışlıkla ağırlıklı hesaplamayı "
+        "anlatıyordu; metin gerçek kod davranışına göre düzeltilmiştir. Eşit ağırlıklı "
+        "yaklaşımın kendisi bilimsel açıdan sorunlu değildir: ABG'nin kendi makalesi de "
+        "(Apel, Blix Grimaldi & Hull, 2019, WP 381, dipnot 8) \"equally-weighted "
+        "specification\" kullandığını, yani her cümlenin/eşleşmenin eşit ağırlık "
+        "taşıdığını açıkça belirtir."
     )
     doc.add_paragraph(
         "TON (o dönemin ham/kalibre skoru) ile REJİM (🦅/🕊️/⚖️ etiketi) FARKLI şeylerdir: "

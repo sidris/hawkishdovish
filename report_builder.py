@@ -444,7 +444,7 @@ def _tone_gauge_figure(value: Optional[float], regime_label: Optional[str], hyst
 def _abg_trend_figure(abg_df: pd.DataFrame, min_n: int = 5):
     """
     ABG endeksinin TÜM TARİHÇESİ — uygulamanın "📊 ABG" sekmesindeki grafikle
-    BİREBİR aynı tasarım (üst panel: 0–2 skalasında endeks + şahin/güvercin
+    BİREBİR aynı tasarım (üst panel: [0,2] skalasında endeks + şahin/güvercin
     arka plan bandı; alt panel: endeksin dayandığı kelime-eşleşme adedi).
     Tek bir dönemin sayısına bakmak yerine, bu rapor bölümünün ('2.1 ABG')
     okuyucusunun endeksin tarihsel olarak nasıl davrandığını GÖRMESİ için eklendi.
@@ -462,8 +462,6 @@ def _abg_trend_figure(abg_df: pd.DataFrame, min_n: int = 5):
     for c, v in (("n_match", 0), ("hawk_count", 0), ("dove_count", 0)):
         if c not in d.columns:
             d[c] = v
-    if "abg_index_raw" not in d.columns:
-        d["abg_index_raw"] = d["abg_index"]
     d["guvenilir"] = d["n_match"] >= min_n
 
     fig = make_subplots(
@@ -473,7 +471,7 @@ def _abg_trend_figure(abg_df: pd.DataFrame, min_n: int = 5):
     fig.add_hrect(y0=1, y1=2, fillcolor="rgba(192,57,43,0.06)", line_width=0, row=1, col=1)
     fig.add_hrect(y0=0, y1=1, fillcolor="rgba(31,78,156,0.06)", line_width=0, row=1, col=1)
     fig.add_trace(go.Scatter(
-        x=d["period_date"], y=d["abg_index"], name="ABG (yumuşatılmış)",
+        x=d["period_date"], y=d["abg_index"], name="ABG Net Hawkishness Endeksi",
         line=dict(color="purple", width=3), mode="lines+markers",
         marker=dict(size=9, color=["purple" if g else "white" for g in d["guvenilir"]],
                     line=dict(color="purple", width=2)),
@@ -1260,10 +1258,10 @@ def build_report(
     summary_rows = []
     if abg_row is not None:
         summary_rows.append({
-            "Gösterge": "ABG (2019) — yumuşatılmış endeks",
+            "Gösterge": "ABG (2019) — Net Hawkishness Index",
             "Ölçtüğü şey": "Sözlük/kural tabanlı şahin-güvercin kelime dengesi (tüm metne bakar)",
             "Ölçek / Eşik": "0–2  (1.00 = nötr; >1 şahin, <1 güvercin)",
-            "Değer": f"{abg_row['abg_index']:.3f}  (ham: {abg_row.get('abg_index_raw', float('nan')):.3f})",
+            "Değer": f"{abg_row['abg_index']:.3f}",
             "Önceki dönem": f"{abg_row_prev['abg_index']:.3f}" if abg_row_prev is not None else "—",
             "Not": f"n_match={int(abg_row.get('n_match', 0))} — {'DÜŞÜK ÖRNEKLEM, ihtiyatlı yorumlayın' if abg_row.get('n_match', 0) < 5 else 'yeterli örneklem'}",
         })
@@ -1315,13 +1313,12 @@ def build_report(
         "(§4) bakılmalıdır. Aşağıdaki alt başlıklar bu yöntemlerin teknik detaylarıdır — "
         "sadece sonucu merak ediyorsanız §1'e dönebilirsiniz.")
 
-    _add_heading(doc, "2.1 ABG (Apel & Blix-Grimaldi, 2019) — sözlük temelli endeks", level=2)
+    _add_heading(doc, "2.1 ABG (Apel, Blix Grimaldi & Hull, 2019) — sözlük temelli endeks", level=2)
     doc.add_paragraph(
         "Metindeki enflasyon/faaliyet/istihdam çapa kelimelerinin çevresinde şahin-güvercin "
-        "yönlü kalıpları sayan, sözlük tabanlı bir yöntemdir (0–2 skala, 1.00 = nötr). Az "
-        "sayıda eşleşmede uçlara yapışmayı önlemek için endeks yumuşatılmıştır; düşük eşleşme "
-        "sayısı (n_match), sonucun güvenilir yorumlanamayacağının işaretidir. (Formül ve "
-        "gerekçe: Ek A.1)"
+        "yönlü kalıpları sayan, sözlük tabanlı bir yöntemdir (0–2 skala, 1.00 = nötr). Düşük "
+        "eşleşme sayısı (n_match), sonucun güvenilir yorumlanamayacağının işaretidir. "
+        "(Formül ve gerekçe: Ek A.1)"
     )
     try:
         _fig_abg = _abg_trend_figure(abg_df, min_n=5)
@@ -1379,7 +1376,7 @@ def build_report(
         s_abg, h_cnt, d_cnt, h_list, d_list, h_ctx, d_ctx, _ = utils.run_full_analysis(text_now)
         doc.add_paragraph(
             f"Bu dönemde ABG yöntemi {h_cnt} şahin, {d_cnt} güvercin modifikatör eşleşmesi "
-            f"bulmuştur (yumuşatılmış endeks: {s_abg:.3f})."
+            f"bulmuştur (endeks: {s_abg:.3f})."
         )
         ex_rows = []
         for term, sents in list(h_ctx.items())[:3]:
@@ -1751,16 +1748,36 @@ def build_report(
 
     _add_heading(doc, "A.1 — ABG (2019) Endeksi (bkz. §2.1)", level=2)
     doc.add_paragraph(
-        "Yöntem, metindeki üç konu (enflasyon, iktisadi faaliyet, istihdam) etrafında geçen "
-        "belirli çapa kelimelerin (ör. \"inflation\", \"economic activity\", \"employment\") "
-        "±10 kelimelik penceresinde şahin/güvercin yönlü sıfat-fiil kalıplarını arar. "
-        "Ham endeks (klasik ABG tanımı) 1 + (şahin−güvercin)/(şahin+güvercin) biçimindedir ve "
-        "az sayıda eşleşmede uçlara yapışma eğilimindedir (ör. 1 şahin/0 güvercin de, "
-        "20 şahin/0 güvercin de 2.00 verir). Bu raporda ASIL gösterge, paydaya bir düzeltme "
-        f"sabiti eklenen (K={utils.ABG_SHRINK_K:.0f}) YUMUŞATILMIŞ endekstir: eşleşme sayısı "
-        "azaldıkça skor nötre (1.0) çekilir, arttıkça ham orana yaklaşır. Her iki değer de "
-        "özet tabloda birlikte gösterilir; ayrıca kaç eşleşmeye (n_match) dayandığı da raporlanır "
-        "— düşük n_match, endeksin güvenilir biçimde yorumlanamayacağının işaretidir."
+        "Yöntem ve sözlüğün TAMAMI (üç konu — enflasyon, iktisadi faaliyet, istihdam — ve her "
+        "birinin şahin/güvercin modifikatör listeleri), Apel, M., Blix Grimaldi, M. & Hull, I. "
+        "(2019), \"How Much Information Do Monetary Policy Committees Disclose? Evidence from "
+        "the FOMC's Minutes and Transcripts\", Sveriges Riksbank Working Paper No. 381'in "
+        "Ek'indeki (Appendix, Tablo 4-6) sözlükle doğrudan karşılaştırılarak doğrulanmıştır. "
+        "Çapa kelime ile modifikatör arasındaki pencere de makaledeki gibi ±7 kelime ve AYNI "
+        "CÜMLE içiyle sınırlıdır (makale s.7: \"separated by up to seven words within the same "
+        "sentence\"). Endeks, aynı makalenin s.8'indeki Eşitlik (1) ile BİREBİR AYNIdır: "
+        "Net Index = 1 + (şahin − güvercin) / (şahin + güvercin). Bu simetrik bir orandır ve "
+        "[0,2] aralığında sınırlıdır — 1.00 = nötr, 2.00 = tamamen şahin (yalnızca şahin "
+        "eşleşmesi), 0.00 = tamamen güvercin. Hiç eşleşme olmayan (şahin=güvercin=0) "
+        "dönemlerde payda sıfır olduğundan formül matematiksel olarak tanımsızdır; bu durumda "
+        "yazılımsal bir zorunluluk olarak (makalenin kendisinden değil) nötr (1.00) döndürülür "
+        "— bu dönemler zaten güvenilirlik eşiğinin altında kalıp ayrıca işaretlenir. Kaç "
+        "eşleşmeye (n_match) dayandığı raporlanır — düşük n_match, endeksin güvenilir biçimde "
+        "yorumlanamayacağının işaretidir."
+    )
+    doc.add_paragraph(
+        "Şeffaflık notu: bu göstergenin formülü bu aracın geliştirilmesi sırasında iki kez "
+        "düzeltildi. İlk sürümde paydaya bir Laplace düzeltme sabiti (K) eklenmiş bir varyant "
+        "kullanılıyor ve \"ABG klasik tanımı\" diye etiketleniyordu; bu sabit orijinal makalede "
+        "yoktu ve kaldırıldı. Ardından, ara bir düzeltmede yanlışlıkla FARKLI bir ABG makalesi "
+        "(Apel & Blix Grimaldi, 2012, Riksbank WP No. 261) baz alınarak (#şahin+1)/(#güvercin+1) "
+        "oran formülüne geçildi — bu da hatalıydı, çünkü bu kod tabanının (sözlük dahil) fiili "
+        "kaynağı o makale değildi. Her iki düzeltme de doğrudan ilgili makale PDF'i kontrol "
+        "edilerek geri alınmış ve yukarıdaki, doğrulanmış kaynağa (WP 381, 2019) birebir sadık "
+        "kalınmıştır. Aynı doğrulama sırasında pencere genişliğinin de koddaki tüm çağrılarda "
+        "10 kelimeye ayarlı olduğu (fonksiyonun kendi varsayılanı zaten 7'ydi) fark edilmiş ve "
+        "makaledeki ±7 kelimeye çekilmiştir — sözlüğün kendisi ise baştan beri bu makalenin "
+        "Ek'indeki tablolarla birebir örtüşüyordu, bir değişiklik gerekmedi."
     )
 
     _add_heading(doc, "A.2 — CB-RoBERTa Modeli (bkz. §2.2)", level=2)
@@ -1875,7 +1892,8 @@ def build_report(
     doc.add_page_break()
     _add_heading(doc, "Ek B: Kısaltmalar ve Sözlük", level=1)
     glossary = [
-        ("ABG", "Apel & Blix-Grimaldi (2019) — sözlük/kural temelli şahin-güvercin ölçüm yöntemi."),
+        ("ABG", "Apel, Blix Grimaldi & Hull (2019) — sözlük/kural temelli şahin-güvercin ölçüm "
+                "yöntemi; endeks = 1 + (şahin−güvercin)/(şahin+güvercin), [0,2] aralığında."),
         ("CB-RoBERTa", "Bu raporun kullandığı model: mrince/CBRT-RoBERTa-HawkishDovish-Classifier "
                        "(Hugging Face). Taban model FacebookAI/roberta-base'dir; TCMB PPK özet "
                        "metinlerinden çıkarılmış ~7.200 gerçek cümleyle 3 sınıf (hawkish/dovish/"

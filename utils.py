@@ -1036,22 +1036,15 @@ def select_non_overlapping_terms(tokens, term_infos):
     selected.sort(key=lambda x: x["start"])
     return selected
 
-#: ABG endeksinde küçük örneklem yumuşatma sabiti.
-#: Payda (hawk+dove+K) olur. Büyütürsen seri daha çok nötre yaslanır, küçültürsen
-#: ham orana yaklaşır. 0 verirsen klasik ABG tanımına dönersin.
-#:
-#: K=2 -> Laplace düzeltmesi: her metne 1 sahte şahin + 1 sahte güvercin eşleşmesi
-#: eklemeye denktir (Beta(1,1), yani düzgün öncül). İstatistikte varsayılan tercih
-#: olduğu için gerekçesi tek cümlede yazılabilir. Simetrik olduğundan yönü
-#: saptırmaz, yalnızca kanıt azaldıkça tahmini nötre (1.0) çeker.
-#:
-#: Neden 5 değil: K=5, metne 2.5'er sahte eşleşme koymak demektir (Beta(2.5,2.5)).
-#: Veriden çok öncüle ağırlık verdiği için çok eşleşmeli dönemlerle az eşleşmeli
-#: dönemleri birbirine yaklaştırıyor ve seriyi 1.2-1.4 bandına sıkıştırıyordu:
-#:   11 şahin/0 güvercin -> 1.69   |   3 şahin/0 güvercin -> 1.38   (fark 0.31)
-#: K=2 ile aynı iki metin 1.85 ve 1.60 veriyor (fark 0.25) — kanıt miktarı hâlâ
-#: cezalandırılıyor ama seri ezilmiyor.
-ABG_SHRINK_K = 2.0
+#: DÜZELTME GEÇMİŞİ NOTU: Burada eskiden ABG_SHRINK_K=2.0 sabiti vardı ve
+#: formül "1 + (hawk-dove)/(hawk+dove+K)" idi ("ABG klasik tanımı + bizim
+#: Laplace düzeltmemiz" diye etiketleniyordu). Bu, iki turda düzeltildi:
+#: (1) ilk turda yanlışlıkla Apel & Blix Grimaldi (2012, WP 261) baz alınıp
+#: (#hawk+1)/(#dove+1) oran formülüne geçildi; (2) bu da yanlış çıktı — kod
+#: tabanının (sözlük dahil) fiili kaynağı Apel, Blix Grimaldi & Hull (2019,
+#: WP 381) imiş, doğrudan PDF kontrolüyle doğrulandı. Şimdiki formül (aşağıda)
+#: bu son, doğrulanmış kaynağa dayanıyor ve ayrı bir K sabiti taşımıyor —
+#: ABG_SHRINK_K sabiti bu yüzden tamamen kaldırıldı.
 
 
 def analyze_hawk_dove(text: str, DICT: dict, window_words: int = 7, dedupe_within_term_window: bool = True, nearest_only: bool = False):
@@ -1125,35 +1118,45 @@ def analyze_hawk_dove(text: str, DICT: dict, window_words: int = 7, dedupe_withi
     dove_total = sum(v["dove"] for v in topic_counts.values())
     denom = hawk_total + dove_total
 
-    # --- HAM ORAN (referans) ---------------------------------------------------
-    # Klasik ABG tanımı. Sorunu: ORAN ölçer, MİKTAR ölçmez.
-    #   1 şahin + 0 güvercin  -> 2.00
-    #  20 şahin + 0 güvercin  -> 2.00   (aynı!)
-    #   0 şahin + 1 güvercin  -> 0.00
-    # Sözlüğün az kelime yakaladığı kısa metinlerde endeks doğrudan uçlara yapışır
-    # ve seri, iletişim tonundaki değişimi değil ölçüm hassasiyeti kaybını gösterir.
-    net_raw = 1.0 if denom == 0 else (1.0 + (hawk_total - dove_total) / denom)
-
-    # --- YUMUŞATILMIŞ ENDEKS (kanonik) ----------------------------------------
-    # Paydaya sabit bir K eklenir (Laplace düzeltmesi): eşleşme sayısı azaldıkça
-    # endeks nötre (1.0) çekilir, arttıkça ham orana yakınsar. Böylece "2.00" değeri
-    # yalnızca çok sayıda şahin eşleşmesi olan metinlerde görülebilir.
-    #   K=2:  1 şahin/0 güvercin  -> 1.33
-    #         3 şahin/0 güvercin  -> 1.60
-    #        11 şahin/0 güvercin  -> 1.85
-    #        20 şahin/2 güvercin  -> 1.75
-    # Endeksin ayrıştırılmış hali:  1 + (ham oran) * n/(n+K)
-    # yani "metin ne kadar tek yönlü" ile "arkasında ne kadar kanıt var" çarpımı.
-    # Bu ikisi tek sayıda birleştiği için, YÖN okunurken n_match'e de bakılmalıdır
-    # (grafikte içi boş işaret / güvenilirlik eşiği bunun içindir).
-    net_hawkishness = 1.0 + (hawk_total - dove_total) / (denom + ABG_SHRINK_K)
+    # --- ABG NET HAWKISHNESS INDEX — makalenin BİREBİR AYNI formülü -----------
+    # DÜZELTME (2. tur): Bu fonksiyon bir önceki turda yanlışlıkla Apel & Blix
+    # Grimaldi (2012), Riksbank WP No. 261'e dayandırılmış ve (#hawk+1)/(#dove+1)
+    # oran formülüne çevrilmişti. Kullanıcı, bu kod tabanının FİİLEN dayandığı
+    # kaynağın o makale DEĞİL, aşağıdaki makale olduğunu belirtti; doğrudan PDF
+    # kontrol edildi ve DICT sözlüğümüzün (yukarıda) bu makalenin Ek'teki Tablo
+    # 4-6 ile kelime kelime, wildcard/exact ayrımına kadar BİREBİR örtüştüğü
+    # doğrulandı — yani sözlüğümüz zaten hep bu makaleden geliyormuş.
+    # Kaynak: Apel, M., Blix Grimaldi, M. & Hull, I. (2019), "How Much
+    # Information Do Monetary Policy Committees Disclose? Evidence from the
+    # FOMC's Minutes and Transcripts", Sveriges Riksbank Working Paper No. 381,
+    # s.8, Eşitlik (1):
+    #     net_hawkishness_t = 1 + (hawk_t − dove_t) / (hawk_t + dove_t)
+    # Makale bu haliyle simetrik ve [0,2] aralığında SINIRLIDIR; 1.00 = nötr.
+    # Makalede paydaya eklenen bir sabit (K/epsilon) YOKTUR — ayrı bir Laplace
+    # düzeltmesi (eski ABG_SHRINK_K) makalede karşılığı olmayan, bizim eklediğimiz
+    # bir öğeydi ve kaldırılmıştır.
+    #   0 şahin / 0 güvercin  -> TANIMSIZ (0/0) — bkz. aşağıdaki özel durum
+    #   1 şahin / 0 güvercin  -> 2.00
+    #   1 şahin / 1 güvercin  -> 1.00 (nötr)
+    #   0 şahin / 1 güvercin  -> 0.00
+    # NOT: hawk=dove=0 durumu makalede TANIMSIZDIR (paydası sıfır) — makalenin
+    # kendi verisinde (FOMC tutanak/transkriptleri, tipik yüzlerce kelime) bu
+    # durumun pratikte oluşmaması muhtemel, ama bizim daha kısa PPK metinlerimizde
+    # oluşabilir. Bu yalnızca YAZILIMSAL bir zorunluluk (0'a bölme hatasını
+    # önlemek) olarak, makaleden BAĞIMSIZ biçimde, hiçbir eşleşme yokken "yön
+    # sinyali de yok" mantığıyla nötr (1.0) döndürülür — bu bir ATIF değil, veri
+    # yokluğunda güvenli bir varsayılandır (mevcut n_match/güvenilirlik eşiği
+    # sistemi bu dönemleri zaten "içi boş işaret" ile ayrıca işaretliyor).
+    if denom == 0:
+        net_hawkishness = 1.0
+    else:
+        net_hawkishness = 1.0 + (hawk_total - dove_total) / denom
 
     return {
        "topic_counts": topic_counts,
        "matches": matches,
        "match_details": matches,
        "net_hawkishness": net_hawkishness,
-       "net_hawkishness_raw": net_raw,
        "n_match": denom,
        "hawk_count": hawk_total,
        "dove_count": dove_total
@@ -1165,10 +1168,10 @@ def analyze_hawk_dove(text: str, DICT: dict, window_words: int = 7, dedupe_withi
 
 class ABGAnalyzer:
     def analyze(self, text):
-        return analyze_hawk_dove(text, DICT=DICT, window_words=10, dedupe_within_term_window=True, nearest_only=True)
+        return analyze_hawk_dove(text, DICT=DICT, window_words=7, dedupe_within_term_window=True, nearest_only=True)
 
 def run_full_analysis(text):
-    res = analyze_hawk_dove(text, DICT=DICT, window_words=10, dedupe_within_term_window=True, nearest_only=True)
+    res = analyze_hawk_dove(text, DICT=DICT, window_words=7, dedupe_within_term_window=True, nearest_only=True)
     s_abg = res['net_hawkishness']
     h_cnt = res['hawk_count']
     d_cnt = res['dove_count']
@@ -1196,7 +1199,7 @@ def calculate_abg_scores(df):
     if df is None or df.empty: return pd.DataFrame()
     rows = []
     for _, row in df.iterrows():
-        res = analyze_hawk_dove(str(row.get('text_content', '')), DICT=DICT, window_words=10, dedupe_within_term_window=True, nearest_only=True)
+        res = analyze_hawk_dove(str(row.get('text_content', '')), DICT=DICT, window_words=7, dedupe_within_term_window=True, nearest_only=True)
         donem = row.get("Donem", "")
         if not donem and "period_date" in row:
              try: donem = pd.to_datetime(row["period_date"]).strftime("%Y-%m")
@@ -1204,10 +1207,14 @@ def calculate_abg_scores(df):
         rows.append({
             "period_date": row.get("period_date"),
             "Donem": donem,
+            # 1 + (şahin-güvercin)/(şahin+güvercin) — bkz. analyze_hawk_dove
+            # (Apel, Blix Grimaldi & Hull, 2019, WP 381, Eş. 1). [0,2] aralığında,
+            # 1.00 = nötr. Tek bir endeks değeri var (eskiden ayrı "ham"/
+            # "yumuşatılmış" çifti vardı; o ayrım, artık kullanılmayan
+            # K-düzeltmesiyle birlikte kaldırıldı).
             "abg_index": res['net_hawkishness'],
             # Güvenilirlik teşhisi için: endeks kaç kelime eşleşmesine dayanıyor?
             # Az eşleşmeli dönemlerde endeks yorumlanmamalıdır.
-            "abg_index_raw": res.get('net_hawkishness_raw', res['net_hawkishness']),
             "n_match": res.get('n_match', 0),
             "hawk_count": res.get('hawk_count', 0),
             "dove_count": res.get('dove_count', 0),
@@ -4695,7 +4702,6 @@ def sentence_heatmap_html(df_one: pd.DataFrame,
         f"font-size:0.94rem;padding:14px 16px;border:1px solid rgba(128,128,128,.28);"
         f"border-radius:8px;'>{body}</div>{legend}"
     )
-
 
 
 # =============================================================================

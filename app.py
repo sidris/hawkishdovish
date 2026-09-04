@@ -15,9 +15,6 @@ import report_builder
 # çöker. Aşağıdaki sarmalayıcılar bu durumda uygulamayı ayakta tutar: utils'te
 # fonksiyon varsa onu kullanır, yoksa aynı işi yerelde yapar.
 
-ABG_SHRINK_K = getattr(utils, "ABG_SHRINK_K", 0.0)
-
-
 def _top_sentences(donem, k=5, df_sent=None):
     """utils.top_sentences varsa onu kullan; yoksa aynı hesabı burada yap."""
     fn = getattr(utils, "top_sentences", None)
@@ -183,6 +180,10 @@ with tab1:
         df_logs['score_abg_scaled'] = df_logs['score_abg'].apply(lambda x: x*100 if abs(x) <= 1 else x)
 
         abg_df = utils.calculate_abg_scores(df_logs)
+        # Endeks [0,2] aralığında sınırlıdır (bkz. utils.analyze_hawk_dove), bu
+        # yüzden (abg_index-1)*100 doğal olarak [-100,100] aralığında kalır —
+        # diğer serilerle (TÜFE, faiz, RoBERTa) aynı -150..150 eksende sorunsuz
+        # gösterilir, ekstra kırpma gerekmez.
         abg_df['abg_dashboard_val'] = (abg_df['abg_index'] - 1.0) * 100
         
         min_d = df_logs['period_date'].min().date()
@@ -280,7 +281,7 @@ with tab1:
         
         # --- SKORLAR ---
         # NOT: "Şahin/Güvercin-Hibrit" (score_abg_scaled) çizgisi kullanıcı isteği üzerine ana ekrandan kaldırıldı.
-        fig.add_trace(go.Scatter(x=merged['period_date'], y=merged['abg_dashboard_val'], name="Şahin/Güvercin ABG 2019", line=dict(color='navy', width=4), yaxis="y"))
+        fig.add_trace(go.Scatter(x=merged['period_date'], y=merged['abg_dashboard_val'], name="Şahin/Güvercin ABG (2019)", line=dict(color='navy', width=4), yaxis="y"))
 
                 # --- AI Score (mrince) çizgileri ---
         if merged["AI_EMA"].notna().any():
@@ -1497,7 +1498,7 @@ with tab6:
     else: st.info("Veri yok.")
 
 with tab7:
-    st.header("📜 Apel, Blix ve Grimaldi (2019) Analizi")
+    st.header("📜 Apel, Blix Grimaldi ve Hull (2019) Analizi")
     st.info("Bu yöntem, kelimeleri 'enflasyon', 'büyüme', 'istihdam' gibi kategorilere ayırarak, yanlarındaki sıfatlara göre 'Şahin' veya 'Güvercin' olarak puanlar.")
     df_abg_source = utils.fetch_all_data()
     if not df_abg_source.empty:
@@ -1508,8 +1509,8 @@ with tab7:
 
         # --- Güvenilirlik eşiği ------------------------------------------------
         # Endeks bir ORANDIR; kaç kelimeye dayandığını göstermez. Az eşleşmeli
-        # dönemlerde ham oran uçlara yapışır, bu yüzden hem yumuşatılmış endeks
-        # kullanılır hem de eşleşme sayısı grafiğe konur.
+        # dönemlerde tek bir kelime bile oranı büyük oynatabilir, bu yüzden
+        # eşleşme sayısı ayrıca alt panelde gösterilir.
         min_n = st.slider(
             "Güvenilirlik eşiği — endeksin dayandığı en az kelime eşleşmesi",
             0, 20, 6, key="abg_minn",
@@ -1522,8 +1523,6 @@ with tab7:
         for _c, _v in [("n_match", 0), ("hawk_count", 0), ("dove_count", 0)]:
             if _c not in abg_df.columns:
                 abg_df[_c] = _v
-        if "abg_index_raw" not in abg_df.columns:
-            abg_df["abg_index_raw"] = abg_df["abg_index"]
         abg_df["guvenilir"] = abg_df["n_match"] >= min_n
 
         fig_abg = make_subplots(
@@ -1540,7 +1539,7 @@ with tab7:
 
         fig_abg.add_trace(go.Scatter(
             x=abg_df['period_date'], y=abg_df['abg_index'],
-            name="ABG Net Hawkishness (yumuşatılmış)",
+            name="ABG Net Hawkishness Endeksi",
             line=dict(color='purple', width=3),
             mode="lines+markers",
             marker=dict(
@@ -1548,11 +1547,10 @@ with tab7:
                 color=["purple" if g else "white" for g in abg_df["guvenilir"]],
                 line=dict(color="purple", width=2),
             ),
-            customdata=abg_df[["n_match", "hawk_count", "dove_count", "abg_index_raw"]].values,
+            customdata=abg_df[["n_match", "hawk_count", "dove_count"]].values,
             hovertemplate=("%{x|%Y-%m}<br>endeks: %{y:.2f}"
                            "<br>eşleşme: %{customdata[0]} "
-                           "(şahin %{customdata[1]} / güvercin %{customdata[2]})"
-                           "<br>yumuşatılmamış: %{customdata[3]:.2f}<extra></extra>"),
+                           "(şahin %{customdata[1]} / güvercin %{customdata[2]})<extra></extra>"),
         ), row=1, col=1)
 
         fig_abg.add_hline(y=1, line=dict(color="gray", dash="dash", width=1),
@@ -1582,10 +1580,9 @@ with tab7:
         fig_abg.add_hline(y=min_n, line=dict(color="crimson", dash="dot", width=1),
                           row=2, col=1)
 
-        # Not: K>0 iken endeks 0 ve 2 uçlarına ulaşamaz (tavan 1+n/(n+K), taban
-        # 1-n/(n+K)). Eksen 0-2'de sabit tutuluyor ki dönemler birbirine göre
-        # okunabilsin; başlıktaki "tahmin" ibaresi ham oran olmadığını belirtir.
-        fig_abg.update_yaxes(title_text="Şahinlik Endeksi (tahmin, 0 – 2)",
+        # Endeks [0,2] aralığında SINIRLIDIR (1 + (H-D)/(H+D) simetrik oran) —
+        # bkz. utils.analyze_hawk_dove. Eksen bu yüzden sabit tutulur.
+        fig_abg.update_yaxes(title_text="Şahinlik Endeksi (0 – 2)",
                              range=[0, 2], row=1, col=1)
         fig_abg.update_yaxes(title_text="adet", rangemode="tozero", row=2, col=1)
         fig_abg.update_layout(
@@ -1597,14 +1594,15 @@ with tab7:
 
         zayif = int((~abg_df["guvenilir"]).sum())
         st.caption(
-            f"Endeks `1 + (şahin−güvercin) / (şahin+güvercin+{ABG_SHRINK_K:g})` "
-            "olarak hesaplanır. Paydadaki sabit **Laplace düzeltmesidir**: her metne "
-            "bir sahte şahin ve bir sahte güvercin eşleşmesi eklemeye denktir (düzgün "
-            "öncül). Simetrik olduğu için yönü saptırmaz, yalnızca **kanıt azaldıkça "
-            "tahmini nötre çeker**. Gerekçesi şu: klasik ABG tanımında tek bir şahin "
-            "eşleşmesi de yirmi eşleşme de 2.00 değerini üretiyor, bu yüzden kısa "
-            "metinlerde seri uçlara yapışıyordu. Düzeltmeyle 11 şahin/0 güvercin 1.85, "
-            "3 şahin/0 güvercin 1.60 veriyor — eşleşme miktarı endekse yansıyor. "
+            "Endeks `1 + (şahin−güvercin) / (şahin+güvercin)` olarak hesaplanır — Apel, "
+            "Blix Grimaldi & Hull (2019), *How Much Information Do Monetary Policy "
+            "Committees Disclose?*, Sveriges Riksbank Working Paper No. 381, s.8, "
+            "Eşitlik (1)'deki tanımın birebir aynısı. Simetrik bir orandır, [0,2] "
+            "aralığında sınırlıdır, 1.00 = nötr. Hiç eşleşme olmayan dönemlerde (0/0, "
+            "matematiksel olarak tanımsız) yazılımsal güvenlik amacıyla 1.00 (nötr) "
+            "döndürülür — bu makaleden değil, veri yokluğu için gerekli bir "
+            "varsayılandır; bu dönemler zaten güvenilirlik eşiğinin altında kalıp içi "
+            "boş işaretle gösterilir. "
             + (f"Bu eşikte **{zayif} dönem** güvenilirlik sınırının altında "
                "(içi boş işaret) — o noktalar yorumlanmamalıdır." if zayif else
                "Bu eşikte tüm dönemler güvenilirlik sınırının üstünde.")
@@ -1621,7 +1619,7 @@ with tab7:
                 res = utils.analyze_hawk_dove(
                     text_abg, 
                     DICT=utils.DICT, 
-                    window_words=10, 
+                    window_words=7, 
                     dedupe_within_term_window=True, 
                     nearest_only=True
                 )

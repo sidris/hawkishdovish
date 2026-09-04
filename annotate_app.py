@@ -22,17 +22,24 @@ import utils
 
 st.set_page_config(page_title="PPK Cümle Etiketleme", layout="centered")
 
-# --- Annotator başına ayrı PIN — gerçek isimler ve kendi seçtiğiniz PIN'lerle
-# değiştirin. Kimlik artık açılır menüden DEĞİL, hangi PIN girildiğinden
-# belirleniyor — böylece PIN'i bilmeyen biri başkası adına giriş yapamaz ve
-# yanlışlıkla (ya da kasıtlı) başka bir annotator'ın etiketinin üzerine yazamaz.
-ANNOTATOR_PINS = {
-    "4471": "Mert Gökcü",
-    "8823": "Vuslat Us",
-    "1195": "Halil İbrahim Korkmaz",
-    "6130": "Aysu Çelgin",
-    "3308": "Ahmet Bilal Kurtoğlu",
-}
+# --- Annotator başına ayrı PIN — kaynak kodda DURMAZ, Streamlit secrets'tan
+# okunur (bkz. .streamlit/secrets.toml.example, [annotators] bölümü). Kimlik
+# açılır menüden DEĞİL, hangi PIN girildiğinden belirleniyor — böylece PIN'i
+# bilmeyen biri başkası adına giriş yapamaz ve yanlışlıkla (ya da kasıtlı)
+# başka bir annotator'ın etiketinin üzerine yazamaz.
+try:
+    ANNOTATOR_PINS = dict(st.secrets.get("annotators", {}))
+except Exception:
+    ANNOTATOR_PINS = {}
+
+if not ANNOTATOR_PINS:
+    st.error(
+        "⚠️ Annotator PIN'leri secrets içinde tanımlı değil. Yerelde "
+        "`.streamlit/secrets.toml` dosyasına, Streamlit Cloud'da proje "
+        "ayarlarının 'Secrets' bölümüne `[annotators]` altına "
+        "`\"PIN\" = \"İsim\"` satırları ekleyin (örnek: secrets.toml.example)."
+    )
+    st.stop()
 
 LABEL_OPTIONS = [("🦅 Şahin", "HAWK"), ("⚖️ Nötr", "NEUT"), ("🕊️ Güvercin", "DOVE")]
 CONF_OPTIONS = [("Emin değilim", 1), ("Orta", 2), ("Eminim", 3)]

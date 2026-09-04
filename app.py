@@ -65,8 +65,35 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # --- GÜVENLİK ---
-APP_PWD = "SahinGuvercin35"      
-ADMIN_PWD = "SahinGuvercin06"    
+# Parolalar artık kaynak kodda DURMAZ — Streamlit secrets'tan okunur.
+# Yerelde: .streamlit/secrets.toml (bkz. secrets.toml.example, gerçek dosyayı
+# ASLA commit etmeyin — .gitignore'a eklenmiştir). Streamlit Cloud'da: proje
+# ayarları > Secrets bölümüne aynı anahtarları ekleyin:
+#   [auth]
+#   APP_PWD = "..."
+#   ADMIN_PWD = "..."
+try:
+    if "auth" in st.secrets:
+        APP_PWD = st.secrets["auth"].get("APP_PWD")
+        ADMIN_PWD = st.secrets["auth"].get("ADMIN_PWD")
+    else:
+        APP_PWD = st.secrets.get("APP_PWD")
+        ADMIN_PWD = st.secrets.get("ADMIN_PWD")
+except Exception:
+    APP_PWD = None
+    ADMIN_PWD = None
+
+if not APP_PWD or not ADMIN_PWD:
+    # Kasıtlı olarak "fail closed": secrets tanımlı değilse sabit/boş bir
+    # parolaya geri düşmek yerine uygulama tamamen durur — aksi halde bu
+    # düzeltme, eski açığı sessizce yeniden açmış olurdu.
+    st.error(
+        "⚠️ Uygulama/admin parolaları secrets içinde tanımlı değil. Yerelde "
+        "`.streamlit/secrets.toml` dosyasına, Streamlit Cloud'da proje "
+        "ayarlarının 'Secrets' bölümüne `[auth] APP_PWD = \"...\"` ve "
+        "`ADMIN_PWD = \"...\"` ekleyin (örnek: secrets.toml.example)."
+    )
+    st.stop()
 
 if 'logged_in' not in st.session_state:
     st.session_state['logged_in'] = False

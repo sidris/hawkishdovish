@@ -28,9 +28,9 @@ st.set_page_config(page_title="PPK Cümle Etiketleme", layout="centered")
 # yanlışlıkla (ya da kasıtlı) başka bir annotator'ın etiketinin üzerine yazamaz.
 ANNOTATOR_PINS = {
     "4471": "Mert Gökcü",
-    "8823": "Mahmut Günay",
+    "8823": "Vuslat Us",
     "1195": "Halil İbrahim Korkmaz",
-    "6640": "Fırat Bora Taş",
+    "6130": "Aysu Çelgin",
     "3308": "Ahmet Bilal Kurtoğlu",
 }
 

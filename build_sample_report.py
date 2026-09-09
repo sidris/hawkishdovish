@@ -27,10 +27,22 @@ rng = np.random.default_rng(7)
 # =============================================================================
 
 PERIODS = [
-    # NOT: bu ilk 4 dönem, §7 backtest modelinin iç eşiğini (train_textasdata_hybrid_cpi_ridge
+    # NOT: bu ilk dönemler, §7 backtest modelinin iç eşiğini (train_textasdata_hybrid_cpi_ridge
     # >=10 etiketli gözlem ister) test ortamında da aşabilmek için eklendi — utils.py'deki
     # GERÇEK eşik değiştirilmedi, sadece test verisi (sentetik geçmiş) uzatıldı. Ayrıca bu,
     # önceki bir testte gözlemlenen "tarihler 2025'ten başlıyor" durumunu da düzeltir.
+    # EK NOT (bu oturumdaki §7 hedef/özellik hizalama düzeltmesi sonrası): hedef artık
+    # next_delta_bp (bir SONRAKİ toplantının kararı) olduğu için, her dönem eğitim setine
+    # bir örnek eksik katkı yapıyor (son dönemin next_delta_bp'si her zaman NaN'dır) — bu
+    # yüzden eşiği rahat aşabilmek için iki dönem daha eklendi (2023-11-15, 2024-01-24).
+    ("2023-11-15", 50.0, 0,
+     "The Committee has decided to keep the policy rate (the one-week repo auction rate) at 50 percent. "
+     "The Committee assessed that the current tight monetary stance needs to be maintained decisively "
+     "until a significant and sustained decline in the underlying trend of inflation is achieved."),
+    ("2024-01-24", 50.0, 0,
+     "The Committee has decided to keep the policy rate (the one-week repo auction rate) at 50 percent. "
+     "The tight monetary stance will continue to be maintained decisively until price stability is "
+     "achieved. The Committee will continue to make its decisions based on the inflation outlook."),
     ("2024-03-21", 50.0, 0,
      "The Committee has decided to keep the policy rate (the one-week repo auction rate) at 50 percent. "
      "The tight monetary stance will be maintained decisively until a significant and sustained decline "
@@ -175,7 +187,7 @@ df_market["AOFM-Faiz Farkı"] = df_market["AOFM"] - df_market["PPK Faizi"]
 # 4) abg_df — gerçek utils.calculate_abg_scores ile (sentetik değil, GERÇEK fonksiyon)
 # =============================================================================
 abg_df = utils.calculate_abg_scores(df_logs)
-print("[abg_df]\n", abg_df[["Donem", "abg_index", "abg_index_raw", "n_match", "hawk_count", "dove_count"]])
+print("[abg_df]\n", abg_df[["Donem", "abg_index", "n_match", "hawk_count", "dove_count"]])
 
 # =============================================================================
 # 5) df_sent — fetch_sentences() çıktı şeması (gerçek assign_theme() kullanılarak)
@@ -270,11 +282,14 @@ print("\n[ai_df]\n", ai_df[["Dönem", "Diff (H-D)", "AI Score (EMA)", "AI Rejim"
 # 7) model_pack — GERÇEK backtest fonksiyonları (utils.py), sentetik df_logs/df_market üzerinde
 # =============================================================================
 df_td = utils.textasdata_prepare_df_hybrid_cpi(df_logs, df_market)
-print(f"\n[textasdata] hazırlanan satır sayısı: {len(df_td)} (etiketli: {df_td['delta_bp'].notna().sum()})")
+print(f"\n[textasdata] hazırlanan satır sayısı: {len(df_td)} "
+      f"(eğitilebilir/next_delta_bp dolu: {df_td['next_delta_bp'].notna().sum()})")
 model_pack = None
-if not df_td.empty and df_td["delta_bp"].notna().sum() >= 5:
-    # NOT: gerçek uygulamada eşik >=10'dur (bkz. app.py); bu demo veri setinde
-    # yalnızca 9 dönem olduğu için burada test amaçlı 5'e düşürüldü.
+if not df_td.empty and df_td["next_delta_bp"].notna().sum() >= 5:
+    # NOT: gerçek uygulamada eşik >=10'dur (bkz. app.py / utils.train_textasdata_hybrid_cpi_ridge
+    # içindeki sabit eşik); bu küçük demo veri setinde test amaçlı burada 5'e düşürüldü — ama
+    # utils.py'nin KENDİ iç eşiği (10) değiştirilmedi, yani model_pack yine de train_textasdata_
+    # hybrid_cpi_ridge içindeki gerçek >=10 kontrolünden geçmek zorunda.
     model_pack = utils.train_textasdata_hybrid_cpi_ridge(df_td, n_splits=3)
     if model_pack:
         model_pack["df_hist"] = df_td

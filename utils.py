@@ -1044,15 +1044,22 @@ def select_non_overlapping_terms(tokens, term_infos):
     selected.sort(key=lambda x: x["start"])
     return selected
 
-#: DÜZELTME GEÇMİŞİ NOTU: Burada eskiden ABG_SHRINK_K=2.0 sabiti vardı ve
-#: formül "1 + (hawk-dove)/(hawk+dove+K)" idi ("ABG klasik tanımı + bizim
-#: Laplace düzeltmemiz" diye etiketleniyordu). Bu, iki turda düzeltildi:
-#: (1) ilk turda yanlışlıkla Apel & Blix Grimaldi (2012, WP 261) baz alınıp
-#: (#hawk+1)/(#dove+1) oran formülüne geçildi; (2) bu da yanlış çıktı — kod
+#: DÜZELTME GEÇMİŞİ NOTU: Bu formülün kaynağı iki turda düzeltildi: (1) bir
+#: turda yanlışlıkla Apel & Blix Grimaldi (2012, WP 261) baz alınıp
+#: (#hawk+1)/(#dove+1) oran formülüne geçilmişti; (2) bu da yanlış çıktı — kod
 #: tabanının (sözlük dahil) fiili kaynağı Apel, Blix Grimaldi & Hull (2019,
-#: WP 381) imiş, doğrudan PDF kontrolüyle doğrulandı. Şimdiki formül (aşağıda)
-#: bu son, doğrulanmış kaynağa dayanıyor ve ayrı bir K sabiti taşımıyor —
-#: ABG_SHRINK_K sabiti bu yüzden tamamen kaldırıldı.
+#: WP 381) imiş, doğrudan PDF kontrolüyle doğrulandı. Şimdiki TEMEL formül
+#: (aşağıda) bu son, doğrulanmış kaynağa (Eşitlik 1) dayanıyor.
+#:
+#: ABG_SHRINK_K — bu sabit MAKALEDE YOKTUR. Küçük n_match'te (ör. metinde
+#: tek bir şahin/güvercin eşleşmesi) saf makale formülünün endeksi doğrudan
+#: uca (0.00/2.00) fırlatması "kötü görünüyor" (tek kelimelik bir eşleşmeyi
+#: "tam şahin/tam güvercin" gibi göstermesi istatistiksel olarak yanıltıcı)
+#: bulunduğu için, kullanıcının isteğiyle geri eklenen bir Laplace/"add-k"
+#: küçültme (shrinkage) sabitidir — bkz. analyze_hawk_dove içindeki ayrıntılı
+#: not. Makalenin kendi formülü değişmedi; bunun ÜSTÜNE, ayrıca etiketlenmiş
+#: bir pratik düzeltme olarak uygulanıyor.
+ABG_SHRINK_K = 2.0
 
 
 def analyze_hawk_dove(text: str, DICT: dict, window_words: int = 7, dedupe_within_term_window: bool = True, nearest_only: bool = False):
@@ -1126,39 +1133,40 @@ def analyze_hawk_dove(text: str, DICT: dict, window_words: int = 7, dedupe_withi
     dove_total = sum(v["dove"] for v in topic_counts.values())
     denom = hawk_total + dove_total
 
-    # --- ABG NET HAWKISHNESS INDEX — makalenin BİREBİR AYNI formülü -----------
-    # DÜZELTME (2. tur): Bu fonksiyon bir önceki turda yanlışlıkla Apel & Blix
-    # Grimaldi (2012), Riksbank WP No. 261'e dayandırılmış ve (#hawk+1)/(#dove+1)
-    # oran formülüne çevrilmişti. Kullanıcı, bu kod tabanının FİİLEN dayandığı
-    # kaynağın o makale DEĞİL, aşağıdaki makale olduğunu belirtti; doğrudan PDF
-    # kontrol edildi ve DICT sözlüğümüzün (yukarıda) bu makalenin Ek'teki Tablo
-    # 4-6 ile kelime kelime, wildcard/exact ayrımına kadar BİREBİR örtüştüğü
-    # doğrulandı — yani sözlüğümüz zaten hep bu makaleden geliyormuş.
-    # Kaynak: Apel, M., Blix Grimaldi, M. & Hull, I. (2019), "How Much
-    # Information Do Monetary Policy Committees Disclose? Evidence from the
-    # FOMC's Minutes and Transcripts", Sveriges Riksbank Working Paper No. 381,
-    # s.8, Eşitlik (1):
+    # --- ABG NET HAWKISHNESS INDEX --------------------------------------------
+    # TEMEL formül — makalenin BİREBİR AYNISI. Kaynak: Apel, M., Blix Grimaldi, M.
+    # & Hull, I. (2019), "How Much Information Do Monetary Policy Committees
+    # Disclose? Evidence from the FOMC's Minutes and Transcripts", Sveriges
+    # Riksbank Working Paper No. 381, s.8, Eşitlik (1):
     #     net_hawkishness_t = 1 + (hawk_t − dove_t) / (hawk_t + dove_t)
-    # Makale bu haliyle simetrik ve [0,2] aralığında SINIRLIDIR; 1.00 = nötr.
-    # Makalede paydaya eklenen bir sabit (K/epsilon) YOKTUR — ayrı bir Laplace
-    # düzeltmesi (eski ABG_SHRINK_K) makalede karşılığı olmayan, bizim eklediğimiz
-    # bir öğeydi ve kaldırılmıştır.
-    #   0 şahin / 0 güvercin  -> TANIMSIZ (0/0) — bkz. aşağıdaki özel durum
-    #   1 şahin / 0 güvercin  -> 2.00
-    #   1 şahin / 1 güvercin  -> 1.00 (nötr)
-    #   0 şahin / 1 güvercin  -> 0.00
-    # NOT: hawk=dove=0 durumu makalede TANIMSIZDIR (paydası sıfır) — makalenin
-    # kendi verisinde (FOMC tutanak/transkriptleri, tipik yüzlerce kelime) bu
-    # durumun pratikte oluşmaması muhtemel, ama bizim daha kısa PPK metinlerimizde
-    # oluşabilir. Bu yalnızca YAZILIMSAL bir zorunluluk (0'a bölme hatasını
-    # önlemek) olarak, makaleden BAĞIMSIZ biçimde, hiçbir eşleşme yokken "yön
-    # sinyali de yok" mantığıyla nötr (1.0) döndürülür — bu bir ATIF değil, veri
-    # yokluğunda güvenli bir varsayılandır (mevcut n_match/güvenilirlik eşiği
-    # sistemi bu dönemleri zaten "içi boş işaret" ile ayrıca işaretliyor).
-    if denom == 0:
-        net_hawkishness = 1.0
-    else:
-        net_hawkishness = 1.0 + (hawk_total - dove_total) / denom
+    # Makale bu haliyle simetrik ve [0,2] aralığında sınırlıdır; 1.00 = nötr.
+    # Makalede paydaya eklenen bir sabit YOKTUR.
+    #
+    # BİZİM EKLEDİĞİMİZ DÜZELTME — ABG_SHRINK_K (Laplace/"add-k" küçültme):
+    # saf haliyle bu formül, n_match düşükken (ör. metinde tek bir şahin ya da
+    # güvercin eşleşmesi) endeksi doğrudan uca (0.00 ya da 2.00) fırlatır — tek
+    # kelimelik bir eşleşme, kısa bir PPK metninde istatistiksel gürültü
+    # olabilecekken görsel/okunsal olarak "tam şahin"/"tam güvercin" gibi
+    # görünür, bu da yanıltıcı ve dalgalı bir zaman serisine yol açar. Bunu
+    # yumuşatmak için paydaya sabit bir K eklenir:
+    #     net_hawkishness_t = 1 + (hawk_t − dove_t) / (hawk_t + dove_t + K)
+    # Bu adım MAKALENİN BİR PARÇASI DEĞİLDİR — makaledeki formülün üstüne
+    # eklenmiş, ayrıca etiketlenen bir pratik/istatistiksel düzeltmedir. K
+    # arttıkça küçük örneklemdeki eşleşmeler nötre (1.0) doğru çekilir; büyük
+    # n_match'te etkisi küçülür (K, denom'a göre ihmal edilebilir hale gelir).
+    # Yan etki: K>0 olduğu için payda hiçbir zaman sıfır olmaz — hawk=dove=0
+    # durumunda da (makalenin kendi formülünde 0/0 tanımsızlığı olurdu) bu
+    # formül doğal olarak net_hawkishness=1.0 (nötr) verir; ayrı bir özel-durum
+    # kontrolüne gerek kalmaz.
+    #   K=2.0 iken:
+    #   0 şahin / 0 güvercin  -> 1.00  (nötr — K sayesinde tanımsızlık oluşmaz)
+    #   1 şahin / 0 güvercin  -> 1.33  (saf makale formülünde 2.00 olurdu)
+    #   1 şahin / 1 güvercin  -> 1.00  (nötr)
+    #   0 şahin / 1 güvercin  -> 0.67  (saf makale formülünde 0.00 olurdu)
+    # Mevcut n_match/güvenilirlik eşiği sistemi, düşük n_match'li dönemleri
+    # zaten ayrıca "içi boş işaret" ile grafikte işaretlemeye devam ediyor —
+    # bu iki mekanizma birbirini tamamlar, biri diğerinin yerine geçmez.
+    net_hawkishness = 1.0 + (hawk_total - dove_total) / (denom + ABG_SHRINK_K)
 
     return {
        "topic_counts": topic_counts,
@@ -1215,11 +1223,11 @@ def calculate_abg_scores(df):
         rows.append({
             "period_date": row.get("period_date"),
             "Donem": donem,
-            # 1 + (şahin-güvercin)/(şahin+güvercin) — bkz. analyze_hawk_dove
-            # (Apel, Blix Grimaldi & Hull, 2019, WP 381, Eş. 1). [0,2] aralığında,
-            # 1.00 = nötr. Tek bir endeks değeri var (eskiden ayrı "ham"/
-            # "yumuşatılmış" çifti vardı; o ayrım, artık kullanılmayan
-            # K-düzeltmesiyle birlikte kaldırıldı).
+            # 1 + (şahin-güvercin)/(şahin+güvercin+K) — bkz. analyze_hawk_dove
+            # (temel formül: Apel, Blix Grimaldi & Hull, 2019, WP 381, Eş. 1;
+            # +K paydası ise makalede olmayan, bizim eklediğimiz Laplace/
+            # shrinkage düzeltmesi — bkz. ABG_SHRINK_K ve analyze_hawk_dove'daki
+            # ayrıntılı not). [0,2] aralığında, 1.00 = nötr.
             "abg_index": res['net_hawkishness'],
             # Güvenilirlik teşhisi için: endeks kaç kelime eşleşmesine dayanıyor?
             # Az eşleşmeli dönemlerde endeks yorumlanmamalıdır.
@@ -1805,6 +1813,29 @@ def textasdata_prepare_df_hybrid_cpi(
     - English texts -> we'll use stop_words='english' in model.
     - CPI columns expected in df_market: 'Yıllık TÜFE' (and optionally 'Aylık TÜFE')
     - IMPORTANT: CPI is lagged (t-1) to avoid leakage.
+
+    DÜZELTME (bu oturumda — hedef/özellik hizalama düzeltmesi): hedef (target)
+    artık "next_delta_bp" — yani metnin YAYIMLANDIĞI dönemin (t) delta_bp'si
+    DEĞİL, bir SONRAKİ (t+1), henüz gerçekleşmemiş toplantının delta_bp'si.
+    Eskiden hedef aynı satırın (t) delta_bp'si idi ve X["text"] de AYNI t
+    döneminin metniydi — ama PPK metni kararla AYNI ANDA yayımlanır ve kararı
+    doğrudan bildirir/açıklar, bu yüzden model fiilen "t'nin kendi kararını,
+    onu zaten açıklayan metinden" tahmin ediyordu (döngüsellik / veri
+    sızıntısı — gerçek bir tahmin değil, bir totoloji). Şimdi model, t
+    döneminde yayımlanmış metin + o ana kadar bilinen durumla, HENÜZ
+    yayımlanmamış t+1 kararını tahmin etmeye çalışıyor.
+
+    Bu kaymayla birlikte "_lag1" adı taşıyan özellikler ARTIK satırın kendi
+    (t) dönemine göre değil, HEDEFE (t+1) göre bir dönem geridedir — yani
+    eskiden bu alanlara uygulanan ekstra ".shift(1)" artık gerekmiyor ve
+    kaldırıldı: satırın kendi t'deki ham (gecikmesiz) değeri zaten t+1'e göre
+    zaten 1 dönem gecikmelidir. (İsimler yine de doğru kalır: "policy_rate_lag1"
+    = hedef dönemden 1 toplantı önceki faiz oranı.)
+
+    CPI kolonları ise YİNE ayrı bir nedenle (TÜFE'nin açıklanma zamanlaması —
+    o ayın TÜFE'si o ayın PPK toplantısından önce yayımlanmamış olabilir) 1
+    dönem geriye kaydırılmış kalır; bu, hedef kaymasından TAMAMEN BAĞIMSIZ bir
+    muhafazakârlıktır ve bu düzeltmeyle DEĞİŞTİRİLMEDİ.
     """
     if df_logs is None or df_logs.empty:
         return pd.DataFrame()
@@ -1828,6 +1859,14 @@ def textasdata_prepare_df_hybrid_cpi(
     # core numeric
     df["policy_rate"] = pd.to_numeric(df.get(rate_col), errors="coerce")
     df["delta_bp"] = pd.to_numeric(df.get(y_col), errors="coerce")
+
+    # --- HEDEF: bir SONRAKİ toplantının delta_bp'si (bkz. yukarıdaki DÜZELTME
+    # notu). Bilhassa dizinin son satırında (henüz bir sonraki toplantı
+    # gerçekleşmediyse) bu doğal olarak NaN kalır — dropna ile eğitim
+    # setinden çıkar, ama predict_textasdata_hybrid_cpi'nin "son bilinen
+    # durum" olarak okuması için satır kendisi (df_hist) korunur.
+    df["next_delta_bp"] = df["delta_bp"].shift(-1)
+    df["next_period_date"] = df[date_col].shift(-1)
 
     # --- merge CPI / market ---
     m = df_market.copy() if isinstance(df_market, pd.DataFrame) else pd.DataFrame()
@@ -1854,23 +1893,32 @@ def textasdata_prepare_df_hybrid_cpi(
         df["cpi_yoy"] = np.nan
         df["cpi_mom"] = np.nan
 
-    # --- CPI features (LAGGED to avoid leakage) ---
+    # --- CPI features (LAGGED to avoid leakage — TÜFE yayım zamanlaması
+    # nedeniyle; hedef next_delta_bp kaymasından bağımsız, DEĞİŞMEDİ) ---
     df = df.sort_values(date_col).reset_index(drop=True)
     df["cpi_yoy_lag1"] = df["cpi_yoy"].shift(1)
     df["cpi_mom_lag1"] = df["cpi_mom"].shift(1)
     df["cpi_trend3_lag1"] = df["cpi_yoy"].rolling(3).apply(lambda x: _safe_slope(pd.Series(x)), raw=False).shift(1)
 
-    # --- rate/delta dynamics (lagged) ---
-    df["policy_rate_lag1"] = df["policy_rate"].shift(1)
-    df["delta_bp_lag1"] = df["delta_bp"].shift(1)
-    df["delta_bp_lag3"] = df["delta_bp"].rolling(3).mean().shift(1)
-    df["policy_rate_trend"] = df["policy_rate"].rolling(3).apply(lambda x: _safe_slope(pd.Series(x)), raw=False).shift(1)
+    # --- rate/delta dynamics — ARTIK hedef next_delta_bp'ye (t+1) göre zaten
+    # 1-dönem-gecikmeli (satırın kendi t'deki gecikmesiz/ham değeri). DİKKAT:
+    # eskiden burada ayrıca bir ".shift(1)" vardı; hedef t iken bu doğruydu,
+    # ama hedef t+1 olunca özelliği fiilen 2 dönem geriye taşırdı (gereksiz
+    # bilgi kaybı) — bu düzeltmeyle kaldırıldı.
+    df["policy_rate_lag1"] = df["policy_rate"]
+    df["delta_bp_lag1"] = df["delta_bp"]
+    df["delta_bp_lag3"] = df["delta_bp"].rolling(3).mean()
+    df["policy_rate_trend"] = df["policy_rate"].rolling(3).apply(lambda x: _safe_slope(pd.Series(x)), raw=False)
 
-    # hold streak (how many consecutive holds before this meeting)
+    # hold streak: BU toplantı DAHİL, kaç ardışık "sabit" (hold) kararı
+    # geride bırakıldığı — yani hedef t+1'e göre "şu ana kadarki durum".
+    # (Eskiden bu toplantıdan ÖNCEKİ streak'i sayıyordu; hedef t+1 olunca bu
+    # toplantının kendi kararı da artık "bilinen geçmiş" olduğu için dahil
+    # edildi.)
     streak = []
     cur = 0
-    prev_changes = df["delta_bp"].shift(1).fillna(0.0).values
-    for v in prev_changes:
+    changes = df["delta_bp"].fillna(0.0).values
+    for v in changes:
         if float(v) == 0.0:
             cur += 1
         else:
@@ -1879,9 +1927,10 @@ def textasdata_prepare_df_hybrid_cpi(
     df["hold_streak"] = np.array(streak, dtype=int)
 
     df["prev_sign"] = np.sign(df["delta_bp_lag1"].fillna(0.0)).astype(int)
-    df["mean_abs_last3"] = df["delta_bp"].shift(1).abs().rolling(3).mean()
+    df["mean_abs_last3"] = df["delta_bp"].abs().rolling(3).mean()
 
-    # days since prev meeting
+    # days since prev meeting (bu toplantının kendi aralığı — bir sonraki
+    # toplantıya kaç gün kaldığının bilinen tek proxy'si; DEĞİŞTİRİLMEDİ)
     med = float(df[date_col].diff().dt.days.dropna().median()) if len(df) > 2 else 30.0
     df["days_since_prev"] = df[date_col].diff().dt.days.fillna(med).clip(lower=0).astype(float)
 
@@ -1889,14 +1938,21 @@ def textasdata_prepare_df_hybrid_cpi(
         [
             "period_date",
             "text",
-            "delta_bp",
+            "delta_bp",        # bu satırın (t) KENDİ gerçekleşen değeri —
+                                 # yalnızca predict_textasdata_hybrid_cpi'nin
+                                 # "bilinen son durum" olarak okuması için;
+                                 # MODELİN HEDEFİ DEĞİL (bkz. next_delta_bp).
+            "next_delta_bp",    # HEDEF (t+1) — bkz. fonksiyon başındaki not.
+            "next_period_date", # hedefin (t+1) kendi tarihi — pred_df/rapor
+                                 # grafiklerinde "gerçekleşen" ile "tahmin"i
+                                 # aynı döneme hizalamak için.
             "policy_rate",
 
-            # lags
+            # lags (t+1 hedefine göre)
             "policy_rate_lag1", "delta_bp_lag1", "delta_bp_lag3", "policy_rate_trend",
             "hold_streak", "prev_sign", "mean_abs_last3", "days_since_prev",
 
-            # CPI (lagged)
+            # CPI (lagged — ayrı neden, değişmedi)
             "cpi_yoy_lag1", "cpi_mom_lag1", "cpi_trend3_lag1",
         ]
     ].copy()
@@ -1927,8 +1983,12 @@ def train_textasdata_hybrid_cpi_ridge(
         return {}
 
     df = df_td.copy().dropna(subset=["period_date"]).sort_values("period_date").reset_index(drop=True)
-    df_train = df.dropna(subset=["delta_bp"]).copy()
-    if df_train["delta_bp"].notna().sum() < 10:
+    # DÜZELTME: hedef artık next_delta_bp (bkz. textasdata_prepare_df_hybrid_cpi
+    # başındaki not) — bu satırın KENDİ delta_bp'si değil, bir SONRAKİ
+    # toplantının delta_bp'si. Son satır (henüz bir sonraki toplantı
+    # gerçekleşmemişse) burada doğal olarak elenir.
+    df_train = df.dropna(subset=["next_delta_bp"]).copy()
+    if df_train["next_delta_bp"].notna().sum() < 10:
         return {}
 
     import numpy as np
@@ -1974,7 +2034,7 @@ def train_textasdata_hybrid_cpi_ridge(
     ]
 
     X = df_train[["text"] + num_cols].copy()
-    y = df_train["delta_bp"].astype(float).values
+    y = df_train["next_delta_bp"].astype(float).values
 
     preprocess = ColumnTransformer(
         transformers=[
@@ -2026,7 +2086,18 @@ def train_textasdata_hybrid_cpi_ridge(
     else:
         metrics.update({"mae": np.nan, "rmse": np.nan, "r2": np.nan})
 
-    pred_df = df_train[["period_date", "delta_bp", "policy_rate"]].copy()
+    # pred_df: "period_date"/"delta_bp" burada BİLEREK hedefin (t+1) kendi
+    # tarihine/gerçekleşen değerine hizalanır — grafikte "Gerçekleşen" ile
+    # "Model Tahmini" aynı dönem için yan yana okunabilsin diye (bkz.
+    # textasdata_prepare_df_hybrid_cpi'deki next_period_date/next_delta_bp
+    # notu). "source_period_date" ise tahmini üreten METNİN ait olduğu
+    # dönemi (t) şeffaflık için ayrıca taşır.
+    pred_df = pd.DataFrame({
+        "period_date": df_train["next_period_date"].values,
+        "delta_bp": df_train["next_delta_bp"].astype(float).values,
+        "policy_rate": df_train["policy_rate"].values,
+        "source_period_date": df_train["period_date"].values,
+    })
     pred_df["pred_delta_bp"] = pred
 
     pipe.fit(X, y)
@@ -2065,6 +2136,21 @@ def predict_textasdata_hybrid_cpi(model_pack: dict, df_hist: pd.DataFrame, text:
     """
     For single-text prediction we need the latest known macro/history values from df_hist.
     df_hist should be the output of textasdata_prepare_df_hybrid_cpi (sorted).
+
+    Girdi satırı, df_hist'in SON satırının (t) KENDİ ham policy_rate/delta_bp/
+    vb. değerlerinden kurulur ve verilen `text` ile eşleştirilir — bu, eğitimde
+    artık next_delta_bp (t+1) hedefine göre kurulan "_lag1" özellikleriyle
+    BİREBİR aynı hizalamadır (bkz. textasdata_prepare_df_hybrid_cpi'nin
+    başındaki DÜZELTME notu): son bilinen (t) durum + t'de yayımlanan metin,
+    henüz gerçekleşmemiş (t+1) toplantıyı tahmin etmek için kullanılır.
+
+    DÜZELTME (EVDS/eksik-veri doldurma): eskiden eksik (NaN) özellikler burada
+    elle 0.0 ile dolduruluyordu — bu, aşağıda çağrılan pipe'ın (bkz.
+    train_textasdata_hybrid_cpi_ridge) kendi SimpleImputer(strategy="median")
+    adımını fiilen devre dışı bırakıyordu (imputer'a hiçbir zaman gerçek NaN
+    ulaşmıyordu) ve eksik bir özelliği genelde anlamsız olan "0" değeriyle
+    modele veriyordu. Şimdi gerçek NaN korunuyor ve eğitimde kullanılanla AYNI,
+    eğitim setinin medyanına dayalı imputer'a bırakılıyor.
     """
     if not model_pack or "model" not in model_pack:
         return {}
@@ -2080,34 +2166,37 @@ def predict_textasdata_hybrid_cpi(model_pack: dict, df_hist: pd.DataFrame, text:
     df_hist = df_hist.sort_values("period_date").reset_index(drop=True)
     last = df_hist.iloc[-1]
 
-    # NaN-safe last state
-    last_policy = _sf(last.get("policy_rate", np.nan), default=0.0)
-    last_delta  = _sf(last.get("delta_bp", np.nan), default=0.0)
+    # NaN-safe last state — 'default' burada YALNIZCA sayısal-olmayan/sonsuz
+    # değerleri temizlemek için var; kaynak veri GERÇEKTEN eksikse (NaN)
+    # artık yapay bir sayıyla DOLDURULMUYOR (bkz. yukarıdaki DÜZELTME notu).
+    last_policy = _sf(last.get("policy_rate", np.nan), default=np.nan)
+    last_delta  = _sf(last.get("delta_bp", np.nan), default=np.nan)
 
     row = pd.DataFrame([{
         "text": txt,
 
         "policy_rate_lag1": last_policy,
         "delta_bp_lag1": last_delta,
-        "delta_bp_lag3": _sf(df_hist["delta_bp"].tail(3).mean(), default=0.0),
-        "policy_rate_trend": _sf(_safe_slope(df_hist["policy_rate"].tail(3)), default=0.0),
+        "delta_bp_lag3": _sf(df_hist["delta_bp"].tail(3).mean(), default=np.nan),
+        "policy_rate_trend": _sf(_safe_slope(df_hist["policy_rate"].tail(3)), default=np.nan),
 
-        "hold_streak": _sf(last.get("hold_streak", 0.0), default=0.0),
-        "prev_sign": float(np.sign(last_delta)),
-        "mean_abs_last3": _sf(df_hist["delta_bp"].tail(3).abs().mean(), default=0.0),
-        "days_since_prev": _sf(last.get("days_since_prev", 30.0), default=30.0),
+        "hold_streak": _sf(last.get("hold_streak", np.nan), default=np.nan),
+        "prev_sign": float(np.sign(last_delta)) if np.isfinite(last_delta) else np.nan,
+        "mean_abs_last3": _sf(df_hist["delta_bp"].tail(3).abs().mean(), default=np.nan),
+        "days_since_prev": _sf(last.get("days_since_prev", np.nan), default=np.nan),
 
-        "cpi_yoy_lag1": _sf(last.get("cpi_yoy_lag1", np.nan), default=0.0),
-        "cpi_mom_lag1": _sf(last.get("cpi_mom_lag1", np.nan), default=0.0),
-        "cpi_trend3_lag1": _sf(last.get("cpi_trend3_lag1", np.nan), default=0.0),
+        "cpi_yoy_lag1": _sf(last.get("cpi_yoy_lag1", np.nan), default=np.nan),
+        "cpi_mom_lag1": _sf(last.get("cpi_mom_lag1", np.nan), default=np.nan),
+        "cpi_trend3_lag1": _sf(last.get("cpi_trend3_lag1", np.nan), default=np.nan),
     }])
 
-    # final safety sweep
+    # final safety sweep — yalnızca sonsuzu NaN'a çevirir ve tipi sayısala
+    # zorlar; ARTIK elle 0.0 doldurma YOK (bkz. yukarıdaki DÜZELTME notu) —
+    # gerçek NaN, pipe'ın kendi median-imputer adımına ulaşır.
     row = row.replace([np.inf, -np.inf], np.nan)
     for c in row.columns:
         if c != "text":
             row[c] = pd.to_numeric(row[c], errors="coerce")
-    row = row.fillna(0.0)
 
     pred_bp = float(pipe.predict(row)[0])
     return {"pred_delta_bp": pred_bp}

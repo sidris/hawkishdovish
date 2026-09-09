@@ -1006,7 +1006,13 @@ def _render_tab_text_as_data():
         rate_col="policy_rate"
     )
 
-    if df_td_full.empty or df_td_full["delta_bp"].notna().sum() < 10:
+    # NOT: eğitilebilirlik artık "next_delta_bp" (bir SONRAKİ toplantının
+    # delta_bp'si) üzerinden ölçülür, "delta_bp" (satırın kendi kararı) değil
+    # — bkz. utils.textasdata_prepare_df_hybrid_cpi'deki hedef/özellik
+    # hizalama düzeltmesi notu. Bu yüzden en güncel karar (henüz bir sonraki
+    # toplantısı gerçekleşmemiş olan) her zaman eğitim dışı kalır; bu bir
+    # hata değil, "henüz bilinmeyeni tahmin ediyoruz" ilkesinin doğal sonucu.
+    if df_td_full.empty or df_td_full["next_delta_bp"].notna().sum() < 10:
         st.warning("HYBRID+CPI eğitim için yeterli gözlem yok. (En az ~10 kayıt önerilir)")
         return
 
@@ -1016,7 +1022,8 @@ def _render_tab_text_as_data():
     # ÜÇ FARKLI "MAX TARİH" KAVRAMI VAR — kullanıcının kafası karışmasın diye hepsini gösteriyoruz:
     #   1) raw_max     : Supabase'deki TÜM kayıtların en yeni period_date'i (etiketli/etiketsiz fark etmez)
     #   2) prep_max    : df_td_full'a giren (yani lag/rolling feature'ları NaN-değil olan) en yeni satır
-    #   3) labeled_max : delta_bp'si DOLU olan en yeni satır — backtest grafiği bunda biter
+    #   3) labeled_max : next_delta_bp'si (bir SONRAKİ toplantının kararı) DOLU olan en yeni satır —
+    #                    yani modelin GERÇEKTEN eğitilebildiği son gözlem; backtest grafiği bunda biter
     raw_dates = pd.to_datetime(df_logs["period_date"], errors="coerce").dropna()
     raw_min = raw_dates.min().date()
     raw_max = raw_dates.max().date()
@@ -1024,15 +1031,17 @@ def _render_tab_text_as_data():
     prep_dates = pd.to_datetime(df_td_full["period_date"], errors="coerce").dropna()
     prep_max = prep_dates.max().date() if not prep_dates.empty else raw_max
 
-    labeled_dates = df_td_full.dropna(subset=["delta_bp"])["period_date"]
+    labeled_dates = df_td_full.dropna(subset=["next_delta_bp"])["period_date"]
     if labeled_dates.empty:
-        st.warning("Etiketli (delta_bp dolu) hiçbir karar yok.")
+        st.warning("Eğitilebilir (bir sonraki toplantının kararı bilinen) hiçbir gözlem yok.")
         return
     data_min = pd.to_datetime(labeled_dates.min()).date()
     data_max = pd.to_datetime(labeled_dates.max()).date()
 
-    # Etiketli son karardan SONRA gelen ama eğitime giremeyen kayıtları yakala
+    # Eğitilebilir son gözlemden SONRA gelen ama eğitime giremeyen kayıtları yakala
     df_logs_after = df_logs[pd.to_datetime(df_logs["period_date"]).dt.date > data_max].copy()
+    td_full_by_date = df_td_full.copy()
+    td_full_by_date["_d"] = pd.to_datetime(td_full_by_date["period_date"], errors="coerce").dt.date
     missing_after = []
     for _, r in df_logs_after.iterrows():
         d = pd.to_datetime(r["period_date"]).date()
@@ -1042,7 +1051,11 @@ def _render_tab_text_as_data():
         if pd.isna(r.get("policy_rate")):
             why.append("policy_rate boş")
         if not why:
-            why.append("lag/rolling feature NaN (CPI veya komşu kayıt eksik)")
+            trow = td_full_by_date[td_full_by_date["_d"] == d]
+            if not trow.empty and pd.isna(trow.iloc[0].get("next_delta_bp")) and pd.notna(trow.iloc[0].get("delta_bp")):
+                why.append("henüz bir sonraki toplantının kararı girilmedi (veri setindeki en güncel karar)")
+            else:
+                why.append("lag/rolling feature NaN (CPI veya komşu kayıt eksik)")
         missing_after.append((d, ", ".join(why)))
 
     cdate1, cdate2, cdate3 = st.columns([2, 2, 1])
@@ -1050,13 +1063,14 @@ def _render_tab_text_as_data():
         auto_extend = st.checkbox(
             "🔄 Son karara kadar otomatik uzat",
             value=True,
-            help="Açıkken üst sınır otomatik olarak veritabanındaki en güncel ETİKETLİ (delta_bp dolu) PPK kararına eşitlenir."
+            help="Açıkken üst sınır otomatik olarak, bir SONRAKİ toplantının kararı da bilinen "
+                 "(yani modelin gerçekten eğitilebildiği) en güncel gözleme eşitlenir."
         )
     with cdate2:
         st.caption(
             f"📅 Ham veri: **{raw_min} → {raw_max}**  ·  "
-            f"Etiketli son karar: **{data_max}**  ·  "
-            f"Etiketli karar sayısı: **{int(labeled_dates.notna().sum())}**"
+            f"Eğitilebilir son gözlem: **{data_max}**  ·  "
+            f"Eğitilebilir gözlem sayısı: **{int(labeled_dates.notna().sum())}**"
         )
     with cdate3:
         if st.button("♻️ Veriyi Yenile", help="Cache'i temizleyip Supabase + EVDS'den yeniden çeker"):
@@ -1070,13 +1084,20 @@ def _render_tab_text_as_data():
                 pass
             st.rerun()
 
-    # Eğer DB'de etiketli son karardan daha yeni kayıtlar varsa, kullanıcıyı bilgilendir
+    # Eğer DB'de eğitilebilir son gözlemden daha yeni kayıtlar varsa, kullanıcıyı bilgilendir
     if missing_after:
         lines = "\n".join([f"- **{d}** → _{reason}_" for d, reason in missing_after])
+        only_next_missing = all("sonraki toplantının kararı girilmedi" in reason for _, reason in missing_after)
+        if only_next_missing:
+            cozum = ("👉 Bu normaldir — veri setindeki en güncel karardan sonra henüz yeni bir PPK toplantısı "
+                     "olmadı. Bir sonraki toplantının kararı **Veri Girişi**'nden girildiğinde bu gözlem de "
+                     "otomatik olarak eğitime dahil olur.")
+        else:
+            cozum = ("👉 Çözüm: **Veri Girişi** sekmesinden o kararın `delta_bp` ve `policy_rate` alanlarını "
+                      "doldurun, sonra burada **♻️ Veriyi Yenile**'ye basın.")
         st.warning(
             f"⚠️ DB'de **{data_max}** sonrası **{len(missing_after)}** kayıt var ama eğitime giremiyor:\n\n{lines}\n\n"
-            f"👉 Çözüm: **Veri Girişi** sekmesinden o kararın `delta_bp` ve `policy_rate` alanlarını doldurun, "
-            f"sonra burada **♻️ Veriyi Yenile**'ye basın."
+            f"{cozum}"
         )
 
     # Date range picker — max_value RAW max'a kadar açık (kullanıcı son etiketsiz kaydı da görsün);
@@ -1112,7 +1133,7 @@ def _render_tab_text_as_data():
     )
     df_td = df_td_full.loc[mask_range].reset_index(drop=True)
 
-    if df_td.empty or df_td["delta_bp"].notna().sum() < 10:
+    if df_td.empty or df_td["next_delta_bp"].notna().sum() < 10:
         st.warning(
             f"Seçili aralıkta ({sel_start} → {sel_end}) yeterli etiketli gözlem yok. "
             f"En az ~10 kayıt önerilir. Aralığı genişletmeyi deneyin."
@@ -1126,7 +1147,9 @@ def _render_tab_text_as_data():
     with c1:
         st.info(
             "Bu sekme **English TF-IDF (word+char)** + **faiz geçmişi** + **TÜFE (lagged)** ile "
-            "**delta_bp (bps)** tahmin eder. Walk-forward backtest gösterir."
+            "bir metnin yayımlandığı dönemden **BİR SONRAKİ** toplantının **delta_bp (bps)**'sini "
+            "tahmin eder (o metin, kendi döneminin kararını zaten açıkladığı için AYNI dönemi tahmin "
+            "etmek döngüsel/anlamsız olurdu). Walk-forward backtest gösterir."
         )
     with c2:
         min_df = st.number_input("min_df", min_value=1, max_value=10, value=2, step=1)
@@ -1580,8 +1603,9 @@ with tab7:
         fig_abg.add_hline(y=min_n, line=dict(color="crimson", dash="dot", width=1),
                           row=2, col=1)
 
-        # Endeks [0,2] aralığında SINIRLIDIR (1 + (H-D)/(H+D) simetrik oran) —
-        # bkz. utils.analyze_hawk_dove. Eksen bu yüzden sabit tutulur.
+        # Endeks [0,2] aralığında SINIRLIDIR (1 + (H-D)/(H+D+K) simetrik oran,
+        # K=utils.ABG_SHRINK_K) — bkz. utils.analyze_hawk_dove. Eksen bu yüzden
+        # sabit tutulur.
         fig_abg.update_yaxes(title_text="Şahinlik Endeksi (0 – 2)",
                              range=[0, 2], row=1, col=1)
         fig_abg.update_yaxes(title_text="adet", rangemode="tozero", row=2, col=1)
@@ -1593,16 +1617,21 @@ with tab7:
         st.plotly_chart(fig_abg, use_container_width=True, key="abg_main")
 
         zayif = int((~abg_df["guvenilir"]).sum())
+        _abg_k = getattr(utils, "ABG_SHRINK_K", 0.0)
         st.caption(
-            "Endeks `1 + (şahin−güvercin) / (şahin+güvercin)` olarak hesaplanır — Apel, "
+            "Endeks temel olarak `1 + (şahin−güvercin) / (şahin+güvercin)` — Apel, "
             "Blix Grimaldi & Hull (2019), *How Much Information Do Monetary Policy "
             "Committees Disclose?*, Sveriges Riksbank Working Paper No. 381, s.8, "
-            "Eşitlik (1)'deki tanımın birebir aynısı. Simetrik bir orandır, [0,2] "
-            "aralığında sınırlıdır, 1.00 = nötr. Hiç eşleşme olmayan dönemlerde (0/0, "
-            "matematiksel olarak tanımsız) yazılımsal güvenlik amacıyla 1.00 (nötr) "
-            "döndürülür — bu makaleden değil, veri yokluğu için gerekli bir "
-            "varsayılandır; bu dönemler zaten güvenilirlik eşiğinin altında kalıp içi "
-            "boş işaretle gösterilir. "
+            "Eşitlik (1)'deki tanımın birebir aynısıdır — üzerine, düşük eşleşme "
+            f"sayısında (n_match) endeksin tek bir kelimeyle uca (0/2) savrulmasını "
+            f"yumuşatmak için makalede olmayan bir Laplace-tipi düzeltme (paydaya "
+            f"+K={_abg_k:.0f} eklenir) uygulanır: `1 + (şahin−güvercin) / "
+            f"(şahin+güvercin+K)`. Bu K terimi bir ATIF değil, bizim eklediğimiz "
+            "pratik bir düzeltmedir (bkz. utils.ABG_SHRINK_K). Simetrik bir orandır, "
+            "[0,2] aralığında sınırlıdır, 1.00 = nötr. K>0 olduğu için hiç eşleşme "
+            "olmayan dönemlerde de (0/0, saf makale formülünde tanımsız olurdu) "
+            "formül doğal olarak 1.00 (nötr) verir — bu dönemler ayrıca güvenilirlik "
+            "eşiğinin altında kalıp içi boş işaretle gösterilir. "
             + (f"Bu eşikte **{zayif} dönem** güvenilirlik sınırının altında "
                "(içi boş işaret) — o noktalar yorumlanmamalıdır." if zayif else
                "Bu eşikte tüm dönemler güvenilirlik sınırının üstünde.")

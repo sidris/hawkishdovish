@@ -1756,29 +1756,38 @@ def build_report(
         "Ek'indeki (Appendix, Tablo 4-6) sözlükle doğrudan karşılaştırılarak doğrulanmıştır. "
         "Çapa kelime ile modifikatör arasındaki pencere de makaledeki gibi ±7 kelime ve AYNI "
         "CÜMLE içiyle sınırlıdır (makale s.7: \"separated by up to seven words within the same "
-        "sentence\"). Endeks, aynı makalenin s.8'indeki Eşitlik (1) ile BİREBİR AYNIdır: "
-        "Net Index = 1 + (şahin − güvercin) / (şahin + güvercin). Bu simetrik bir orandır ve "
-        "[0,2] aralığında sınırlıdır — 1.00 = nötr, 2.00 = tamamen şahin (yalnızca şahin "
-        "eşleşmesi), 0.00 = tamamen güvercin. Hiç eşleşme olmayan (şahin=güvercin=0) "
-        "dönemlerde payda sıfır olduğundan formül matematiksel olarak tanımsızdır; bu durumda "
-        "yazılımsal bir zorunluluk olarak (makalenin kendisinden değil) nötr (1.00) döndürülür "
-        "— bu dönemler zaten güvenilirlik eşiğinin altında kalıp ayrıca işaretlenir. Kaç "
-        "eşleşmeye (n_match) dayandığı raporlanır — düşük n_match, endeksin güvenilir biçimde "
-        "yorumlanamayacağının işaretidir."
+        "sentence\"). Endeksin TEMEL formülü, aynı makalenin s.8'indeki Eşitlik (1) ile BİREBİR "
+        "AYNIdır: Net Index = 1 + (şahin − güvercin) / (şahin + güvercin). Bu simetrik bir "
+        f"orandır ve [0,2] aralığında sınırlıdır — 1.00 = nötr. Bu araçta, paydaya ek olarak "
+        f"sabit bir K={utils.ABG_SHRINK_K:.0f} eklenir: Net Index = 1 + (şahin − güvercin) / "
+        f"(şahin + güvercin + K). Bu K terimi MAKALEDE YOKTUR — düşük eşleşme sayısında "
+        "(n_match) saf makale formülünün endeksi tek bir kelimeyle doğrudan uca (0.00/2.00) "
+        "fırlatmasını yumuşatmak için eklenmiş, ayrıca etiketlenen bir Laplace-tipi pratik "
+        "düzeltmedir; büyük n_match'te etkisi küçülür ve endeks makalenin saf oranına yaklaşır. "
+        "K>0 olduğu için payda hiçbir zaman sıfır olmaz — hiç eşleşme olmayan (şahin=güvercin=0) "
+        "dönemlerde de (saf makale formülünde bu 0/0 nedeniyle tanımsız olurdu) formül doğal "
+        "olarak nötr (1.00) verir; bu dönemler ayrıca güvenilirlik eşiğinin altında kalıp içi "
+        "boş işaretle gösterilir. Kaç eşleşmeye (n_match) dayandığı raporlanır — düşük n_match, "
+        "endeksin (K-düzeltmesine rağmen) güvenilir biçimde yorumlanamayacağının işaretidir."
     )
     doc.add_paragraph(
-        "Şeffaflık notu: bu göstergenin formülü bu aracın geliştirilmesi sırasında iki kez "
-        "düzeltildi. İlk sürümde paydaya bir Laplace düzeltme sabiti (K) eklenmiş bir varyant "
-        "kullanılıyor ve \"ABG klasik tanımı\" diye etiketleniyordu; bu sabit orijinal makalede "
-        "yoktu ve kaldırıldı. Ardından, ara bir düzeltmede yanlışlıkla FARKLI bir ABG makalesi "
-        "(Apel & Blix Grimaldi, 2012, Riksbank WP No. 261) baz alınarak (#şahin+1)/(#güvercin+1) "
-        "oran formülüne geçildi — bu da hatalıydı, çünkü bu kod tabanının (sözlük dahil) fiili "
-        "kaynağı o makale değildi. Her iki düzeltme de doğrudan ilgili makale PDF'i kontrol "
-        "edilerek geri alınmış ve yukarıdaki, doğrulanmış kaynağa (WP 381, 2019) birebir sadık "
-        "kalınmıştır. Aynı doğrulama sırasında pencere genişliğinin de koddaki tüm çağrılarda "
-        "10 kelimeye ayarlı olduğu (fonksiyonun kendi varsayılanı zaten 7'ydi) fark edilmiş ve "
-        "makaledeki ±7 kelimeye çekilmiştir — sözlüğün kendisi ise baştan beri bu makalenin "
-        "Ek'indeki tablolarla birebir örtüşüyordu, bir değişiklik gerekmedi."
+        "Şeffaflık notu: bu göstergenin formülü aracın geliştirilmesi sırasında birkaç kez "
+        "değişti. Başlangıçta paydaya bir K sabiti eklenmiş bir varyant kullanılıyor ama "
+        "\"ABG klasik tanımı\" diye (yanlış biçimde, makaleye atfen) etiketleniyordu. Bir ara "
+        "düzeltmede bu K tamamen kaldırılıp makalenin saf formülüne dönülmüş, ayrıca yanlışlıkla "
+        "FARKLI bir ABG makalesi (Apel & Blix Grimaldi, 2012, Riksbank WP No. 261) baz alınarak "
+        "kısa süreliğine (#şahin+1)/(#güvercin+1) oran formülüne de geçilmişti — bu ikinci "
+        "değişiklik hatalıydı, çünkü bu kod tabanının (sözlük dahil) fiili kaynağı o makale "
+        "değildi; doğrudan ilgili makale PDF'i kontrol edilerek geri alındı ve doğrulanmış "
+        "kaynağa (WP 381, 2019, Eşitlik 1) sadık kalındı. Bu düzeltmenin ardından, düşük "
+        "n_match'te endeksin tek bir kelimeyle uca savrulmasının görsel/pratik olarak "
+        "yanıltıcı olduğu görüldü ve K düzeltmesi — bu kez MAKALENİN BİR PARÇASI OLMADIĞI "
+        "açıkça belirtilerek, makalenin kendi formülünün üstüne eklenen ayrı bir pratik "
+        "düzeltme olarak — geri kondu (K=2.0, bkz. utils.ABG_SHRINK_K). Aynı doğrulama "
+        "sürecinde pencere genişliğinin de koddaki tüm çağrılarda 10 kelimeye ayarlı olduğu "
+        "(fonksiyonun kendi varsayılanı zaten 7'ydi) fark edilmiş ve makaledeki ±7 kelimeye "
+        "çekilmiştir — sözlüğün kendisi ise baştan beri bu makalenin Ek'indeki tablolarla "
+        "birebir örtüşüyordu, bir değişiklik gerekmedi."
     )
 
     _add_heading(doc, "A.2 — CB-RoBERTa Modeli (bkz. §2.2)", level=2)
@@ -1902,6 +1911,23 @@ def build_report(
         "seçimi ise bu iskeletin daha basit/yorumlanabilir bir versiyonudur — R²/MAE/hit-rate "
         "değerleri (§7.2) bu basit temsilin BU örneklemde ne kadar işe yaradığının doğrudan kanıtıdır.",
         label="Bilimsel dayanak:")
+    _add_note(doc,
+        "Bu bölümdeki metodoloji, önceki bir sürümde ÜÇ ayrı iç tutarlılık sorunu taşıyordu ve bu "
+        "oturumda düzeltildi: (1) Hedef/özellik hizalaması — model eskiden bir dönemin metninden "
+        "AYNI dönemin kararını tahmin etmeye çalışıyordu; PPK metni kararla aynı anda yayımlandığı "
+        "ve kararı doğrudan bildirdiği için bu döngüsel bir kurulumdu (gerçek bir tahmin değil). "
+        "Şimdi hedef bir SONRAKİ toplantının kararı (next_delta_bp) — yukarıdaki 'bir sonraki "
+        "delta_bp'yi tahmin eden' ifadesi artık gerçek modelin kurulumunu birebir yansıtıyor. "
+        "(2) Bakış-öne-sızıntı (look-ahead bias) — geçmişe dönük üretilen raporlarda model, ilgili "
+        "dönemden SONRAKİ (o dönem için henüz gerçekleşmemiş) kararları da görerek eğitiliyordu; "
+        "şimdi yalnızca raporun kendi döneminde ve öncesinde bilinebilecek kayıtlarla eğitiliyor. "
+        "(3) Eksik-veri doldurma — sıradaki toplantı tahmininde eksik makro/durum özellikleri "
+        "eskiden elle 0.0 ile dolduruluyordu; bu, modelin kendi eğitim-medyanı temelli "
+        "imputer adımını devre dışı bırakıyordu. Şimdi gerçek eksik değerler o adıma bırakılıyor. "
+        "Bu üç düzeltme, §7'deki R²/MAE/RMSE/hit-rate rakamlarının önceki sürümlere göre FARKLI "
+        "(genelde daha mütevazı ama gerçekçi) çıkmasına yol açabilir — bu bir gerileme değil, "
+        "artık gerçek bir tahmin görevini ölçüyor olmanın doğal sonucudur.",
+        label="Şeffaflık notu (bu oturumdaki düzeltme):")
 
     # =========================================================================
     # EK B: KISALTMALAR VE SÖZLÜK
@@ -1909,8 +1935,10 @@ def build_report(
     doc.add_page_break()
     _add_heading(doc, "Ek B: Kısaltmalar ve Sözlük", level=1)
     glossary = [
-        ("ABG", "Apel, Blix Grimaldi & Hull (2019) — sözlük/kural temelli şahin-güvercin ölçüm "
-                "yöntemi; endeks = 1 + (şahin−güvercin)/(şahin+güvercin), [0,2] aralığında."),
+        ("ABG", f"Apel, Blix Grimaldi & Hull (2019) — sözlük/kural temelli şahin-güvercin ölçüm "
+                f"yöntemi; temel formül (makale) = 1 + (şahin−güvercin)/(şahin+güvercin); bu "
+                f"araçta ayrıca düşük eşleşme sayısını yumuşatan, makalede olmayan bir K="
+                f"{utils.ABG_SHRINK_K:.0f} paydası eklenir (bkz. Ek A.1), [0,2] aralığında."),
         ("CB-RoBERTa", "Bu raporun kullandığı model: mrince/CBRT-RoBERTa-HawkishDovish-Classifier "
                        "(Hugging Face). Taban model FacebookAI/roberta-base'dir; TCMB PPK özet "
                        "metinlerinden çıkarılmış ~7.200 gerçek cümleyle 3 sınıf (hawkish/dovish/"
@@ -2001,15 +2029,33 @@ def generate_full_report_for_period(donem: str, analyst_note: Optional[str] = No
 
     df_sent = utils.fetch_sentences()
 
+    # DÜZELTME (bakış-öne-sızıntı / look-ahead bias): GEÇMİŞE dönük bir rapor
+    # üretilirken (donem bugünden eski bir dönem olabilir), §7 backtest modeli
+    # SADECE o dönem raporunun kendi zamanında (donem VE ÖNCESİ) bilinebilecek
+    # kayıtlarla eğitilmeli — aksi halde model, donem'den SONRAKİ (raporun
+    # iddia ettiği "an"a göre henüz gerçekleşmemiş) kararları da görerek
+    # eğitilmiş olurdu; bu, "geçmişe dönük tahmin" iddiasıyla doğrudan çelişen
+    # bir veri sızıntısıdır. Bu filtre YALNIZCA §7 model eğitimi/df_hist için
+    # uygulanır — raporun geri kalanındaki tarihsel grafikler (ör. ABG/AI
+    # Rejim zaman serisi, §6 vb.) kasıtlı olarak TÜM tarihçeyi gösterir ve bu
+    # düzeltmenin kapsamı dışındadır.
+    df_logs_for_model = df_logs.copy()
+    df_logs_for_model["_Donem"] = pd.to_datetime(
+        df_logs_for_model["period_date"], errors="coerce"
+    ).dt.strftime("%Y-%m")
+    df_logs_for_model = df_logs_for_model[df_logs_for_model["_Donem"] <= donem].drop(columns=["_Donem"])
+
     model_pack = None
     if utils.HAS_ML_DEPS:
         try:
-            df_td = utils.textasdata_prepare_df_hybrid_cpi(df_logs, df_market)
-            if not df_td.empty and df_td["delta_bp"].notna().sum() >= 10:
+            df_td = utils.textasdata_prepare_df_hybrid_cpi(df_logs_for_model, df_market)
+            if not df_td.empty and df_td["next_delta_bp"].notna().sum() >= 10:
                 model_pack = utils.train_textasdata_hybrid_cpi_ridge(df_td)
                 if model_pack:
                     # §7.1 "Sıradaki Toplantı İçin Model Tahmini" bu ham öznitelik geçmişine
                     # ihtiyaç duyar (utils.predict_textasdata_hybrid_cpi'nin df_hist argümanı).
+                    # df_hist de aynı bakış-öne-sızıntı gerekçesiyle donem VE ÖNCESİYLE
+                    # sınırlı df_td'den geliyor.
                     model_pack["df_hist"] = df_td
         except Exception as e:
             print(f"[report_builder] Backtest modeli eğitilemedi (rapor bu bölüm olmadan devam ediyor): {e}")

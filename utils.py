@@ -2704,6 +2704,32 @@ def postprocess_ai_series_steps(df: pd.DataFrame,
     return out
 
 
+def _category_axis_ticks(categories, max_ticks: int = 18) -> tuple:
+    """
+    Uzun "Dönem" (YYYY-MM) kategori eksenlerinde okunaklı ve DOĞRU tik seçimi.
+
+    DÜZELTME: Plotly'nin kendi `nticks` otomatik seyreltmesi, dizinin SON
+    kategorisini göstermeyi GARANTİ ETMEZ — bir sonraki-Kth kategoriyi seçme
+    mantığı son noktayı atlayabilir. Sonuç: grafikteki en sağdaki (en güncel)
+    nokta, aslında ondan birkaç dönem ÖNCEKİ bir tarihin etiketiyle yan yana
+    görünür (ör. Eylül 2026 verisi "2026-04" etiketinin altında duruyormuş
+    gibi okunur) — bu, "hangi ay olduğu belli değil" sorununun daha kötü bir
+    versiyonu: YANLIŞ bir ay gösteriyor gibi okunur. Bu fonksiyon bunun yerine
+    tikleri BİZ seçeriz ve SON kategoriyi her zaman listeye dahil ederiz.
+    """
+    cats = [str(c) for c in categories]
+    n = len(cats)
+    if n == 0:
+        return [], []
+    if n <= max_ticks:
+        return cats, cats
+    step = -(-n // max_ticks)  # ceil
+    idx = list(range(0, n, step))
+    if idx[-1] != n - 1:
+        idx.append(n - 1)
+    return [cats[i] for i in idx], [cats[i] for i in idx]
+
+
 def create_ai_trend_chart_step(df_res: pd.DataFrame, step: int = 3):
     """
     step:
@@ -2772,18 +2798,18 @@ def create_ai_trend_chart_step(df_res: pd.DataFrame, step: int = 3):
 
     fig.add_hline(y=0, line_color="black", opacity=0.25)
 
+    # DÜZELTME: x ("Dönem") "YYYY-MM" metni olduğu için Plotly bunu otomatik
+    # olarak TARİH ekseni sanıp geniş aralıklarda yalnızca YIL etiketi
+    # gösteriyordu. type="category" ile her dönem kendi metniyle ayrı bir
+    # kategori olur; tikleri de nticks yerine _category_axis_ticks ile BİZ
+    # seçiyoruz — bu, en SON (en güncel) dönemin her zaman doğru etiketle
+    # gösterilmesini garanti eder (bkz. o fonksiyondaki not).
+    _tv, _tt = _category_axis_ticks(df["Dönem"])
     fig.update_layout(
         title=title,
-        # DÜZELTME: x ("Dönem") "YYYY-MM" metni olduğu için Plotly bunu
-        # otomatik olarak TARİH ekseni sanıp geniş aralıklarda yalnızca YIL
-        # etiketi gösteriyordu (ör. son birkaç ay "2026" ucunda hangi ay
-        # olduğu belli olmuyordu). type="category" ile her dönem kendi
-        # metniyle (ör. "2026-09") ayrı bir kategori olarak gösterilir;
-        # nticks + tickangle, uzun tarihçede etiketlerin üst üste binip
-        # okunmaz hale gelmesini (görünüşte "yalnızca yıl" izlenimi veren
-        # asıl neden) önler.
         xaxis=dict(title="Dönem", type="category", tickangle=-45,
-                   nticks=18, tickfont=dict(size=10)),
+                   tickmode="array", tickvals=_tv, ticktext=_tt,
+                   tickfont=dict(size=10)),
         yaxis=dict(title=y_col, range=yrange),
         height=450,
         margin=dict(l=20, r=20, t=40, b=90)
@@ -2877,9 +2903,14 @@ def create_tone_action_chart(df_res: pd.DataFrame, step: int = 3):
     fig.update_yaxes(title_text="Δ bp", row=2, col=1)
     # DÜZELTME: bkz. create_ai_trend_chart_step'teki aynı not — x ("Dönem")
     # "YYYY-MM" metni Plotly tarafından tarih sanılıp yalnızca yıl etiketine
-    # indirgenmesin diye kategori eksenine zorlanıyor; nticks+tickangle uzun
-    # tarihçede etiketlerin üst üste binmesini önler.
-    fig.update_xaxes(type="category", tickangle=-45, nticks=18,
+    # indirgenmesin diye kategori eksenine zorlanıyor. Tikler nticks yerine
+    # _category_axis_ticks ile seçiliyor ki en SON dönem her zaman doğru
+    # etiketle görünsün (nticks'in kendi seçimi son noktayı atlayabiliyor —
+    # bu da en güncel veriyi YANLIŞ bir ayın altında gösteriyormuş gibi
+    # okunmasına yol açıyordu).
+    _tv, _tt = _category_axis_ticks(df["Dönem"])
+    fig.update_xaxes(type="category", tickangle=-45, tickmode="array",
+                     tickvals=_tv, ticktext=_tt,
                      tickfont=dict(size=10), row=2, col=1)
     fig.update_layout(
         title="CB-RoBERTa — Ton × Aksiyon (Hawkish Cut / Dovish Hike yakalama)",
@@ -3033,11 +3064,13 @@ def create_ai_trend_chart(df_res: pd.DataFrame):
 
     fig.add_hline(y=0, line_color="black", opacity=0.25)
 
+    _tv, _tt = _category_axis_ticks(df["Dönem"])
     fig.update_layout(
         title="CB-RoBERTa — Duruş Trendi (Calib + EMA + Hysteresis)",
         # DÜZELTME: bkz. create_ai_trend_chart_step'teki aynı not.
         xaxis=dict(title="Dönem", type="category", tickangle=-45,
-                   nticks=18, tickfont=dict(size=10)),
+                   tickmode="array", tickvals=_tv, ticktext=_tt,
+                   tickfont=dict(size=10)),
         yaxis=dict(title=y_col, range=[-110, 110]),
         height=450,
         margin=dict(l=20, r=20, t=40, b=90)
@@ -4546,18 +4579,20 @@ def chart_tone_heatmap(df_matrix: pd.DataFrame, title: str, ylab: str = "",
         hoverongaps=False,
         xgap=1, ygap=1,
     ))
+    _tv, _tt = _category_axis_ticks(df_matrix.index)
     fig.update_layout(
         title=title, height=max(320, 40 * len(df_matrix.columns) + 140) + 60,
         # DÜZELTME: x ("Donem") "YYYY-MM" metni Plotly tarafından tarih
         # sanılıp geniş aralıklarda yalnızca YIL etiketi gösteriyordu (ör.
         # "2026" ucundaki hücrelerin hangi aya ait olduğu belli olmuyordu).
-        # type="category" ile her dönem kendi metniyle ayrı gösterilir;
-        # nticks+tickangle uzun tarihçede etiketlerin üst üste binip
-        # okunmaz hale gelmesini önler (hücrelerin kendisi hâlâ tam
-        # çözünürlükte kalır, yalnızca bazı sütunlar etiketsiz kalabilir —
-        # hover her zaman tam "YYYY-MM" gösterir).
+        # type="category" ile her dönem kendi metniyle ayrı gösterilir; tikler
+        # nticks yerine _category_axis_ticks ile seçiliyor ki en SON (en
+        # güncel) sütun her zaman doğru etiketle görünsün — hücrelerin
+        # kendisi hâlâ tam çözünürlükte kalır, yalnızca bazı sütunlar
+        # etiketsiz kalabilir; hover her zaman tam "YYYY-MM" gösterir.
         xaxis=dict(title="", type="category", tickangle=-45,
-                   nticks=18, tickfont=dict(size=10)),
+                   tickmode="array", tickvals=_tv, ticktext=_tt,
+                   tickfont=dict(size=10)),
         yaxis=dict(title=ylab, autorange="reversed"),
         margin=dict(t=50, b=90, l=10),
         plot_bgcolor="#d9dade",   # veri YOK -> gri zemin

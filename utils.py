@@ -4162,8 +4162,19 @@ def top_sentences(donem: str, k: int = 5, df_sent: Optional[pd.DataFrame] = None
 
     cols = [c for c in ["sent_idx", "sentence", "diff", "agent_label", "theme_label"]
             if c in d.columns]
-    sahin = d[d["diff"] >= DOC_STANCE_DEADBAND].head(k)[cols]
-    guvercin = d[d["diff"] <= -DOC_STANCE_DEADBAND].sort_values("diff").head(k)[cols]
+    sahin = d[d["diff"] >= DOC_STANCE_DEADBAND].head(k)[cols].copy()
+    guvercin = d[d["diff"] <= -DOC_STANCE_DEADBAND].sort_values("diff").head(k)[cols].copy()
+
+    # GÖSTERİM DÜZELTMESİ: sent_idx veritabanında/iç mantıkta 0-tabanlıdır
+    # (annotate_app.py, finetune_hawkdove.py vb. onu bu haliyle kullanır —
+    # burada DEĞİŞTİRİLMEZ). Ama bu fonksiyonun dönüşü yalnızca "#" sütunu
+    # olarak EKRANDA/rapordaki tabloda gösterilir; kullanıcıya 0'dan başlayan
+    # bir numara "index numarası" gibi görünüp kafa karıştırıyordu. Bu yüzden
+    # yalnızca bu gösterim kopyasında 1 eklenir (cümlenin metindeki gerçek
+    # sırası: 1., 2., 3. cümle...).
+    for _df in (sahin, guvercin):
+        if "sent_idx" in _df.columns:
+            _df["sent_idx"] = pd.to_numeric(_df["sent_idx"], errors="coerce") + 1
 
     ozet = {
         "n": int(len(d)),
@@ -4777,8 +4788,12 @@ def chart_sentence_strip(df_one: pd.DataFrame, title: str = "Cümle sırasına g
         for v in diffs
     ]
     wrapped = d["sentence"].astype(str).str.slice(0, 160).str.replace(r"(.{60})", r"\1<br>", regex=True)
+    # GÖSTERİM DÜZELTMESİ: sent_idx içeride 0-tabanlıdır; grafikte "1. cümle"den
+    # başlasın diye yalnızca çizim için +1 uygulanır (bkz. top_sentences'taki
+    # aynı not — d/df_one'ın kendisi/iç sent_idx değiştirilmez, sadece x ekseni).
+    x_display = pd.to_numeric(d["sent_idx"], errors="coerce") + 1
     fig = go.Figure(go.Bar(
-        x=d["sent_idx"], y=diffs, marker=dict(color=colors),
+        x=x_display, y=diffs, marker=dict(color=colors),
         customdata=np.stack([wrapped, d["agent_label"].astype(str), d["theme_label"].astype(str)], axis=-1),
         hovertemplate="#%{x} · ton %{y:.3f}<br>%{customdata[1]} · %{customdata[2]}<br>%{customdata[0]}<extra></extra>",
     ))
@@ -4836,7 +4851,7 @@ def sentence_heatmap_html(df_one: pd.DataFrame,
     for _, r in df_one.sort_values("sent_idx").iterrows():
         diff = float(r.get("diff", 0.0) or 0.0)
         sent = _htmllib.escape(str(r.get("sentence", "")))
-        tip = (f"#{int(r['sent_idx'])} · ton {diff:+.3f} · "
+        tip = (f"#{int(r['sent_idx']) + 1} · ton {diff:+.3f} · "
                f"H {float(r.get('hawk', 0)):.2f} / D {float(r.get('dove', 0)):.2f} / "
                f"N {float(r.get('neut', 0)):.2f}")
         badge = ""

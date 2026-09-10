@@ -1506,14 +1506,37 @@ def build_report(
         "sorusunu, konu kapsamı grafiği (§5.2) ise 'metin ZAMANLA hangi konulara daha çok "
         "yer ayırıyor' sorusunu cevaplar — ikisi FARKLI eksenler ölçer, karıştırılmamalı.")
     if not df_sent.empty:
+        # DÜZELTME: §5.1 ve §5.3 tek-etiketli `theme_label` yerine ÇOK-ETİKETLİ
+        # (kapsam) görünüm — utils.explode_themes(df_sent) — kullanır. Neden:
+        # tek-etiketli atamada bir cümle, kalıpları EN ÇOK eşleşen TEK temaya
+        # yazılır. Ör. gerçek bir PPK cümlesi olan "...will strengthen the
+        # disinflation process through demand, exchange rate, and expectation
+        # channels" hem "Kur & Dış Denge" (exchange rate) hem "Beklentiler &
+        # İletişim" (expectation) kalıplarına çarpar, ama aynı cümlede
+        # "monetary policy stance"/"price stability" gibi Politika Duruşu
+        # kalıpları daha SIK eşleştiği için tüm cümle yalnızca Politika
+        # Duruşu'na yazılır — Kur ve Beklentiler o cümleden HİÇ pay almaz,
+        # kelime geçmesine rağmen. PPK metninde Politika Duruşu/Enflasyon dili
+        # yapısal olarak çok sık geçtiğinden bu iki tema neredeyse her zaman
+        # yarışı kazanır; Kur/Beklentiler gibi nadiren TEK BAŞINA baskın olan
+        # temalar da dönem dönem ısı haritasında gri (veri yok) görünür —
+        # oysa aşağıdaki caption zaten "gri = konuya değinilmedi" diyor, ki bu
+        # yalnızca ÇOK-etiketli sayımda doğrudur. explode_themes bir cümleyi
+        # değindiği TÜM temalara sayar (kapsam okuması) — canlı uygulamadaki
+        # "🗺️ Ton Haritası & Konular" sekmesinin de varsayılanı budur
+        # (bkz. app.py, "Çok etiketli" toggle'ı, value=True).
+        df_topic_long = utils.explode_themes(df_sent)
+
         _add_heading(doc, "5.1 Konu × Ton Isı Haritası", level=2)
         doc.add_paragraph(
             "Satırlar konuları, sütunlar dönemleri gösterir; her hücre o dönem o konuya değinen "
             "cümlelerin ortalama tonudur (koyu kırmızı=şahin, koyu mavi=güvercin, beyaz=nötr, "
-            "gri=o dönem o konuya değinilmedi). Amaç: 'genel ton nötr' görünse bile hangi "
-            "konunun altta şahin/güvercin kaldığını görmek. (Ayrıntı: Ek A.5)"
+            "gri=o dönem o konuya değinilmedi). Bir cümle birden çok konuya değinebilir "
+            "(kapsam okuması) — bu yüzden bir konunun 'değinilme' sayısı toplam cümle sayısını "
+            "aşabilir; bu beklenen bir davranıştır, hata değildir. Amaç: 'genel ton nötr' "
+            "görünse bile hangi konunun altta şahin/güvercin kaldığını görmek. (Ayrıntı: Ek A.5)"
         )
-        tmat, cmat = utils.tone_matrix(df_sent, "theme_label", min_n=2)
+        tmat, cmat = utils.tone_matrix(df_topic_long, "theme_label", min_n=2)
         if not tmat.empty:
             fig_topic = utils.chart_tone_heatmap(tmat, "Konu × Ton (dönem bazında ortalama)", ylab="Konu", counts=cmat)
             _add_figure(doc, fig_topic, caption="Kırmızı = şahin, mavi = güvercin, beyaz = nötr; gri = o dönem o konuya değinilmedi (veri yok, sıfır değil).")
@@ -1550,13 +1573,18 @@ def build_report(
         except Exception as e:
             _add_note(doc, f"Konu kapsamı grafiği üretilemedi: {e}")
 
-        dvg = utils.divergence_table(df_sent, "theme_label")
+        # §5.1 ile TUTARLI olsun diye aynı çok-etiketli (kapsam) veri kullanılır —
+        # aksi halde bu tablo ile ısı haritası farklı temel varsayımlarla
+        # hesaplanmış olur (biri "kaç konudan biri", diğeri "kaç konuya değindi").
+        dvg = utils.divergence_table(df_topic_long, "theme_label")
         _add_heading(doc, "5.3 Konu bazlı özet (tüm dönemler)", level=2)
         doc.add_paragraph(
             "§5.1/§5.2'yi tüm tarihçe için tek satıra indirger — her konunun ortalama karnesi. "
-            "Listenin üstündeki konular tarihsel olarak en şahin, en alttakiler en güvercin "
-            "işlenenlerdir; yüksek 'Dönem' + düşük 'Std' ile birleşen bir satır en güvenilir "
-            "sinyaldir, 'Dönem' düşükse (1-2) tek seferlik bir gözlem sayın. (Ayrıntı: Ek A.7)"
+            "'Cümle' sütunu, bir cümle birden çok konuya sayılabildiği için (kapsam okuması) "
+            "toplam cümle sayısını aşabilir. Listenin üstündeki konular tarihsel olarak en "
+            "şahin, en alttakiler en güvercin işlenenlerdir; yüksek 'Dönem' + düşük 'Std' ile "
+            "birleşen bir satır en güvenilir sinyaldir, 'Dönem' düşükse (1-2) tek seferlik bir "
+            "gözlem sayın. (Ayrıntı: Ek A.7)"
         )
         _df_to_table(doc, dvg.rename(columns={"theme_label": "Konu"}))
     else:
@@ -1855,6 +1883,18 @@ def build_report(
         "VERİ YOKLUĞUdur — o dönem metin o konuya hiç ya da yeterince değinmemiştir (bkz. min_n "
         "eşiği). Amaç: 'genel ton şahin' gibi tek bir cümlenin ARKASINDA hangi konunun bu sonucu "
         "sürüklediğini görmek — ör. genel ton nötr görünse bile enflasyon satırı koyu kırmızı olabilir."
+    )
+    doc.add_paragraph(
+        "Metodoloji notu — ÇOK ETİKETLİ (kapsam) sayım: bir cümle aynı anda birden çok konuya "
+        "değinebilir (ör. 'disinflation process through demand, exchange rate, and expectation "
+        "channels' — talep, kur VE beklenti aynı cümlede geçer). Bu ısı haritası her cümleyi "
+        "değindiği TÜM konulara sayar; tek bir 'baskın' konu seçip diğerlerini görmezden gelmez. "
+        "Aksi halde (tek-etiketli sayım) bir cümlede birden fazla tema geçtiğinde en çok kalıp "
+        "eşleşen tema kazanır ve diğerleri o cümleden HİÇ pay alamaz — bu da Kur & Dış Denge veya "
+        "Beklentiler & İletişim gibi az kelimeyle ama yine de gerçekten geçen temaların, aslında "
+        "metinde değinilmiş olmalarına rağmen ısı haritasında yanlışlıkla gri (veri yok) "
+        "görünmesine yol açardı. Bu nedenle bir konunun 'değinilme' sayısı dönemdeki toplam "
+        "cümle sayısını aşabilir — bu beklenen bir davranıştır, hata değildir."
     )
 
     _add_heading(doc, "A.6 — Konu Kapsamı Grafiği Nasıl Okunur (bkz. §5.2)", level=2)

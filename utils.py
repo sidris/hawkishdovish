@@ -2908,7 +2908,20 @@ def create_tone_action_chart(df_res: pd.DataFrame, step: int = 3):
     # etiketle görünsün (nticks'in kendi seçimi son noktayı atlayabiliyor —
     # bu da en güncel veriyi YANLIŞ bir ayın altında gösteriyormuş gibi
     # okunmasına yol açıyordu).
+    #
+    # DÜZELTME 2 (kullanıcı raporu: "alttaki 2026-09 ile üstteki 2026-09
+    # aynı değil"): bu ayar önceden yalnızca row=2 (alt Δbp paneli) için
+    # uygulanıyordu. shared_xaxes=True yalnızca zoom/pan senkronizasyonu
+    # sağlar — iki panelin kategori↔piksel eşlemesini/tick etiketlerini
+    # otomatik eşitlemez. Bu yüzden üst panel (Ton) kendi varsayılan
+    # tarih-ekseni davranışına düşüyor ve alt panelden FARKLI bir konumda
+    # farklı bir ay etiketliyordu. Düzeltme: AYNI type/tickvals/ticktext
+    # her iki satıra da (row=1 VE row=2) ayrı ayrı açıkça uygulanır ki iki
+    # panel de birebir aynı kategori sırasını ve aynı tikleri kullansın.
     _tv, _tt = _category_axis_ticks(df["Dönem"])
+    fig.update_xaxes(type="category", tickangle=-45, tickmode="array",
+                     tickvals=_tv, ticktext=_tt,
+                     tickfont=dict(size=10), row=1, col=1)
     fig.update_xaxes(type="category", tickangle=-45, tickmode="array",
                      tickvals=_tv, ticktext=_tt,
                      tickfont=dict(size=10), row=2, col=1)

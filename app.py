@@ -35,8 +35,14 @@ def _top_sentences(donem, k=5, df_sent=None):
 
     cols = [c for c in ["sent_idx", "sentence", "diff", "agent_label", "theme_label"]
             if c in d.columns]
-    sahin = d[d["diff"] >= db].head(k)[cols]
-    guvercin = d[d["diff"] <= -db].sort_values("diff").head(k)[cols]
+    sahin = d[d["diff"] >= db].head(k)[cols].copy()
+    guvercin = d[d["diff"] <= -db].sort_values("diff").head(k)[cols].copy()
+    # utils.top_sentences ile aynı gösterim düzeltmesi: sent_idx 0-tabanlı,
+    # ekranda 1'den başlasın diye burada da +1 uygulanır (bu fonksiyon
+    # utils.top_sentences'ın sürüm-uyumluluk yedeğidir, davranışı aynı olmalı).
+    for _df in (sahin, guvercin):
+        if "sent_idx" in _df.columns:
+            _df["sent_idx"] = pd.to_numeric(_df["sent_idx"], errors="coerce") + 1
     ozet = {"n": int(len(d)), "ort": float(d["diff"].mean()),
             "n_hawk": int((d["diff"] >= db).sum()),
             "n_dove": int((d["diff"] <= -db).sum())}
@@ -2131,7 +2137,9 @@ def _tone_sentence_map(df_sent):
     )
 
     with st.expander("En uçtaki cümleler", expanded=False):
-        srt = d_view.sort_values("diff", ascending=False)
+        srt = d_view.sort_values("diff", ascending=False).copy()
+        # Gösterim düzeltmesi: sent_idx 0-tabanlı, tabloda 1'den başlasın.
+        srt["sent_idx"] = pd.to_numeric(srt["sent_idx"], errors="coerce") + 1
         cols = ["sent_idx", "sentence", "diff", "agent_label", "theme_label"]
         names = {"sent_idx": "#", "sentence": "Cümle", "diff": "Ton",
                  "agent_label": "İlgili Kesim", "theme_label": "Tema"}

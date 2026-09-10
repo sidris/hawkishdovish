@@ -4798,9 +4798,29 @@ def chart_sentence_strip(df_one: pd.DataFrame, title: str = "Cümle sırasına g
         hovertemplate="#%{x} · ton %{y:.3f}<br>%{customdata[1]} · %{customdata[2]}<br>%{customdata[0]}<extra></extra>",
     ))
     fig.add_hline(y=0, line=dict(color="black", width=1))
+    # DÜZELTME: Plotly'nin varsayılan sayısal-eksen tik seçimi ("nice" adım,
+    # ör. 2,4,6,...) ilk cümleyi (1) ve METNİN SON cümlesini genelde ATLAR —
+    # ör. 15 cümlelik bir metinde tikler 2'den başlayıp 14'te biter, "1" ve
+    # "15" hiç görünmez. Bu da metnin nerede başlayıp bittiğinin belirsiz
+    # görünmesine yol açar. Aynı create_ai_trend_chart_step / _category_axis_ticks
+    # mantığıyla: tikleri BİZ seçeriz, ilk (1) ve son (n) cümle her zaman dahil.
+    _xv = [int(v) for v in x_display if pd.notna(v)]
+    if _xv:
+        _first, _last = min(_xv), max(_xv)
+        _max_ticks = 12
+        _step = max(1, -(-(_last - _first + 1) // _max_ticks))  # ceil
+        _tickvals = list(range(_first, _last + 1, _step))
+        if _tickvals[-1] != _last:
+            _tickvals.append(_last)
+        if _tickvals[0] != _first:
+            _tickvals.insert(0, _first)
+        xaxis_cfg = dict(title="Cümle sırası", tickmode="array",
+                         tickvals=_tickvals, ticktext=[str(v) for v in _tickvals])
+    else:
+        xaxis_cfg = dict(title="Cümle sırası")
     fig.update_layout(
         title=title, height=300, bargap=0.15,
-        xaxis=dict(title="Cümle sırası"), yaxis=dict(title="Ton (H−D)"),
+        xaxis=xaxis_cfg, yaxis=dict(title="Ton (H−D)"),
         margin=dict(t=50, b=40),
     )
     return fig
